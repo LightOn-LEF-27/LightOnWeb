@@ -1,0 +1,19 @@
+# 기대값 파일의 예시 — 공개 저장소에 들어가는 유일한 기대값 파일이다 (합성 데이터 · 우리 차 값이 아니다).
+# 실제 기대값 파일은 데이터 폴더의 _expected/ 에 있고, 저장소에는 들어가지 않는다 (tests/expected.py 맨 위 설명).
+#
+# 이 파일의 값은 tests/test_expected.py 와 test_api_contract.py 의 합성 세션(반지름 40 m 원을 세 바퀴)에서 나온다.
+
+[circle]
+laps = 3
+best_lap = 2
+lap_m = { value = 251.33, abs = 0.5 }          # 2π × 40 m
+direction = "ccw"
+speed_kmh = { min = 30, max = 70 }             # 50 ± 20 km/h
+
+[[circle.cases]]
+lap = 1
+time_s = 30.4
+
+[[circle.cases]]
+lap = 2
+time_s = 29.8
