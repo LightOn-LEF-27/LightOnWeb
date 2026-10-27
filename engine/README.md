@@ -163,6 +163,29 @@ api.get_delta(sid, 3, ref_sid, 7)                     # 두 랩의 시간 차 �
 
 - 세션을 채우는 것은 `catalog_build.build_event` (차량 · 폴더를 아는 코드는 거기 한 곳). LEF-27 은 `Session` 을 채우는 함수만 새로 쓰면 된다
 - 드라이버는 `드라이버 A` 같은 표시만 저장소에 들어간다 (그 밖의 글자는 거절한다)
+- **세션을 나누는 두 길** — 이벤트 폴더의 `catalog_notes.toml` 에 적는다
+  - **GPS 주행 구간** (`[[session]]` · `[event] sessions = "auto"`) — 랩 · 코스 · frame 이 있다 (`split_by = "gps"`)
+  - **시각 구간** (`[[timed_session]]`, `split_by = "time"`) — GPS 가 없는 주행 · Run Sheet 의 시각으로 나눌 때. 그 시각에 기록이 있는 장비(에너지미터 · 25Evo STM32 · Orion BMS · LEF-26 로거)를
+    **기준 시계**로 옮겨 자른다. 랩 · 코스가 없다. LEF-26 로거는 영상이 없을 때 로거 보드의 가속도계 · 자이로로 `imu` 블록을 낸다
+
+    ```toml
+    [event]
+    clock = "orion"                        # start · end 를 적은 시계 (세션 시작 시각도 이 시계)
+    [clocks.energymeter]                   # 시계 이름: energymeter · orion · lef26_logger · monolith · gopro
+    offset_s = -60.0                       # 그 장비 시계 + offset_s = 기준 시계
+    recordings = { "<레코딩>" = -61.5 }    # 레코딩마다 따로 (그 레코딩에 시계를 맞춰 둔 25Evo STM32 도 따른다)
+    [[timed_session]]
+    start = "2027-06-05 10:00:00"          # 시간대가 없으면 KST
+    end = "2027-06-05 10:20:00"
+    discipline = "연습 주행"                # name 이 없으면 "연습 주행 1" 처럼
+    [[timed_session]]
+    recording = "<레코딩>"                 # 그 장비가 켜져 있던 동안
+    name = "내구"
+    ```
+
+    같은 것을 두 장비가 주면 더 촘촘한 쪽을 쓴다 (배터리: 에너지미터 > STM32, BMS: Orion > STM32). 에너지미터와 같은 물리량(전력 · 전류 · 전압)을 잰 장비는
+    1 초 평균으로 서로 대 봐서 블록 `checks` 에 어긋남을 적고, 허용(장비 시각의 해상도)보다 어긋나 보이면 품질 경고 `clock_mismatch` 를 단다.
+    메모를 잘못 적으면(시계 차가 없는 장비가 근처에 있다 · 구간이 겹친다 · 기록이 하나도 없다 — 정말 없으면 `allow_empty = true`) 말없이 넘어가지 않고 멈춘다
 - 함수 이름 · 인자 · 돌려주는 모양은 사이트와의 계약이다. 바꿀 때는 계약 문서를 먼저 고치고 `api.CONTRACT_VERSION` 을 같이 올린다
 
 ## 시험 주행 보고서 (`lefdata report`)

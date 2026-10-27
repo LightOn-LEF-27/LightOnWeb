@@ -15,7 +15,16 @@
     battery · bms · motor
                 25Evo STM32 백업 로거   Monolith GPS 와 시계를 맞춘 레코딩 (`evo-stm32 --clock gps` 가 t_abs 를 채운 것)
 
-GPS 가 없는 주행은 아직 넣지 않았다 (나중 순서).
+GPS 가 없는 주행은 **시각 구간 세션**으로 넣는다 (`[[timed_session]]` — Run Sheet 의 시각이나 장비가 켜져 있던 동안).
+GPS 가 없으니 랩 · 코스가 없고, 그 시각에 기록이 있는 장비(에너지미터 · 25Evo STM32 백업 로거 · Orion BMS · LEF-26 로거)를
+**기준 시계**로 옮겨 자른다. 장비마다 시계가 다르므로 기준 시계로 옮길 값을 적어 둔다:
+
+    [event] clock = "<시계>"                    start · end 를 적은 시계 (세션 시작 시각도 이 시계로 보인다)
+    [clocks.<시계>] offset_s = <초>             그 장비 시계 + offset_s = 기준 시계. recordings = {레코딩 = 초} 로 레코딩마다 따로
+    [[timed_session]] start = "…" end = "…"     또는 recording = "<레코딩>" (그 레코딩이 켜져 있던 동안)
+
+시계 이름은 energymeter · orion · lef26_logger · monolith · gopro (25Evo STM32 는 변환기가 맞춰 둔 장비의 시계를 따른다).
+두 장비가 같은 물리량을 잰 곳은 서로 대 봐서 시계가 맞는지 확인하고, 어긋나 보이면 품질 경고(clock_mismatch)를 단다.
 
 사람이 아는 것(세션 이름 · 드라이버 · 없는 데이터 · 주의)은 `<이벤트>/catalog_notes.toml` 에 적는다.
 이 파일이 있는 이벤트만 카탈로그에 들어간다. 드라이버 실명은 적지 않는다.
@@ -30,6 +39,7 @@ import json
 import os
 import subprocess
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -54,6 +64,10 @@ REFINE_MIN_S = 0.5          # 이보다 적게 어긋났으면 옮기지 않는�
 REFINE_MIN_CORR = 0.9       # 옮긴 뒤의 상관이 이보다 높고
 REFINE_GAIN = 0.05          #   옮기기 전보다 이만큼 좋아질 때만 옮긴다
 ACCEL_LEAD_S = 10.0         # 가속 출발(정지)은 주행 구간 시작(10 km/h 를 넘는 순간)보다 앞이다 — 그만큼 앞까지 본다
+AGREE_SMOOTH_S = 1.0        # 두 장비가 같은 물리량을 잰 것을 대 볼 때 이만큼 평균한 뒤 (1 초 간격 장비에 맞춘다)
+AGREE_TOL_S = {"stm32": 1.0, "orion": 2.0, "lef26_logger": 1.0}   # 이보다 더 어긋나 보이면 경고 — 그 장비 시각의 해상도 · 평균 길이
+AGREE_MIN_CORR = {"stm32": 0.8, "orion": 0.6, "lef26_logger": 0.8}   # 파형이 이보다 덜 닮았으면 어긋남을 말하지 않는다 (Orion 은 1 초 단위 평균이라 덜 닮는다)
+CLOCK_SLACK_S = 3600.0      # 기준 시계로 옮길 값을 모르는 장비가 구간 앞뒤 이 안에 있으면 멈춘다 (말없이 빼지 않게)
 CAMERA_FORWARD = -1.0       # GoPro HERO5 의 a2_g 는 + 가 뒤쪽이다 (GPS 가속도와 대조해 정함)
 CAMERA_YAW = 1.0            # 위 축 둘레의 각속도는 + 가 좌회전 (GPS 요레이트와 대조해 정함)
 MIN_AGREE = 0.8             # 차량 축으로 바꾼 값과 GPS 에서 낸 값의 상관이 이보다 낮으면 '주의' 로 표시한다
@@ -184,6 +198,25 @@ class _Run:
 
     def extra(self, key: str) -> dict:
         return self.notes.get("blocks", {}).get(key, {})
+
+
+class _Window:
+    """시각 구간 하나 — 기준 시계로 [t0_abs, t1_abs] (UTC 초). 블록 함수에 _Run 대신 넘긴다. 세션 시간 = 기준 시계 − t0_abs.
+
+    GPS 가 없으므로 랩이 없다 (빈 랩 표 — 블록 함수가 랩 열을 더해도 빈 채로 남는다).
+    """
+
+    def __init__(self, event_dir: Path, notes: dict, t0_abs: float, t1_abs: float):
+        self.event_dir, self.notes, self.rec = event_dir, notes, ""
+        self.t0_abs, self.t1_abs, self.t0, self.t1 = t0_abs, t1_abs, 0.0, t1_abs - t0_abs
+        self.laps = pd.DataFrame({"lap": pd.Series(dtype="int64"), "t_start_s": pd.Series(dtype=float), "t_end_s": pd.Series(dtype=float),
+                                  "lap_time_s": pd.Series(dtype=float)})
+
+    def lap_of(self, ts: np.ndarray) -> np.ndarray:
+        return np.zeros(len(ts), int)
+
+    where = _Run.where
+    extra = _Run.extra
 
 
 def _gps_block(r: _Run) -> DataBlock:
@@ -460,9 +493,14 @@ def _lap_stat(r: _Run, key: str, t: np.ndarray, v: np.ndarray, how) -> None:
     r.laps[key] = out
 
 
-def _logger_blocks(r: _Run, loggers: _Loggers) -> list[DataBlock]:
-    """LEF-26 로거 블록 (모터 · BMS · 셀 온도 · 서스펜션). 영상과 시계를 맞춘 로거 레코딩이 없으면 빈 목록."""
-    logs = loggers.for_video(r.rec)
+LOGGER_BY_VIDEO = "로거 시계를 영상 GPS 에 맞춤 — 로거 요레이트 ↔ 카메라 자이로 파형 (lefdata lef26-clock)."
+
+
+def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]:
+    """LEF-26 로거 블록 (모터 · BMS · 셀 온도 · 서스펜션). 로거마다 시계 지도(cm)가 로거 경과시간 → 기준 시각. 기록이 없으면 빈 목록.
+
+    how = 로거 시계를 어떻게 맞췄나 (블록 '확인' 글의 앞부분).
+    """
     if not logs:
         return []
     imu_t, _, used = _gather(r, logs, lambda log: (log.imu_t, np.ones(len(log.imu_t))))
@@ -471,8 +509,7 @@ def _logger_blocks(r: _Run, loggers: _Loggers) -> list[DataBlock]:
     dur = r.t1 - r.t0
     gaps = [[round(float(a), 3), round(float(b), 3)] for a, b in zip(np.concatenate([[0.0], imu_t]), np.concatenate([imu_t, [dur]])) if b - a > 2.0]
     cover = 1 - sum(b - a for a, b in gaps) / dur
-    clock = (f"로거 시계를 영상 GPS 에 맞춤 — 로거 요레이트 ↔ 카메라 자이로 파형 (lefdata lef26-clock). 로거 레코딩 {', '.join(used)} · "
-             f"이 세션의 {cover * 100:.0f} % 를 기록")
+    clock = f"{how} 로거 레코딩 {', '.join(used)} · 이 세션의 {cover * 100:.0f} % 를 기록"
     where = r.where("normalized/<로거 레코딩>/")
     code = [CodeRef("catalog", CODE_PAGES["catalog"]["title"], "로거 시각 → 세션 시간, 세션 구간만")]
     raw = [FileRef("로거 통합본 CSV (그날 전체, 용량이 커서 있는 곳만)", "raw_merged/<날짜>_merged.csv", where=r.notes.get("event", {}).get("raw_where", "DAQ 파트 보관"))]
@@ -564,6 +601,55 @@ def _logger_blocks(r: _Run, loggers: _Loggers) -> list[DataBlock]:
     return blocks
 
 
+def _binned(t: np.ndarray, v: np.ndarray, grid: np.ndarray, step: float) -> np.ndarray:
+    """표본을 격자 칸([grid, grid + step))마다 평균 — 표본이 없는 칸은 NaN (기록이 빈 곳을 잇지 않는다)."""
+    t, v = np.asarray(t, float), np.asarray(v, float)
+    out = np.full(len(grid), np.nan)
+    if not len(grid):
+        return out
+    k = np.floor((t - grid[0]) / step).astype(int)
+    ok = (k >= 0) & (k < len(grid)) & np.isfinite(v)
+    s = np.bincount(k[ok], weights=v[ok], minlength=len(grid))
+    n = np.bincount(k[ok], minlength=len(grid))
+    out[n > 0] = s[n > 0] / n[n > 0]
+    return out
+
+
+def _logger_imu_block(r, logs: list, how: str) -> DataBlock | None:
+    """LEF-26 로거 보드의 가속도계 · 자이로 → 차량 거동 (영상이 없는 세션용). 로거 축: X 횡(우회전 +) · Y 종(가속 +) · 요레이트 좌회전 +."""
+    got = {"long_g": _gather(r, logs, lambda log: (log.imu_t, log.long_g)),
+           "lat_g": _gather(r, logs, lambda log: (log.imu_t, log.lat_left_g)),
+           "yaw_dps": _gather(r, logs, lambda log: (log.imu_t, log.yaw_dps) if log.yaw_dps is not None else (None, None))}
+    t, _, used = got["long_g"]
+    if len(t) < 100:
+        return None
+    grid = np.arange(0.0, r.t1 - r.t0, STEP_S)
+    n = round(SMOOTH_S / STEP_S)
+    long_g, lat_g = (_roll(_binned(*got[k][:2], grid, STEP_S), n) for k in ("long_g", "lat_g"))
+    if not (np.isfinite(long_g).any() and np.isfinite(lat_g).any()):
+        return None
+    src = ", ".join(used)
+    tilt = "차량 로거 보드의 가속도계 값. 보드가 기운 만큼(장착 · 롤 · 피치) 중력이 섞임 — 영점을 빼지 않았다"
+    series = [Channel("long_g", "앞뒤 가속도", "g", *got["long_g"][:2], sign="가속 +, 제동 −", cautions=[tilt], source=src, digits=4),
+              Channel("lat_g", "좌우 가속도", "g", *got["lat_g"][:2], sign="좌선회 +, 우선회 −", derived=True,
+                      derivation="로거 X 축(우회전 +)의 부호를 뒤집음", cautions=[tilt], source=src, digits=4)]
+    if len(got["yaw_dps"][0]):
+        series.append(Channel("yaw_dps", "요레이트", "°/s", *got["yaw_dps"][:2], sign="좌회전 +", source=src, digits=2))
+    gg = pd.DataFrame({"long_g": long_g, "lat_g": lat_g}).iloc[::round(GG_STEP_S / STEP_S)].dropna()
+    gg.attrs["step_s"] = GG_STEP_S
+    hz = (len(t) - 1) / max(float(t[-1] - t[0]), 1e-9)
+    return DataBlock(
+        "imu", "차량 거동 (가속도 · 요레이트)", HAVE, f"LEF-26 차량 로거 — 가속도계 · 자이로 · 평균 {hz:.0f} Hz",
+        [f"앞뒤 가속도 {np.nanmin(long_g):+.2f} ~ {np.nanmax(long_g):+.2f} g (제동 − · 가속 +)",
+         f"좌우 가속도 우선회 {np.nanmax(-lat_g):.2f} g · 좌선회 {np.nanmax(lat_g):.2f} g"],
+        code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "로거 시각 → 세션 시간, 세션 구간만")],
+        outputs=[FileRef("변환된 표 (로거 레코딩 전체)", "imu.parquet", note="ax_lat_g · ay_long_g · az_g · yaw_dps · …",
+                         where=r.where("normalized/<로거 레코딩>/"))],
+        channels=series, time_keys=["long_g", "lat_g"], gg=gg, checks=[f"{how} 로거 레코딩 {src}"],
+        cautions=[tilt, "위 사실 줄의 최대 · 최소는 0.5 초 평균값. 그보다 짧은 충격은 원래 주기 값(그래프)으로 볼 것"]
+        + list(r.extra("imu").get("cautions", [])), series=series)
+
+
 # ---------------------------------------------------------------- 25Evo STM32 백업 로거 (Monolith GPS 시계에 맞춘 것)
 
 class _Stm32:
@@ -580,7 +666,8 @@ class _Stm32:
         return self.table[self.table["gps_recording"] == gps_rec]
 
 
-def _stm32_frame(r: _Run, rec: str, name: str) -> pd.DataFrame | None:
+def _stm32_frame(r, rec: str, name: str, offset_s: float = 0.0) -> pd.DataFrame | None:
+    """STM32 레코딩의 표 하나를 세션 구간만 — offset_s = 로거 시각(t_abs)에 더하면 기준 시계가 되는 초."""
     path = r.event_dir / "normalized" / rec / f"{name}.parquet"
     if not path.exists():
         return None
@@ -588,7 +675,7 @@ def _stm32_frame(r: _Run, rec: str, name: str) -> pd.DataFrame | None:
     df = df[df["t_abs"].notna()]
     if df.empty:
         return None
-    df = df.assign(t_s=_epoch_s(df["t_abs"]) - r.t0_abs)
+    df = df.assign(t_s=_epoch_s(df["t_abs"]) + offset_s - r.t0_abs)
     return df[(df["t_s"] >= 0) & (df["t_s"] <= r.t1 - r.t0)]
 
 
@@ -611,22 +698,31 @@ def best_lag(t, v, t_ref, v_ref, max_s: float = REFINE_MAX_S, step: float = 0.1)
 
 
 def _stm32_blocks(r: _Run, stm: _Stm32) -> list[DataBlock]:
-    """25Evo STM32 백업 로거 → battery (팩 전압 · 전류 · 전력) · bms (셀 · 온도 · SOC) · motor (온도 · 회전수)."""
+    """25Evo STM32 백업 로거 (GPS 세션) — Monolith GPS 와 시계를 맞춘 레코딩만."""
     rows = stm.for_gps(r.rec)
     if rows.empty:
         return []
-    recs = list(rows["recording_id"])
-    parts = {name: [d for d in (_stm32_frame(r, rec, name) for rec in recs) if d is not None and len(d)] for name in ("bms", "motor")}
+    fits = " · ".join(f"{x['recording_id']} 시계 속도 {x['gps_f']:.4f} (창 {int(x['gps_windows'])}개)" for _, x in rows.iterrows())
+    clock = f"로거 시계를 Monolith GPS 에 맞춤 — 모터 회전수 ↔ GPS 속도 파형으로 시작 시각과 시계 속도를 같이 구함 (lefdata evo-stm32 --clock gps). {fits}"
+    return _stm32_make(r, {rec: 0.0 for rec in rows["recording_id"]}, clock, refine=True)
+
+
+def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, skip: tuple = ()) -> list[DataBlock]:
+    """25Evo STM32 백업 로거 → battery (팩 전압 · 전류 · 전력) · bms (셀 · 온도 · SOC) · motor (온도 · 회전수).
+
+    recs = {레코딩: 로거 시각에 더하면 기준 시계가 되는 초}. clock = 시계를 어떻게 맞췄나 (블록 '확인' 글).
+    refine = 세션 안에서 GPS 속도와 한 번 더 대 본다 (GPS 세션만). skip = 만들지 않을 블록 (다른 장비가 더 촘촘한 값을 줄 때).
+    """
+    parts = {name: [d for d in (_stm32_frame(r, rec, name, off) for rec, off in recs.items()) if d is not None and len(d)]
+             for name in ("bms", "motor")}
     bms = pd.concat(parts["bms"]).sort_values("t_s") if parts["bms"] else None
     mot = pd.concat(parts["motor"]).sort_values("t_s") if parts["motor"] else None
     if bms is None and mot is None:
         return []
     src = ", ".join(recs)
     unsure = ""
-    fits = " · ".join(f"{x['recording_id']} 시계 속도 {x['gps_f']:.4f} (창 {int(x['gps_windows'])}개)" for _, x in rows.iterrows())
-    clock = f"로거 시계를 Monolith GPS 에 맞춤 — 모터 회전수 ↔ GPS 속도 파형으로 시작 시각과 시계 속도를 같이 구함 (lefdata evo-stm32 --clock gps). {fits}"
     # 레코딩 전체를 직선 하나로 맞춘 시계는 긴 레코딩의 한 구간에서 몇 초 벗어날 수 있다 → 이 세션 안에서 한 번 더 대 본다
-    if mot is not None and "rpm" in mot and mot["rpm"].notna().sum() >= 30:
+    if refine and mot is not None and "rpm" in mot and mot["rpm"].notna().sum() >= 30:
         lag, c0, c1 = best_lag(mot["t_s"].to_numpy(), np.abs(mot["rpm"].to_numpy(float)), r.ts, r.gps["speed_kmh"].to_numpy(float))
         if abs(lag) >= REFINE_MIN_S and c1 >= REFINE_MIN_CORR and c1 - c0 >= REFINE_GAIN:
             dur = r.t1 - r.t0
@@ -661,18 +757,19 @@ def _stm32_blocks(r: _Run, stm: _Stm32) -> list[DataBlock]:
             m = (t >= a) & (t < b)
             energy.append(float(np.trapezoid(bms["power_kw"].to_numpy()[m], t[m]) / 3.6) if m.sum() > 1 else np.nan)
         r.laps["net_wh"] = energy
-        blocks.append(DataBlock("battery", "배터리 전압 · 전류", HAVE, "25Evo STM32 백업 로거 — BMS 값 (팩 전압 · 전류 · 전력)",
-                                [f"표본 {len(t):,}개", f"전력 최대 {np.nanmax(bms['power_kw']):.1f} kW · 전류 최대 {np.nanmax(bms['current_a']):.0f} A",
-                                 f"팩 전압 {np.nanmin(bms['pack_v']):.0f} ~ {np.nanmax(bms['pack_v']):.0f} V"],
-                                raw=raw, code=code, outputs=[FileRef("변환된 표 (레코딩 전체)", "bms.parquet", note="pack_v · current_a · power_kw", where=where)],
-                                channels=series, time_keys=["current_a", "voltage_v", "power_kw"], trace_keys=["current_a", "power_kw"], map_key="power_kw",
-                                lap_columns=[LapColumn("net_wh", "순 에너지", "Wh", 0, chart=True), LapColumn("p_mean_kw", "평균 전력", "kW", 1)],
-                                checks=[clock], cautions=extra + ["주최측 에너지미터보다 거칠다 (해상도 · 표본 수). 에너지미터 기록이 있는 날은 그쪽이 정확하다"],
-                                series=series, findings=findings))
+        if "battery" not in skip:
+            blocks.append(DataBlock("battery", "배터리 전압 · 전류", HAVE, "25Evo STM32 백업 로거 — BMS 값 (팩 전압 · 전류 · 전력)",
+                                    [f"표본 {len(t):,}개", f"전력 최대 {np.nanmax(bms['power_kw']):.1f} kW · 전류 최대 {np.nanmax(bms['current_a']):.0f} A",
+                                     f"팩 전압 {np.nanmin(bms['pack_v']):.0f} ~ {np.nanmax(bms['pack_v']):.0f} V"],
+                                    raw=raw, code=code, outputs=[FileRef("변환된 표 (레코딩 전체)", "bms.parquet", note="pack_v · current_a · power_kw", where=where)],
+                                    channels=series, time_keys=["current_a", "voltage_v", "power_kw"], trace_keys=["current_a", "power_kw"], map_key="power_kw",
+                                    lap_columns=[LapColumn("net_wh", "순 에너지", "Wh", 0, chart=True), LapColumn("p_mean_kw", "평균 전력", "kW", 1)],
+                                    checks=[clock], cautions=extra + ["주최측 에너지미터보다 거칠다 (해상도 · 표본 수). 에너지미터 기록이 있는 날은 그쪽이 정확하다"],
+                                    series=series, findings=findings))
         cell = [Channel(k, label, unit, t, bms[k].to_numpy(), cautions=[slow], source=src, digits=d)
                 for k, label, unit, d in (("cell_min_v", "셀 최저 전압", "V", 4), ("temp_max_c", "셀 최고 온도", "°C", 0),
                                           ("temp_min_c", "셀 최저 온도", "°C", 0), ("soc_pct", "SOC", "%", 1)) if k in bms and bms[k].notna().any()]
-        if cell:
+        if cell and "bms" not in skip:
             cols = []
             if any(c.key == "temp_max_c" for c in cell):
                 _lap_stat(r, "cell_t_max_c", t, bms["temp_max_c"].to_numpy(), np.nanmax)
@@ -685,7 +782,7 @@ def _stm32_blocks(r: _Run, stm: _Stm32) -> list[DataBlock]:
                                     raw=raw, code=code, outputs=[FileRef("변환된 표 (레코딩 전체)", "bms.parquet", where=where)],
                                     channels=cell, time_keys=[c.key for c in cell if c.key in ("temp_max_c", "soc_pct")], lap_columns=cols,
                                     checks=[clock], cautions=extra + ["BMS 가 보고한 셀 최고 · 최저 (셀 하나하나의 값은 없다)"], series=cell))
-    if mot is not None:
+    if mot is not None and "motor" not in skip:
         t = mot["t_s"].to_numpy()
         series = [Channel(k, label, unit, t, mot[k].to_numpy(), cautions=extra + [slow], source=src, digits=d)
                   for k, label, unit, d, extra in (("t_igbt_c", "인버터(IGBT) 온도", "°C", 1, ["NTC 값을 컨트롤러 제조사 표로 바꾼 값 (새 형식 로그만 있다)"]),
@@ -746,14 +843,423 @@ def _segment_notes(info: dict, derived: Path, r: _Run) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------- 시각 구간 세션 (GPS 없이 — Run Sheet 시각 · 장비가 켜져 있던 동안)
+
+DEVICES = (("FSK 에너지미터", "energymeter"), ("Orion BMS Connect", "orion"), ("자작 STM32", "stm32"),
+           ("LEF-26 STM32F446RE", "lef26_logger"), ("Monolith", "monolith"), ("GoPro", "gopro"))     # 변환기가 meta 에 적는 장비 이름 → 장비
+STM32_CLOCK = {"에너지미터": "energymeter", "Monolith": "monolith"}     # 25Evo STM32 시각을 어느 장비에 맞췄나 (meta time.alignment.clock_of)
+CLOCK_LABEL = {"energymeter": "에너지미터", "orion": "Orion BMS Connect", "lef26_logger": "LEF-26 차량 로거", "monolith": "Monolith",
+               "gopro": "GoPro GPS"}
+TIMED_DEVICES = ("energymeter", "stm32", "orion", "lef26_logger")     # 시각 구간 세션에 붙이는 장비
+GPS_DEVICES = ("monolith", "gopro")                                   # 아직 붙이지 않는다 (겹치면 메모로 알린다)
+ORION_CHANNELS = (("soc_pct", "SOC", "%", 1), ("cell_min_v", "셀 최저 전압", "V", 3), ("cell_max_v", "셀 최고 전압", "V", 3),
+                  ("temp_max_c", "셀 최고 온도", "°C", 0), ("temp_min_c", "셀 최저 온도", "°C", 0), ("dcl_a", "방전 전류 한계 (DCL)", "A", 0))
+DCL_REASONS = (("dcl_limited_soc", "SOC"), ("dcl_limited_temp", "온도"), ("dcl_limited_cell_v", "셀 전압"),
+               ("dcl_limited_pack_v", "팩 전압"), ("dcl_limited_cell_r", "셀 저항"))
+
+
+@dataclass
+class _Rec:
+    """변환된 레코딩 하나 — 장비, 그 t_abs 가 어느 시계인가, 그 시계로 본 시작 · 끝 (UTC 초).
+
+    anchor = 시계를 맞춰 둔 다른 레코딩 (25Evo STM32 → 그 에너지미터 · Monolith 레코딩). 그 레코딩의 시계 차를 따로 적었으면 따른다.
+    """
+    rec: str
+    dir: Path
+    meta: dict
+    device: str
+    clock: str
+    t0: float
+    t1: float
+    anchor: str = ""
+
+
+def _recordings(event_dir: Path) -> list[_Rec]:
+    """이벤트의 변환된 레코딩 중 절대 시각이 있는 것 (25Evo STM32 는 다른 장비에 시계를 맞춘 것만)."""
+    out = []
+    for path in sorted((event_dir / "normalized").glob("*/meta.json")):
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        logger = meta.get("source", {}).get("logger", "")
+        device = next((d for key, d in DEVICES if logger.startswith(key)), None)
+        tm = meta.get("time", {})
+        if device is None or not tm.get("t_abs_start"):
+            continue
+        t0 = pd.Timestamp(tm["t_abs_start"]).timestamp()
+        span = tm.get("duration_s")
+        if span is None and tm.get("t_abs_end"):
+            span = pd.Timestamp(tm["t_abs_end"]).timestamp() - t0
+        al = tm.get("alignment", {}) if device == "stm32" else {}
+        clock = STM32_CLOCK.get(al.get("clock_of", ""), "") if device == "stm32" else device
+        if span is None or not clock:
+            continue
+        out.append(_Rec(path.parent.name, path.parent, meta, device, clock, t0, t0 + float(span),
+                        al.get("em_recording") or al.get("gps_recording") or ""))
+    return out
+
+
+class _Clocks:
+    """기준 시계([event] clock — start · end 를 적은 시계)와, 장비 시계를 그리로 옮길 때 더할 초([clocks.<시계>])."""
+
+    def __init__(self, notes: dict):
+        ev = notes.get("event", {})
+        self.ref = ev.get("clock", "")
+        if not self.ref:
+            raise ValueError(f"{NOTES_NAME}: 시각 구간 세션에는 [event] clock (start · end 를 적은 시계) 이 있어야 한다")
+        self.label = ev.get("clock_label") or CLOCK_LABEL.get(self.ref, self.ref)
+        self.table = notes.get("clocks", {})
+
+    def _own(self, x: _Rec) -> float | None:
+        """레코딩마다 따로 적은 값 (그 레코딩, 아니면 시계를 맞춰 둔 레코딩의 것)."""
+        per = self.table.get(x.clock, {}).get("recordings", {})
+        return next((float(per[k]) for k in (x.rec, x.anchor) if k and k in per), None)
+
+    def known(self, x: _Rec) -> bool:
+        return x.clock == self.ref or "offset_s" in self.table.get(x.clock, {}) or self._own(x) is not None
+
+    def offset(self, x: _Rec) -> float:
+        own = self._own(x)
+        if own is not None:
+            return own
+        return 0.0 if x.clock == self.ref else float(self.table[x.clock]["offset_s"])
+
+    def text(self, x: _Rec) -> str:
+        """확인 글 — 이 레코딩의 시각을 기준 시계로 어떻게 옮겼나."""
+        name, off = CLOCK_LABEL.get(x.clock, x.clock), self.offset(x)
+        if x.clock == self.ref and off == 0.0:
+            return f"{name} 시계가 기준 시계"
+        basis = self.table.get(x.clock, {}).get("basis", "")
+        return f"{name} 시계 {off:+.1f} s = 기준 시계({self.label})" + (f" — {basis}" if basis else "")
+
+
+def _when(v) -> float:
+    """적어 둔 시각 → UTC 초. 시간대가 없으면 KST."""
+    ts = pd.Timestamp(v)
+    return (ts.tz_localize(TZ) if ts.tzinfo is None else ts).timestamp()
+
+
+def _window(e: dict, by_id: dict[str, _Rec], clocks: _Clocks) -> tuple[float, float]:
+    """[[timed_session]] 한 줄 → 기준 시계로 (시작, 끝) UTC 초. start · end, 또는 recording (그 레코딩이 켜져 있던 동안)."""
+    if "recording" in e:
+        x = by_id.get(e["recording"])
+        if x is None:
+            raise ValueError(f"{NOTES_NAME}: 레코딩 {e['recording']} 이 없다 (normalized/ 에 절대 시각이 있는 레코딩이어야 한다)")
+        if not clocks.known(x):
+            raise ValueError(f"{NOTES_NAME}: {CLOCK_LABEL.get(x.clock, x.clock)} 시계를 기준 시계로 옮길 값이 없다 — [clocks.{x.clock}] offset_s")
+        t0, t1 = x.t0 + clocks.offset(x), x.t1 + clocks.offset(x)
+    elif "start" in e and "end" in e:
+        t0, t1 = _when(e["start"]), _when(e["end"])
+    else:
+        raise ValueError(f"{NOTES_NAME}: [[timed_session]] 에는 start · end 나 recording 이 있어야 한다 — {e}")
+    if not t1 > t0:
+        raise ValueError(f"{NOTES_NAME}: 시각 구간의 끝이 시작보다 앞이다 — {e}")
+    return t0, t1
+
+
+def _em_window_block(w: _Window, parts: list[tuple[_Rec, float]], clock: str) -> tuple[DataBlock | None, dict, dict | None]:
+    """주최측 에너지미터 (시각 구간) → battery 블록 · 세션 요약 값 · 다른 장비와 대 볼 파형. parts = [(레코딩, 기준 시계로 더할 초)]."""
+    dur = w.t1 - w.t0
+    got = []
+    for x, off in parts:
+        me = em_laps.read_meter(x.dir)
+        base = me.start + off - w.t0_abs                                # 미터 경과시간 + base = 세션 시간
+        r0, r1 = max(float(me.t[0]), -base), min(float(me.t[-1]), dur - base)
+        e = em_laps.segment_energy(me, r0, r1) if r1 > r0 else {}
+        if e:
+            m = (me.t >= r0) & (me.t <= r1)
+            got.append((x, me, m, me.t[m] + base, e))
+    if not got:
+        return None, {}, None
+    ts = np.concatenate([g[3] for g in got])
+    volt, amp, kw, p500 = (np.concatenate([getattr(g[1], k)[g[2]] for g in got]) for k in ("volt", "amp", "kw", "p500_kw"))
+    dis, reg = (sum(g[4][k] for g in got) for k in ("discharge_wh", "regen_wh"))
+    hole_at, holes = [], 0.0
+    for g in got:
+        step = np.diff(g[3])
+        big = np.flatnonzero(step > 2 * np.median(step))
+        holes += float(step[big].sum())
+        hole_at += [[round(float(g[3][i]), 3), round(float(g[3][i + 1]), 3)] for i in big]
+    srcs = ", ".join(g[0].rec for g in got)
+    meta = got[0][0].meta
+    cautions = list(w.extra("battery").get("cautions", []))
+    if holes > 0.5:
+        cautions.insert(0, f"표본이 빠진 곳이 있음 — 기록 간격의 두 배 넘게 빈 틈이 합계 {holes:.1f} s (세션의 {100 * holes / dur:.1f} %). "
+                           "에너지를 직접 적분할 때는 표본 개수가 아니라 시간 열(t_s)로 적분할 것")
+    findings = [{"level": "warn", "code": "em_dropped_samples", "t_ranges": hole_at,
+                 "message": f"기록 간격의 두 배 넘게 빈 틈 {len(hole_at)}곳 · 합계 {holes:.1f} s — 그 사이에는 값이 없다 (확대하면 그래프가 끊긴다)"}] if hole_at else []
+    series = [Channel("current_a", "배터리 전류", "A", ts, amp, sign="방전 +, 배터리로 돌아오면 −", source=srcs, digits=2),
+              Channel("voltage_v", "팩 전압", "V", ts, volt, source=srcs, digits=2),
+              Channel("power_kw", "전력", "kW", ts, kw, sign="방전 +", derived=True, derivation="전압 × 전류", source=srcs, digits=3),
+              Channel("power_500ms_kw", "전력 500 ms 평균", "kW", ts, p500, sign="방전 +", derived=True,
+                      derivation="전압 × 전류의 500 ms 이동평균 (대회 출력 한도 판정과 같은 방식)", source=srcs, digits=3)]
+    p500_max = float(np.nanmax(p500)) if np.isfinite(p500).any() else np.nan
+    hv = volt[volt > lef26_laps.HV_ON_V]
+    volts = f"팩 전압 {hv.min():.0f} ~ {hv.max():.0f} V (고전압이 켜진 동안)" if len(hv) else "고전압이 켜진 적 없음"
+    table = pd.DataFrame({"t_s": ts.round(3), "voltage_v": volt.round(1), "current_a": amp.round(1), "power_kw": kw.round(3)})
+    raws = []
+    for g in got:
+        path = w.event_dir / g[0].meta["source"]["file"]
+        counts = g[0].meta.get("counts", {})
+        raws.append(FileRef("에너지미터 원본 로그 (바이너리, 레코딩 전체)", path.name, path, path.stat().st_size if path.exists() else 0,
+                            f"{counts.get('records', 0):,} 표본 · 체크섬 실패 {counts.get('checksum_fail', 0)}"))
+    block = DataBlock(
+        "battery", "배터리 전압 · 전류", HAVE, f"{meta['source']['logger']} · {1000 / meta['time']['median_dt_ms']:.0f} Hz",
+        [f"표본 {len(ts):,}개" + (f" · 레코딩 {len(got)}개" if len(got) > 1 else ""),
+         f"방전 {dis:,.0f} Wh · 배터리로 돌아온 양 {reg:,.0f} Wh · 순 {dis - reg:,.0f} Wh",
+         f"전류 최대 {np.max(amp):.0f} A · 500 ms 평균 전력 최대 {p500_max:.1f} kW (대회 한도 80 kW)",
+         volts],
+        raw=raws, code=[CodeRef("energymeter", CODE_PAGES["energymeter"]["title"], "원본 로그를 전압 · 전류 표로"),
+                        CodeRef("catalog", CODE_PAGES["catalog"]["title"], "미터 시각 → 세션 시간, 세션 구간만")],
+        outputs=[FileRef("변환된 표 (레코딩 전체)", "energy.parquet", note="voltage_v · current_a · lv_voltage_v · temp_c · valid",
+                         where=w.where("normalized/<에너지미터 레코딩>/"))],
+        exports=[Export("battery.csv", "이 세션의 전압 · 전류 · 전력 (시간 t_s 는 기준 시계로 옮긴 세션 시간)", table, f"{len(table):,} 행")],
+        channels=series[:3], time_keys=["current_a", "voltage_v", "power_kw"], map_key="power_kw",
+        checks=[clock], cautions=cautions, series=series, findings=findings)
+    return block, {"net_wh": round(dis - reg), "i_max_a": round(float(np.max(amp)))}, {"t": ts, "amp": amp, "volt": volt, "kw": kw}
+
+
+def _orion_block(w: _Window, parts: list[tuple[_Rec, float]], clock: str) -> tuple[DataBlock | None, dict | None]:
+    """Orion BMS Connect 로그 (시각 구간) → bms 블록 · 다른 장비와 대 볼 팩 전류."""
+    dur = w.t1 - w.t0
+    frames = []
+    for x, off in parts:
+        d = pq.read_table(x.dir / "bms.parquet").to_pandas()
+        d = d[d["t_abs"].notna()]
+        d = d.assign(t_s=_epoch_s(d["t_abs"]) + off - w.t0_abs)
+        frames.append(d[(d["t_s"] >= 0) & (d["t_s"] <= dur)])
+    d = pd.concat(frames).sort_values("t_s") if frames else pd.DataFrame()
+    if len(d) < 2:
+        return None, None
+    if "soc_pct" in d:
+        d["soc_pct"] = d["soc_pct"].where(d["soc_pct"] > 0)            # 켠 직후의 0 은 값이 아니다
+    t = d["t_s"].to_numpy()
+    src = ", ".join(x.rec for x, _ in parts)
+    every = "Connect 가 1 초 단위 시각으로 남긴 값 (약 1 초 간격)"
+    series = [Channel(k, label, unit, t, d[k].to_numpy(float), cautions=[every], source=src, digits=dg)
+              for k, label, unit, dg in ORION_CHANNELS if k in d and d[k].notna().any()]
+    if not series:
+        return None, None
+    facts = []
+    soc = d["soc_pct"].dropna() if "soc_pct" in d else pd.Series(dtype=float)
+    if len(soc):
+        facts.append(f"SOC {soc.iloc[0]:.1f} → {soc.iloc[-1]:.1f} %")
+    if {"cell_min_v", "cell_max_v"} <= set(d.columns):
+        facts.append(f"셀 전압 {d['cell_min_v'].min():.3f} ~ {d['cell_max_v'].max():.3f} V")
+    hot = d["temp_max_c"].dropna() if "temp_max_c" in d else pd.Series(dtype=float)
+    if len(hot):
+        facts.append(f"셀 최고 온도 {hot.iloc[0]:.0f} → {hot.iloc[-1]:.0f} °C (가장 높을 때 {hot.max():.0f} °C)")
+    if "dcl_a" in d and d["dcl_a"].notna().any():
+        facts.append(f"방전 전류 한계(DCL) {d['dcl_a'].min():.0f} ~ {d['dcl_a'].max():.0f} A")
+    if any(col in d for col, _ in DCL_REASONS):
+        why = [name for col, name in DCL_REASONS if col in d and d[col].fillna(0).astype(bool).any()]
+        facts.append(f"BMS 가 방전 전류 한계를 줄인 표시: {', '.join(why) if why else '없음'}")
+    if "errors_present" in d:
+        facts.append(f"BMS 오류 표시: {'있음' if d['errors_present'].fillna(0).astype(bool).any() else '없음'}")
+    keys = {c.key for c in series}
+    where = w.notes.get("event", {}).get("raw_where", "DAQ 파트 보관")
+    block = DataBlock(
+        "bms", "배터리 상태 (BMS)", HAVE, f"{parts[0][0].meta['source']['logger']} · 약 1 Hz", facts,
+        raw=[FileRef("Orion BMS Connect 로그 (CSV 로 바꾼 것)", x.meta["source"].get("file", x.rec), where=where) for x, _ in parts],
+        code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "BMS 시각 → 세션 시간, 세션 구간만")],
+        outputs=[FileRef("변환된 표 (레코딩 전체)", "bms.parquet", note="팩 전류 · 전압 · SOC · 셀 전압 · 온도 · DCL · 제한 표시",
+                         where=w.where("normalized/<Orion 레코딩>/"))],
+        channels=series, time_keys=[k for k in ("soc_pct", "temp_max_c", "cell_min_v") if k in keys], checks=[clock],
+        cautions=[every + ". 전류 · 전압은 그 사이의 평균이라 순간 값보다 작다", "켠 직후의 SOC 0 은 값이 아니라서 비웠다"]
+        + list(w.extra("bms").get("cautions", [])), series=series)
+    ref = {"t": t, "amp": d["current_a"].to_numpy(float)} if "current_a" in d else None
+    return block, ref
+
+
+def _smoothed(t, v, step: float = 0.1) -> tuple[np.ndarray, np.ndarray]:
+    """표본 → step 격자의 점마다 앞뒤 AGREE_SMOOTH_S / 2 안 표본의 평균 (표본이 없는 점은 뺀다).
+
+    100 Hz 장비도 초당 몇 개뿐인 장비도 같은 방식으로 고른다.
+    """
+    t, v = np.asarray(t, float), np.asarray(v, float)
+    ok = np.isfinite(t) & np.isfinite(v)
+    t, v = t[ok], v[ok]
+    if len(t) < 2:
+        return np.zeros(0), np.zeros(0)
+    grid = np.arange(t[0], t[-1], step)
+    cs = np.concatenate([[0.0], np.cumsum(v)])
+    i0, i1 = np.searchsorted(t, grid - AGREE_SMOOTH_S / 2), np.searchsorted(t, grid + AGREE_SMOOTH_S / 2)
+    n = i1 - i0
+    return grid[n > 0], (cs[i1] - cs[i0])[n > 0] / n[n > 0]
+
+
+def _agree(t, v, t_ref, v_ref, device: str, what: str) -> tuple[str, dict | None]:
+    """두 장비가 같은 물리량을 잰 파형 → (확인 글, 경고 또는 None). 1 초 평균으로 고른 뒤 가장 잘 겹치는 어긋남을 잰다.
+
+    어긋남 + = 이 장비의 시각에 그만큼 더해야 기준 장비와 겹친다.
+    """
+    tol_s = AGREE_TOL_S[device]
+    a, av = _smoothed(t, v)
+    b, bv = _smoothed(t_ref, v_ref)
+    lag, _, c1 = best_lag(a, av, b, bv)
+    if not np.isfinite(c1) or c1 < AGREE_MIN_CORR[device]:
+        return f"{what}: 파형이 덜 닮아 어긋남을 재지 못함" + (f" (상관 {c1:.2f})" if np.isfinite(c1) else ""), None
+    text = f"{what}: 가장 잘 겹치는 어긋남 {lag:+.1f} s (상관 {c1:.2f})"
+    if abs(lag) <= tol_s:
+        return text + f" — 허용 {tol_s:g} s 안", None
+    return text + f" — 허용 {tol_s:g} s 를 넘는다", {
+        "level": "warn", "code": "clock_mismatch", "t_ranges": [],
+        "message": f"{what} — {lag:+.1f} s 어긋나 보인다. 장비 시계를 기준 시계로 옮기는 값이 틀렸을 수 있다 (순간 값의 시각을 믿지 말 것)"}
+
+
+def _add_check(b: DataBlock, said: tuple[str, dict | None]) -> None:
+    b.checks.append(said[0])
+    if said[1]:
+        b.findings.append(said[1])
+
+
+def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks) -> tuple[list[DataBlock], dict]:
+    """시각 구간에 기록이 있는 장비 → 블록들 · 세션 요약 값.
+
+    같은 것을 두 장비가 주면 더 촘촘한 쪽을 쓴다 (배터리: 에너지미터 > STM32, BMS: Orion > STM32). 에너지미터가 있으면
+    다른 장비의 같은 물리량(전력 · 전류 · 전압)을 그것과 대 봐서 시계가 맞는지 블록의 '확인' 에 적는다.
+    """
+    hit = []
+    for x in recs:
+        if x.device not in TIMED_DEVICES:
+            continue
+        if not clocks.known(x):
+            if x.t0 < w.t1_abs + CLOCK_SLACK_S and x.t1 > w.t0_abs - CLOCK_SLACK_S:
+                raise ValueError(f"{NOTES_NAME}: {CLOCK_LABEL.get(x.clock, x.clock)} 시계를 기준 시계로 옮길 값이 없다 — "
+                                 f"[clocks.{x.clock}] offset_s 를 적을 것 (레코딩 {x.rec})")
+            continue
+        off = clocks.offset(x)
+        if x.t0 + off < w.t1_abs and x.t1 + off > w.t0_abs:
+            hit.append((x, off))
+    of = lambda dev: [(x, off) for x, off in hit if x.device == dev]                    # noqa: E731
+    said = lambda part: " · ".join(dict.fromkeys(clocks.text(x) for x, _ in part))      # noqa: E731
+    stats = {"distance_km": None, "laps_n": None, "best_lap_s": None, "vmax_kmh": None}
+    blocks = []
+    em, em_ref = None, None
+    if of("energymeter"):
+        em, st, em_ref = _em_window_block(w, of("energymeter"), f"미터 시각을 기준 시계로 옮김 — {said(of('energymeter'))}")
+        if em is not None:
+            blocks.append(em)
+            stats.update(st)
+    orion, orion_ref = _orion_block(w, of("orion"), f"Connect 시각을 기준 시계로 옮김 — {said(of('orion'))}") if of("orion") else (None, None)
+    part = of("stm32")
+    if part:
+        skip = tuple(k for k, b in (("battery", em), ("bms", orion)) if b is not None)
+        made = _stm32_make(w, {x.rec: off for x, off in part},
+                           f"백업 로거 시각(lefdata evo-stm32 가 다른 장비에 맞춰 둔 것)을 기준 시계로 옮김 — {said(part)}", skip=skip)
+        bat = next((b for b in made if b.key == "battery"), None)
+        if bat is not None and em is None:
+            p, i = (next(c for c in bat.series if c.key == k) for k in ("power_kw", "current_a"))
+            ok = np.isfinite(p.v)
+            stats.update(net_wh=round(float(np.trapezoid(p.v[ok], p.t_s[ok]) / 3.6)), i_max_a=round(float(np.nanmax(i.v))))
+        frames = [f for f in (_stm32_frame(w, x.rec, "bms", off) for x, off in part) if f is not None and len(f)]
+        if em_ref is not None and made and frames:
+            d = pd.concat(frames).sort_values("t_s")
+            _add_check(made[0], _agree(d["t_s"], d["power_kw"], em_ref["t"], em_ref["kw"], "stm32",
+                                       "STM32 백업 로거의 BMS 전력을 에너지미터 전력과 대 봄"))
+        blocks += made
+    if orion is not None:
+        if em_ref is not None and orion_ref is not None:
+            _add_check(orion, _agree(orion_ref["t"], orion_ref["amp"], em_ref["t"], em_ref["amp"], "orion",
+                                     "Orion 팩 전류를 에너지미터 전류와 대 봄"))
+        blocks.append(orion)
+    part = of("lef26_logger")
+    if part:
+        logs = [lef26_laps.read_logger(x.dir, lef26_clock.ClockMap(np.array([0.0, x.t1 - x.t0]), np.array([x.t0 + off, x.t1 + off]), 1.0, 1.0),
+                                       np.zeros(0)) for x, off in part]
+        how = f"로거 시각(변환기가 바로잡은 RTC 시각 t_abs)을 기준 시계로 옮김 — {said(part)}."
+        made = _logger_blocks(w, logs, how)
+        imu = _logger_imu_block(w, logs, how)
+        made += [imu] if imu is not None else []
+        mixed = [x.rec for x, _ in part if x.meta.get("time", {}).get("clock", {}).get("mode") == "mixed"]
+        for b in made if mixed else []:
+            b.cautions.insert(0, f"시계 속도를 바로잡지 못한 로거 레코딩이 섞여 있다 ({', '.join(mixed)}) — 그 부분의 시각은 몇 초씩 밀려 있을 수 있다")
+        mot = next((b for b in made if b.key == "motor"), None)
+        vdc = next((c for c in mot.series if c.key == "vdc_v"), None) if mot is not None else None
+        if em_ref is not None and vdc is not None:
+            _add_check(mot, _agree(vdc.t_s, vdc.v, em_ref["t"], em_ref["volt"], "lef26_logger",
+                                   "로거의 DC 버스 전압을 에너지미터 전압과 대 봄"))
+        blocks += made
+    return blocks, stats
+
+
+def timed_sessions(event_dir: Path, notes: dict, made: dict | None = None) -> list[Session]:
+    """`[[timed_session]]` → 시각 구간 세션들 (sid · 자동 이름은 build_event 가 붙인다). 랩 · 코스는 없고, 그 시각에 기록이 있는 장비의 블록만 있다."""
+    entries = notes.get("timed_session", [])
+    if not entries:
+        return []
+    ev = notes.get("event", {})
+    clocks = _Clocks(notes)
+    recs = _recordings(event_dir)
+    by_id = {x.rec: x for x in recs}
+    day_notes = ev.get("day_notes", {})
+    taken: list[tuple[float, float, str]] = []
+    out = []
+    for e in entries:
+        label = e.get("name") or str(e.get("start") or e.get("recording", "?"))
+        if not (e.get("name") or e.get("discipline")):
+            raise ValueError(f"{NOTES_NAME}: [[timed_session]] 에는 name 이나 discipline 이 있어야 한다 — {e}")
+        t0, t1 = _window(e, by_id, clocks)
+        clash = next((name for a, b, name in taken if t0 < b and a < t1), None)
+        if clash:
+            raise ValueError(f"{NOTES_NAME}: 시각 구간 '{label}' 이 '{clash}' 와 겹친다")
+        taken.append((t0, t1, label))
+        w = _Window(event_dir, notes, t0, t1)
+        blocks, stats = _window_blocks(w, recs, clocks)
+        if not blocks and not e.get("allow_empty"):
+            raise ValueError(f"{NOTES_NAME}: 시각 구간 '{label}' 에 기록이 남은 장비가 없다 — 시각 · 시계 차를 확인할 것 "
+                             "(정말 없으면 allow_empty = true)")
+        start = pd.Timestamp(t0, unit="s", tz="UTC").tz_convert(TZ)
+        end = start + pd.Timedelta(seconds=t1 - t0)
+        gps = [x.rec for x in recs if x.device in GPS_DEVICES
+               and x.t0 + (clocks.offset(x) if clocks.known(x) else 0.0) < t1 and x.t1 + (clocks.offset(x) if clocks.known(x) else 0.0) > t0]
+        head = f"시각으로 나눈 세션 — {clocks.label} 기준 {start:%H:%M:%S} ~ {end:%H:%M:%S}. "
+        lines = [head + (f"이 시각의 GPS 기록({', '.join(gps)})은 아직 붙이지 않아 랩 · 코스가 없다" if gps else "GPS 기록이 없어 랩 · 코스가 없다")]
+        lines += [] if blocks else ["이 시각에 기록이 남은 장비가 없다"]
+        out.append(Session(
+            sid="", car=ev.get("car") or next((x.meta.get("car", "") for x in recs if x.meta.get("car")), ""), day=f"{start:%Y-%m-%d}",
+            name=e.get("name", ""), start=start, duration_s=t1 - t0, event_kind=ev.get("kind", ""), event_title=ev.get("title", ""),
+            discipline=e.get("discipline", ""), place=ev.get("place", ""), driver=e.get("driver", ""),
+            event_id=f"{event_dir.parent.name}/{event_dir.name}", stats=stats, laps=w.laps, blocks=blocks,
+            missing=[Missing(m["data"], m["status"], m["reason"], m.get("ask", ""), m.get("block", "")) for m in notes.get("missing", [])
+                     if not m.get("sessions") or e.get("name") in m["sessions"]],
+            notes=list(e.get("notes", [])) + lines + list(day_notes.get(f"{start:%Y-%m-%d}", [])), made=made or {}, split_by="time"))
+    return out
+
+
 # ---------------------------------------------------------------- 이벤트 → 세션들
 
 def build_event(event_dir: Path) -> list[Session]:
-    """이벤트 폴더 → 세션들 (시작 시각 순). `catalog_notes.toml` 과 랩 분할(runs.csv · laps.csv · gate.json)이 있어야 한다."""
+    """이벤트 폴더 → 세션들 (시작 시각 순). `catalog_notes.toml` 이 있어야 한다.
+
+    GPS 주행 구간 세션(`[[session]]` · `sessions = "auto"`)은 랩 분할(runs.csv · laps.csv · gate.json)이, 시각 구간 세션(`[[timed_session]]`)은
+    기준 시계와 장비 시계 차(`[event] clock` · `[clocks]`)가 있어야 한다.
+    """
     event_dir = Path(event_dir).resolve()
     notes = load_notes(event_dir)
     if not notes:
         raise FileNotFoundError(f"{event_dir / NOTES_NAME} 가 없다 — 세션 이름 · 없는 데이터를 적은 파일이 있어야 카탈로그에 넣는다")
+    ev = notes.get("event", {})
+    made = {"generated": dt.date.today().isoformat(), "commit": code_version(),
+            "command": f"lefdata catalog --event {event_dir.parent.name}/{event_dir.name}"}
+    sessions = _gps_sessions(event_dir, notes, made) if notes.get("session") or ev.get("sessions") == "auto" else []
+    sessions += timed_sessions(event_dir, notes, made)
+    sessions.sort(key=lambda s: s.start)
+    auto: dict[tuple, int] = {}
+    for s in sessions:                                          # 자동 이름: 그날 종목별 순서 ("트랙 2")
+        if not s.name:
+            auto[(s.day, s.discipline)] = auto.get((s.day, s.discipline), 0) + 1
+            s.name = f"{s.discipline} {auto[(s.day, s.discipline)]}"
+    count: dict[tuple, int] = {}
+    for s in sessions:                                          # 그날의 몇 번째 세션인가
+        count[(s.car, s.day)] = count.get((s.car, s.day), 0) + 1
+        s.sid = f"{s.car}_{s.day}_S{count[(s.car, s.day)]}"
+    for m in (m for s in sessions for m in s.missing):
+        if m.status not in (SEEK, NONE):
+            raise ValueError(f"{NOTES_NAME}: missing 의 status 는 '{SEEK}' 또는 '{NONE}' 이어야 한다 — {m.status!r}")
+    return sessions
+
+
+def _gps_sessions(event_dir: Path, notes: dict, made: dict) -> list[Session]:
+    """GPS 주행 구간(runs.csv) 하나 = 세션 하나. 이름을 적은 것(`[[session]]`)과, `sessions = "auto"` 면 종목을 알아본 것."""
     derived = event_dir / "derived"
     runs, laps = _read(derived / "runs.csv"), _read(derived / "laps.csv")
     if runs is None or laps is None:
@@ -770,8 +1276,6 @@ def build_event(event_dir: Path) -> list[Session]:
         named = {**_auto_sessions(runs, derived), **named}
     loggers, stm = _Loggers(event_dir), _Stm32(event_dir)
     day_notes = ev.get("day_notes", {})
-    made = {"generated": dt.date.today().isoformat(), "commit": code_version(),
-            "command": f"lefdata catalog --event {event_dir.parent.name}/{event_dir.name}"}
 
     sessions = []
     for _, run in runs.iterrows():
@@ -781,7 +1285,7 @@ def build_event(event_dir: Path) -> list[Session]:
         info = named[key]
         mine = laps[(laps["recording_id"] == key[0]) & (laps["run"] == key[1])]
         r = _Run(event_dir, key[0], run, mine, origin, notes)
-        blocks = [_gps_block(r), _imu_block(r)] + _logger_blocks(r, loggers) + _stm32_blocks(r, stm)
+        blocks = [_gps_block(r), _imu_block(r)] + _logger_blocks(r, loggers.for_video(r.rec)) + _stm32_blocks(r, stm)
         stats = {"distance_km": round(float(run["distance_m"]) / 1000, 2), "laps_n": int(run["full_laps"]),
                  "best_lap_s": round(float(mine["lap_time_s"].min()), 2) if len(mine) else None, "vmax_kmh": round(float(run["vmax_kmh"]), 1)}
         if run_e is not None:
@@ -806,19 +1310,6 @@ def build_event(event_dir: Path) -> list[Session]:
             missing=[Missing(m["data"], m["status"], m["reason"], m.get("ask", ""), m.get("block", "")) for m in notes.get("missing", [])
                      if not m.get("sessions") or info.get("name") in m["sessions"]],
             notes=list(info.get("notes", [])) + _segment_notes(info, derived, r) + list(day_notes.get(f"{start:%Y-%m-%d}", [])), made=made))
-    sessions.sort(key=lambda s: s.start)
-    auto: dict[tuple, int] = {}
-    for s in sessions:                                          # 자동 이름: 그날 종목별 순서 ("트랙 2")
-        if not s.name:
-            auto[(s.day, s.discipline)] = auto.get((s.day, s.discipline), 0) + 1
-            s.name = f"{s.discipline} {auto[(s.day, s.discipline)]}"
-    count: dict[tuple, int] = {}
-    for s in sessions:                                          # 그날의 몇 번째 세션인가
-        count[(s.car, s.day)] = count.get((s.car, s.day), 0) + 1
-        s.sid = f"{s.car}_{s.day}_S{count[(s.car, s.day)]}"
-    for m in (m for s in sessions for m in s.missing):
-        if m.status not in (SEEK, NONE):
-            raise ValueError(f"{NOTES_NAME}: missing 의 status 는 '{SEEK}' 또는 '{NONE}' 이어야 한다 — {m.status!r}")
     return sessions
 
 

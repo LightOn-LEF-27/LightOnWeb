@@ -344,7 +344,8 @@ def main(argv: list[str] | None = None) -> None:
             print(f"[sessions] {ev}")
             for row in session_store.build_event(ev, root, reframe=args.reframe):
                 have = [d["block"] for d in row["data_status"] if d["status"] in ("have", "warn")]
-                print(f"  {row['sid']}  {row['title']} · {row['duration_s'] / 60:.1f} 분 · {row['laps']}랩 · 데이터 {' · '.join(have)}")
+                laps = f"{row['laps']}랩" if row["laps"] is not None else "랩 없음 (시각 구간)"
+                print(f"  {row['sid']}  {row['title']} · {row['duration_s'] / 60:.1f} 분 · {laps} · 데이터 {' · '.join(have)}")
         for f in sorted((root / session_store.FRAMES).glob("*.json")):
             fr = json.loads(f.read_text(encoding="utf-8"))
             ref = fr["reference"]
