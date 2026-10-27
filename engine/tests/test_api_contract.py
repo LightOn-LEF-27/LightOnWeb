@@ -608,14 +608,14 @@ def test_race_laps_track_and_distance_golden():
     assert {c["key"]: c["block"] for c in laps["columns"]}["net_wh"] == "battery"
     tr = strict(api.get_track(sid))
     assert tr["direction"] == E["s1.direction"] and tr["gate"]["x_m"] == E.approx("s1.gate_x_m")
-    assert tr["dist_m"][-1] == E.approx("s1.best_lap_m") and tr["frame_id"] == E["event_id"]
+    assert tr["dist_m"][-1] == E.approx("s1.best_lap_m") and tr["frame_id"] == E["frame_id"]
     col = api.get_track(sid, color="battery.power_kw")["color"]["values"]
     assert max(v for v in col if v is not None) == E.approx("s1.best_lap_peak_power_kw")
     d = api.get_series(sid, ["gps.speed_kmh", "battery.power_kw"], x="distance", lap=E["s1.best_lap"])
     assert d["x"]["values"][0] == pytest.approx(0.0, abs=0.5) and d["x"]["values"][-1] == E.approx("s1.best_lap_m")
     assert max(v for v in d["series"][0]["y_max"] if v is not None) == E.approx("s1.best_lap_vmax_kmh")
     d2 = api.get_series(E["sids"][1], ["gps.speed_kmh"], x="distance", lap=E["s2.best_lap"])
-    assert d2["x"]["frame_id"] == E["event_id"] and d2["x"]["values"][-1] == E.approx("s2.best_lap_m")
+    assert d2["x"]["frame_id"] == E["frame_id"] and d2["x"]["values"][-1] == E.approx("s2.best_lap_m")
 
 
 @race

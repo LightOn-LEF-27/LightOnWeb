@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("laps", help="GPS 주행 구간·랩 분할 → derived/runs.csv, laps.csv")
     p.add_argument("--event", type=Path, default=paths.LEF25EVO_EVENT)
+    p.add_argument("--venue", help="경기장 이름 — 그 계측선 · 원점으로 나눈다 (없으면 catalog_notes.toml 의 [event] venue, 그것도 없으면 이벤트마다 새로)")
+
+    p = sub.add_parser("venue", help="경기장 정하기: 이벤트의 계측선 · 원점 · 최속 랩 → 07_데이터/_venues/<이름>.json")
+    p.add_argument("--name", required=True, help="경기장 이름 (영문 소문자, 예: yeonggwang)")
+    p.add_argument("--from-event", type=Path, required=True, help="랩 분할이 끝난 이벤트 — 그 계측선을 경기장 것으로 삼는다")
 
     p = sub.add_parser("motor-runs", help="모터 속도로 주행 구간 분할 → derived/motor_runs.csv")
     p.add_argument("--event", type=Path, default=paths.LEF26_EVENT)
@@ -90,6 +95,7 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("gopro", help="온보드 영상(GPMF) → normalized/")
     p.add_argument("--event", type=Path, required=True, help="이벤트 폴더 (raw_video/ 를 읽는다)")
     p.add_argument("--laps", action="store_true", help="변환 후 랩 분할까지 이어서 실행")
+    p.add_argument("--venue", help="랩 분할에 쓸 경기장 이름 (laps 의 --venue 와 같다)")
 
     p = sub.add_parser("catalog", help="주행 데이터 카탈로그: 세션 페이지 → derived/catalog/, 첫 페이지 · 코드 페이지 → 07_데이터/_catalog/")
     p.add_argument("--event", type=Path, action="append", help="이벤트 폴더 (여러 번 지정 가능). 없으면 catalog_notes.toml 이 있는 이벤트 전부")
@@ -136,9 +142,11 @@ def main(argv: list[str] | None = None) -> None:
             print("  그림:", plots.lef26_discharge(args.event, rid, figs / f"discharge_{rid}.png").name)
 
     elif args.cmd == "laps":
+        from . import venue
         print(f"[laps] {args.event}")
-        runs, lap_df, gate = laps.run_event(args.event)
-        print(f"[laps] 계측선 x={gate.x:.1f} m, y={gate.y:.1f} m, 방향 {gate.heading_deg:.0f}°")
+        ven = venue.for_event(args.event, args.venue)
+        runs, lap_df, gate = laps.run_event(args.event, ven)
+        print(f"[laps] 계측선 x={gate.x:.1f} m, y={gate.y:.1f} m, 방향 {gate.heading_deg:.0f}°" + (f" — 경기장 {ven['name']}" if ven else ""))
         for rid, r in runs.groupby("recording_id"):
             n = lap_df[lap_df["recording_id"] == rid]
             best = f"  최고 랩 {n['lap_time_s'].min():.2f}s" if len(n) else ""
@@ -378,14 +386,24 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  {pdf}" if pdf else "  PDF 를 만들지 못했다 — Chrome 이나 Edge 를 찾지 못함")
         print(f"[report] {time.perf_counter()-t0:.1f}s")
 
+    elif args.cmd == "venue":
+        from . import venue
+        doc = venue.create_from_event(args.name, args.from_event)
+        print(f"[venue] {venue.summary(doc)} → {venue.path(args.name)}")
+        runs, lap_df, _ = laps.run_event(args.from_event, doc)     # 그 이벤트도 경기장 frame 으로 (같은 선 · 같은 원점이라 랩은 그대로)
+        print(f"[venue] {args.from_event.name}: 경기장으로 다시 나눔 — 주행 {len(runs)}구간 · 완주 {len(lap_df)}랩. "
+              f"catalog_notes.toml 의 [event] 에 venue = \"{args.name}\" 를 적어 둘 것")
+
     elif args.cmd == "gopro":
         print(f"[gopro] {args.event}")
         rows = video.convert_event(args.event)
         if not rows:
             print("  변환된 녹화 없음 - raw_video/ 와 GPS fix 를 확인할 것")
         elif args.laps:
-            print("[laps] 이어서 랩 분할")
-            runs, laps_df, _ = laps.run_event(args.event)
+            from . import venue
+            ven = venue.for_event(args.event, args.venue)
+            print("[laps] 이어서 랩 분할" + (f" — 경기장 {ven['name']}" if ven else ""))
+            runs, laps_df, _ = laps.run_event(args.event, ven)
             print(f"  주행 {len(runs)}구간 · 완주 {len(laps_df)}랩 · 최속 {laps_df['lap_time_s'].min():.2f} s")
             from . import plots
             figs = args.event / "derived" / "figures"

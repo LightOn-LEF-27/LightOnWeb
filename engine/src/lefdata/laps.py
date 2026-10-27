@@ -8,6 +8,11 @@
     2. 속도 > MOVING_KMH 인 구간을 묶어 run 을 만든다 (짧은 정지는 이어 붙임)
     3. 계측선(gate): run 중 가장 빠른 지점에, 진행 방향에 수직으로 긋는다
     4. 같은 방향으로 계측선을 지날 때마다 랩을 끊는다. 통과 시각은 앞뒤 샘플 사이를 선형 보간
+
+경기장(venue) — 같은 코스를 여러 이벤트(다른 날 · 다른 차)가 달리면, 이벤트마다 계측선 · 원점을 새로 고르지 않고
+경기장에 정해 둔 것을 쓴다 (`run_event(..., venue=…)`). 그래야 두 이벤트의 랩을 같은 선 · 같은 좌표로 겹칠 수 있다.
+경기장 기준선(그 코스의 랩 하나)과 이 이벤트의 랩이 같은 코스인지 먼저 본다 — 랩 점의 COURSE_SHARE 이상이
+기준선에서 COURSE_TOL_M 안이어야 한다. 아니면 다른 코스(배치가 바뀜)로 보고 멈춘다.
 """
 
 from __future__ import annotations
@@ -28,6 +33,8 @@ GATE_CLUSTER_M = 12.0         # 후보 검사: 연장선 통과들의 횡방향 
 GATE_ISOLATION_M = 60.0       # 계측선 후보 주변 이 거리 안에 다른 트랙 구간이 없어야 한다
 GATE_HEADING_TOL_DEG = 90.0   # 저속 통과 시 GPS course 가 흔들려 60° 로는 통과를 놓쳤다
 MIN_LAP_S = 15.0        # 같은 통과를 두 번 세지 않기 위한 최소 랩 시간
+COURSE_TOL_M = 20.0     # 경기장 기준선에서 이 안이면 같은 코스 위 (GPS 위치가 10 m 넘게 밀리는 랩이 있다)
+COURSE_SHARE = 0.9      # 랩 점의 이 비율 이상이 기준선 가까이 있어야 같은 코스로 본다
 
 
 def to_local_m(lat, lon, lat0: float, lon0: float):
@@ -87,6 +94,20 @@ def pick_gate(x, y, speed_kmh, course_deg) -> Gate:
             return gate
     k = int(order[0])
     return Gate(float(x[k]), float(y[k]), float(course_deg[k]))
+
+
+def distance_to_line(x, y, line_x, line_y, chunk: int = 2048) -> np.ndarray:
+    """점마다 꺾은선(line)까지의 가장 짧은 거리 (m)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    ax, ay = np.asarray(line_x, float)[:-1], np.asarray(line_y, float)[:-1]
+    bx, by = np.diff(line_x), np.diff(line_y)
+    seg2 = np.where(bx * bx + by * by > 0, bx * bx + by * by, 1e-12)
+    out = np.empty(len(x))
+    for i in range(0, len(x), chunk):
+        px, py = x[i:i + chunk, None], y[i:i + chunk, None]
+        u = np.clip(((px - ax) * bx + (py - ay) * by) / seg2, 0.0, 1.0)
+        out[i:i + chunk] = np.sqrt(((px - ax - u * bx) ** 2 + (py - ay - u * by) ** 2).min(axis=1))
+    return out
 
 
 def gate_crossings(t_s, x, y, course_deg, gate: Gate) -> np.ndarray:
@@ -154,11 +175,13 @@ def gps_recordings(norm: Path) -> list[Path]:
                   and GPS_COLUMNS <= set(pq.read_schema(p / "gps.parquet").names))
 
 
-def run_event(event_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, Gate]:
-    """이벤트의 모든 레코딩을 같은 계측선으로 분석 → derived/runs.csv, laps.csv, gate.json.
+def split_event(event_dir: Path, venue: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame, Gate, dict]:
+    """이벤트의 모든 레코딩을 같은 계측선으로 나눈다 → (runs, laps, gate, gate.json 에 쓸 내용). 파일은 쓰지 않는다.
 
     계측선은 이벤트 전체에서 가장 긴 run 을 기준으로 한 번만 고른다 (랩타임을 레코딩끼리 비교하려면
     같은 선이어야 한다). 기준점(원점)은 그 레코딩 GPS 의 중앙값.
+    venue = 경기장 {name, frame_id, origin{lat0, lon0}, gate{x, y, heading_deg}, line{x_m, y_m}} 를 주면 그 원점 · 계측선을 쓰고,
+    같은 코스인지 확인한 결과를 course_check 에 남긴다 (다른 코스면 ValueError).
     """
     norm = event_dir / "normalized"
     recs = gps_recordings(norm)
@@ -171,13 +194,24 @@ def run_event(event_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, Gate]:
         return max((t[b] - t[a] for a, b in find_runs(t, v)), default=0.0)
 
     ref = max(gps, key=lambda k: longest_run_s(gps[k]))
-    fixed = gps[ref][gps[ref]["fix"]]
-    lat0, lon0 = float(fixed["lat"].median()), float(fixed["lon"].median())
-    _, _, gate, _ = analyze(gps[ref], lat0, lon0)
+    if venue is None:
+        fixed = gps[ref][gps[ref]["fix"]]
+        lat0, lon0 = float(fixed["lat"].median()), float(fixed["lon"].median())
+        _, _, gate, _ = analyze(gps[ref], lat0, lon0)
+    else:
+        lat0, lon0 = float(venue["origin"]["lat0"]), float(venue["origin"]["lon0"])
+        gate = Gate(float(venue["gate"]["x"]), float(venue["gate"]["y"]), float(venue["gate"]["heading_deg"]))
 
-    all_runs, all_laps = [], []
+    all_runs, all_laps, near, total = [], [], 0, 0
     for rid, g in gps.items():
-        runs, laps, _, _ = analyze(g, lat0, lon0, gate)
+        runs, laps, _, xy = analyze(g, lat0, lon0, gate)
+        if venue is not None and len(laps):                   # 같은 코스인가 — 랩 안의 점이 경기장 기준선 가까이 있나
+            t = xy["t_s"].to_numpy()
+            inside = np.zeros(len(t), bool)
+            for a, b in zip(laps["t_start_s"], laps["t_end_s"]):
+                inside |= (t >= a) & (t < b)
+            d = distance_to_line(xy["x_m"].to_numpy()[inside], xy["y_m"].to_numpy()[inside], venue["line"]["x_m"], venue["line"]["y_m"])
+            near, total = near + int((d <= COURSE_TOL_M).sum()), total + int(inside.sum())
         for df, acc in ((runs, all_runs), (laps, all_laps)):
             if len(df):
                 df.insert(0, "label", labels[rid])
@@ -187,13 +221,25 @@ def run_event(event_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, Gate]:
     runs = pd.concat(all_runs, ignore_index=True) if all_runs else pd.DataFrame()
     laps = pd.concat(all_laps, ignore_index=True) if all_laps else pd.DataFrame(
         columns=["recording_id", "label", "lap_time_s"])
+    doc = {"origin": {"lat0": lat0, "lon0": lon0}, "gate": asdict(gate), "reference_recording": ref,
+           "half_width_m": GATE_HALF_WIDTH_M, "note": "x=동, y=북 (m). heading 은 북=0 시계방향"}
+    if venue is not None:
+        share = near / total if total else None
+        doc.update(venue=venue["name"], frame_id=venue["frame_id"], reference_recording=None,
+                   course_check={"laps": int(len(laps)), "points": total, "near_share": None if share is None else round(share, 4),
+                                 "tol_m": COURSE_TOL_M, "need": COURSE_SHARE})
+        if share is not None and share < COURSE_SHARE:
+            raise ValueError(f"경기장 {venue['name']} 와 다른 코스로 보임 — 랩 점의 {share:.0%} 만 기준선에서 {COURSE_TOL_M:g} m 안 "
+                             f"(필요 {COURSE_SHARE:.0%}). 코스 배치가 바뀌었으면 경기장을 새로 만들 것")
+    return runs, laps, gate, doc
 
+
+def run_event(event_dir: Path, venue: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame, Gate]:
+    """split_event 결과를 derived/runs.csv, laps.csv, gate.json 으로 쓴다."""
+    runs, laps, gate, doc = split_event(event_dir, venue)
     out = event_dir / "derived"
     out.mkdir(exist_ok=True)
     runs.round(3).to_csv(out / "runs.csv", index=False, encoding="utf-8-sig")
     laps.round(3).to_csv(out / "laps.csv", index=False, encoding="utf-8-sig")
-    (out / "gate.json").write_text(json.dumps(
-        {"origin": {"lat0": lat0, "lon0": lon0}, "gate": asdict(gate), "reference_recording": ref,
-         "half_width_m": GATE_HALF_WIDTH_M, "note": "x=동, y=북 (m). heading 은 북=0 시계방향"},
-        ensure_ascii=False, indent=2), encoding="utf-8")
+    (out / "gate.json").write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
     return runs, laps, gate
