@@ -46,14 +46,25 @@ def test_contract_version_matches_the_document():
 
 # ---------------------------------------------------------------- 손으로 채운 세션 (데이터 없이)
 
-def circle_session() -> Session:
-    """반지름 40 m 원을 반시계 방향으로 세 바퀴 — 10 Hz 속도 하나, 50 Hz 전류 하나(0.5 s 빈 곳 하나)."""
-    lap_s, n = 30.0, 3
+FRAME = "LEF-27/2027-06-05_test"
+
+
+def circle_session(sid: str = "LEF-27_2027-06-05_S1", lap_s: float = 30.0, frame_id: str = "", power_kw: float | None = None) -> Session:
+    """반지름 40 m 원을 반시계 방향으로 세 바퀴 — 10 Hz 속도 하나, 50 Hz 전류 하나(0.5 s 빈 곳 하나).
+
+    lap_s 를 바꾸면 그 속도로 돈다 (랩 표도 그 값). power_kw 를 주면 배터리 전력 채널도 넣는다 (엔진이 주행 상태를 추정할 재료).
+    """
+    n = 3
     t = np.arange(0.0, lap_s * n + 10, 0.1)
     ang = 2 * np.pi * np.clip(t - 5, 0, lap_s * n) / lap_s
     track = pd.DataFrame({"t_s": t, "x_m": 40 * np.sin(ang), "y_m": 40 * (1 - np.cos(ang)), "dist_m": 40 * ang})
-    laps = pd.DataFrame({"lap": [1, 2, 3], "t_start_s": [5.0, 35.0, 65.0], "t_end_s": [35.0, 65.0, 95.0], "lap_time_s": [30.4, 29.8, 30.1],
-                         "vmax_kmh": [68.0, 70.0, 69.5], "i_max_a": [150.0, 200.0, 180.0]})
+    if lap_s == 30.0:
+        laps = pd.DataFrame({"lap": [1, 2, 3], "t_start_s": [5.0, 35.0, 65.0], "t_end_s": [35.0, 65.0, 95.0], "lap_time_s": [30.4, 29.8, 30.1],
+                             "vmax_kmh": [68.0, 70.0, 69.5], "i_max_a": [150.0, 200.0, 180.0]})
+    else:
+        starts = 5.0 + lap_s * np.arange(n)
+        laps = pd.DataFrame({"lap": [1, 2, 3], "t_start_s": starts, "t_end_s": starts + lap_s, "lap_time_s": [lap_s] * n,
+                             "vmax_kmh": [68.0, 70.0, 69.5], "i_max_a": [150.0, 200.0, 180.0]})
     speed = 50 + 20 * np.sin(3 * ang)
     ti = np.concatenate([np.arange(0.0, 50.0, 0.02), np.arange(50.5, 100.0, 0.02)])
     amp = 100 + 50 * np.sin(ti)
@@ -62,12 +73,15 @@ def circle_session() -> Session:
                     exports=[Export("gps.csv", "이 세션의 GPS", track.round(2), "1,000 행")],
                     channels=[Channel("speed_kmh", "속도", "km/h", t, speed, digits=2)], time_keys=["speed_kmh"], trace_keys=["speed_kmh"],
                     map_key="speed_kmh", lap_columns=[LapColumn("lap_time_s", "랩타임", "s", 2, chart=True), LapColumn("vmax_kmh", "최고 속도", "km/h", 1)])
+    bat_channels = [Channel("current_a", "배터리 전류", "A", ti, amp, sign="방전 +", digits=2)]
+    if power_kw is not None:
+        bat_channels.append(Channel("power_kw", "배터리 전력", "kW", ti, np.full(len(ti), float(power_kw)), sign="방전 +", digits=2))
     bat = DataBlock("battery", "배터리 전압 · 전류", HAVE, "시험용 미터 · 50 Hz",
-                    channels=[Channel("current_a", "배터리 전류", "A", ti, amp, sign="방전 +", digits=2)], time_keys=["current_a"],
+                    channels=bat_channels, time_keys=["current_a"],
                     lap_columns=[LapColumn("i_max_a", "전류 최대", "A", 0)], cautions=["50.0 ~ 50.5 s 가 비어 있음"],
                     findings=[{"level": "warn", "code": "em_dropped_samples", "message": "빈 틈 1곳", "t_ranges": [[49.98, 50.5]]}])
-    return Session("LEF-27_2027-06-05_S1", "LEF-27", "2027-06-05", "셰이크다운 1", pd.Timestamp("2027-06-05 10:00", tz="Asia/Seoul"), 100.0,
-                   event_kind="테스트", discipline="연습 주행", driver="드라이버 A", event_id="LEF-27/2027-06-05_test",
+    return Session(sid, "LEF-27", "2027-06-05", "셰이크다운 1", pd.Timestamp("2027-06-05 10:00", tz="Asia/Seoul"), lap_s * n + 10,
+                   event_kind="테스트", discipline="연습 주행", driver="드라이버 A", event_id="LEF-27/2027-06-05_test", frame_id=frame_id,
                    stats={"distance_km": 0.75, "laps_n": 3, "best_lap_s": 29.8}, laps=laps, track=track,
                    gate={"x_m": 0.0, "y_m": 0.0, "heading_deg": 90.0, "half_width_m": 10.0}, blocks=[gps, bat],
                    missing=[Missing("모터 · 인버터", SEEK, "로거 파일을 못 받음", "SD 카드를 가진 분", "motor"), Missing("조향각", NONE, "센서 없음")])
@@ -78,8 +92,23 @@ def circle(tmp_path):
     root = tmp_path / "store"
     store.write_session(circle_session(), root, tmp_path)
     store.write_index(root)
+    store.write_frames(root)
     api.configure(store_root=root, data_root=tmp_path)
     yield "LEF-27_2027-06-05_S1"
+    api.configure()
+
+
+@pytest.fixture()
+def pair(tmp_path):
+    """같은 frame 의 두 세션(30 s · 31 s 랩)과 frame 이 없는 세션 하나."""
+    root = tmp_path / "store"
+    sids = ["LEF-27_2027-06-05_S1", "LEF-27_2027-06-05_S2", "LEF-27_2027-06-05_S3"]
+    for sid, lap_s, frame in zip(sids, (30.0, 31.0, 30.0), (FRAME, FRAME, "")):
+        store.write_session(circle_session(sid, lap_s, frame), root, tmp_path)
+    store.write_index(root)
+    store.write_frames(root)
+    api.configure(store_root=root, data_root=tmp_path)
+    yield sids
     api.configure()
 
 
@@ -100,7 +129,8 @@ def test_a_hand_filled_session_answers_every_function(circle):
     assert set(ch) == {"gps.speed_kmh", "battery.current_a"} and ch["gps.speed_kmh"]["rate_hz"] == 10.0
     assert not any(k.startswith("_") for c in ch.values() for k in c)              # 저장소 안쪽 열은 보이지 않는다
     for call in (lambda: api.get_series(sid, ["gps.speed_kmh", "battery.current_a"]), lambda: api.get_laps(sid),
-                 lambda: api.get_track(sid, color="battery.current_a"), lambda: api.get_quality(sid)):
+                 lambda: api.get_track(sid, color="battery.current_a"), lambda: api.get_quality(sid), lambda: api.get_sectors(sid),
+                 lambda: api.get_delta(sid, 1, sid, 2), lambda: api.get_series(sid, ["gps.speed_kmh"], x="ref_distance", lap=1)):
         strict(call())
     f = strict(api.open_file(s["blocks"][0]["exports"][0]["file_id"]))
     assert Path(f["path"]).read_text(encoding="utf-8-sig").startswith("t_s,x_m,y_m,dist_m") and f["content_type"] == "text/csv"
@@ -188,6 +218,120 @@ def test_arguments_are_checked(circle):
     assert error_code(lambda: api.open_file(f"{sid}/files/../../secret.txt")) == "unknown_file"         # 표에 있는 ID 만
     for fn in (lambda: api.detect("a.log"), lambda: api.ingest(["a.log"]), lambda: api.get_job("j")):
         assert error_code(fn) == "not_implemented"
+    assert error_code(lambda: api.get_sectors(sid, mini_m=20)) == "bad_argument"                       # 10 · 25 · 50 만
+    assert error_code(lambda: api.get_sectors(sid, mini_m=True)) == "bad_argument"
+    assert error_code(lambda: api.get_series(sid, ["gps.speed_kmh"], x="ref_distance")) == "bad_argument"   # 랩이 있어야
+    assert error_code(lambda: api.get_delta(sid, 9, sid, 1)) == "bad_argument"
+    assert error_code(lambda: api.get_delta(sid, 1, sid, 2, max_points=1)) == "bad_argument"
+
+
+# ---- v0.5 구간 · 시간 차 · 주행 상태 (손으로 채운 세션)
+
+LAP_M = 2 * np.pi * 40
+
+
+def test_sectors_of_a_steady_lap(circle):
+    """일정한 속도의 원 — 구간 셋이 같은 시간, 미니 구간은 25 m 마다 (마지막은 남은 길이). 합 = 랩 시간."""
+    r = strict(api.get_sectors(circle))
+    assert r["ref"]["ref_len_m"] == pytest.approx(LAP_M, abs=0.05) and (r["ref"]["method"], r["ref"]["source"]) == ("projection", "auto")
+    assert r["frame_id"] is None and r["ref"]["reference_lap"]["sid"] == circle                        # frame_id 가 없으면 그 세션만의 frame
+    assert [c["sector"] for c in r["sectors"]] == [1, 2, 3] and r["sectors"][-1]["ref_m1"] == pytest.approx(LAP_M, abs=0.05)
+    assert r["sectors"][0]["heading_deg"] == pytest.approx(90.0, abs=1.0)                              # 동쪽으로 출발
+    assert r["mini"]["count"] == int(np.ceil(LAP_M / 25)) and r["mini"]["edges_ref_m"][-1] == pytest.approx(LAP_M, abs=0.05)
+    for lap in r["laps"]:
+        assert sum(lap["sector_s"]) == pytest.approx(30.0, abs=0.002) and sum(lap["mini_s"]) == pytest.approx(30.0, abs=0.01)
+        assert lap["sector_s"] == pytest.approx([10.0] * 3, abs=0.01)
+    assert r["mean"]["n_laps"] == 3 and len(r["best"]["mini_s"]) == len(r["best"]["mini_lap"]) == r["mini"]["count"]
+    assert api.get_sectors(circle, mini_m=10)["mini"]["count"] == int(np.ceil(LAP_M / 10))
+
+
+def test_lap_table_has_sector_columns(circle):
+    laps = strict(api.get_laps(circle))
+    assert [c["key"] for c in laps["columns"]][:4] == ["lap_time_s", "s1_s", "s2_s", "s3_s"]        # 랩타임 바로 뒤
+    for row in laps["rows"]:
+        assert row["s1_s"] + row["s2_s"] + row["s3_s"] == pytest.approx(row["t_end_s"] - row["t_start_s"], abs=0.002)
+    sec = laps["sectors"]
+    assert sec["n_laps"] == 3 and set(sec["best"]) == {"s1_s", "s2_s", "s3_s"}
+    assert sec["theoretical_best_s"] == pytest.approx(sum(v["value"] for v in sec["best"].values()), abs=0.002)
+    held = [(row["lap"], k) for row in laps["rows"] for k in row["best_sectors"]]
+    assert sorted(k for _, k in held) == [1, 2, 3] and all(sec["best"][f"s{k}_s"]["lap"] == lap for lap, k in held)   # 구간마다 최속은 한 랩
+
+
+def test_track_and_series_carry_reference_distance(circle):
+    t = api.get_track(circle, lap=2)
+    ref = np.array(t["ref_m"], float)
+    assert len(ref) == len(t["x_m"]) and ref[0] == 0.0 and ref[-1] == pytest.approx(LAP_M, abs=0.05) and np.all(np.diff(ref) >= 0)
+    assert api.get_track(circle, "all")["ref_m"] is None
+    g = api.get_series(circle, ["gps.speed_kmh"], x="ref_distance", lap=2, max_points=200)
+    assert g["x"]["kind"] == "ref_distance" and g["x"]["unit"] == "m" and len(g["x"]["values"]) == 200
+    assert g["x"]["values"][-1] == pytest.approx(LAP_M, abs=1.0) and g["laps"][0]["x_end"] == pytest.approx(LAP_M, abs=0.05)
+    part = api.get_series(circle, ["gps.speed_kmh"], x="ref_distance", lap=2, d0=100.0, d1=150.0)
+    assert 100.0 < part["x"]["values"][0] < part["x"]["values"][-1] < 150.0
+
+
+def test_delta_between_sessions_of_one_frame(pair):
+    """30 s 랩과 31 s 랩 (둘 다 일정한 속도) — 시간 차는 거리에 비례해 0 에서 1 s 로. frame 이 다르면 비교하지 않는다."""
+    s1, s2, alone = pair
+    d = strict(api.get_delta(s2, 1, s1, 1))
+    assert d["frame_id"] == FRAME and d["total_s"] == pytest.approx(1.0, abs=0.002) and d["delta_s"][-1] == d["total_s"]
+    x, dd = np.array(d["x"]["values"]), np.array(d["delta_s"])
+    assert x[0] == 0.0 and x[-1] == pytest.approx(LAP_M, abs=0.05) and np.all(np.diff(dd) >= -0.002)
+    assert dd[np.argmin(np.abs(x - LAP_M / 2))] == pytest.approx(0.5, abs=0.01)
+    assert sum(d["mini"]["delta_s"]) == pytest.approx(1.0, abs=0.01) and len(d["mini"]["delta_s"]) == len(d["mini"]["edges_ref_m"]) - 1
+    on = d["on_track"]["values"]
+    assert len(on) == len(api.get_track(s2, 1)["x_m"]) and on[0] == 0.0 and on[-1] == pytest.approx(1.0, abs=0.002)
+    assert max(abs(v) for v in api.get_delta(s1, 2, s1, 2)["delta_s"]) == 0.0
+    assert len(api.get_delta(s2, 1, s1, 1, max_points=100)["x"]["values"]) == 100
+    assert api.get_sectors(s1)["ref"]["reference_lap"]["sid"] == s1 and api.get_sectors(s2)["ref"] == api.get_sectors(s1)["ref"]   # 한 frame
+    assert error_code(lambda: api.get_delta(alone, 1, s1, 1)) == "frame_mismatch"
+
+
+def test_frame_is_fixed_until_reframe(tmp_path):
+    """frame 은 한 번 정하면 그대로다 — 더 빠른 랩이 들어와도 구간 경계 · 기준 랩이 바뀌지 않는다 (reframe 으로만)."""
+    root = tmp_path / "store"
+    store.write_session(circle_session("LEF-27_2027-06-05_S1", 30.0, FRAME), root, tmp_path)
+    store.write_index(root)
+    assert store.write_frames(root) == [FRAME]
+    path = store.frame_path(root, FRAME)
+    before = path.read_text(encoding="utf-8")
+    store.write_session(circle_session("LEF-27_2027-06-05_S2", 29.0, FRAME), root, tmp_path)
+    store.write_index(root)
+    assert store.write_frames(root) == [] and path.read_text(encoding="utf-8") == before
+    assert store.write_frames(root, reframe=True, keys={"other"}) == []                 # 다른 frame 만 다시 정하라면 그대로
+    assert store.write_frames(root, reframe=True) == [FRAME]
+    assert json.loads(path.read_text(encoding="utf-8"))["reference"]["sid"] == "LEF-27_2027-06-05_S2"
+
+
+def test_missing_frame_file_is_reported(circle, tmp_path):
+    """옛 코드로 만든 저장소(frame 파일 없음) — 구간 함수는 다시 만들라고 하고, 랩 표 · 코스는 구간 없이 나온다."""
+    store.frame_path(tmp_path / "store", circle).unlink()
+    api.configure(store_root=tmp_path / "store", data_root=tmp_path)
+    assert error_code(lambda: api.get_sectors(circle)) == "internal"
+    laps = api.get_laps(circle)
+    assert laps["sectors"] is None and "s1_s" not in laps["rows"][0] and any("frame" in n for n in laps["notes"])
+    assert api.get_track(circle)["ref_m"] is None
+
+
+def test_engine_estimates_drive_state_when_power_and_speed_exist(tmp_path):
+    """배터리 전력과 GPS 속도가 있으면 엔진이 주행 상태(추정) 블록을 더한다 — 정해진 값 셋과 범례, 지도 색은 잇지 않은 값."""
+    root = tmp_path / "store"
+    store.write_session(circle_session(power_kw=12.0), root, tmp_path)
+    store.write_index(root)
+    store.write_frames(root)
+    api.configure(store_root=root, data_root=tmp_path)
+    try:
+        sid = "LEF-27_2027-06-05_S1"
+        row = api.list_sessions()[0]
+        assert row["blocks"]["warn"] == ["drive"] and ("drive", "warn") in [(d["block"], d["status"]) for d in row["data_status"]]
+        ch = {c["channel_id"]: c for c in api.list_channels(sid)}["drive.state_est"]
+        assert ch["derived"] and [lv["label"] for lv in ch["levels"]] == ["가속", "타력", "제동"] and ch["rate_hz"] == 10.0
+        assert any("추정" in c for c in ch["cautions"])
+        col = strict(api.get_track(sid, color="drive.state_est"))["color"]
+        assert col["levels"] == ch["levels"] and {v for v in col["values"] if v is not None} == {1.0}    # 일정한 속도 + 전력 → 가속
+        blocks = {b["block"]: b for b in api.get_session(sid)["blocks"]}
+        assert blocks["drive"]["status"] == "warn" and blocks["drive"]["default_views"]["map"] == "drive.state_est"
+    finally:
+        api.configure()
 
 
 def test_real_driver_names_never_enter_the_store(tmp_path):
@@ -326,6 +470,72 @@ def test_race_track_starts_and_ends_at_the_gate(race_sids):
 
 
 @race
+def test_race_sectors_add_up_and_deltas_close(race_sids):
+    """구간 시간의 합 = 랩타임, 미니 구간의 합 = 구간의 합, 시간 차의 끝 = 두 랩의 랩타임 차 (다른 세션 랩끼리)."""
+    rows = {}
+    for sid in race_sids:
+        laps = api.get_laps(sid)
+        rows[sid] = {r["lap"]: r for r in laps["rows"]}
+        for r in laps["rows"]:
+            assert r["s1_s"] + r["s2_s"] + r["s3_s"] == pytest.approx(r["t_end_s"] - r["t_start_s"], abs=0.002)
+        for lap in api.get_sectors(sid)["laps"]:
+            assert sum(lap["mini_s"]) == pytest.approx(sum(lap["sector_s"]), abs=0.0005 * (len(lap["mini_s"]) + 3))
+    a, b = race_sids
+    d = api.get_delta(b, 1, a, 1)
+    want = (rows[b][1]["t_end_s"] - rows[b][1]["t_start_s"]) - (rows[a][1]["t_end_s"] - rows[a][1]["t_start_s"])
+    assert d["total_s"] == pytest.approx(want, abs=0.002) and d["delta_s"][-1] == d["total_s"]
+    assert d["on_track"]["values"][-1] == pytest.approx(d["total_s"], abs=0.002) and d["on_track"]["values"][0] == 0.0
+
+
+@race
+def test_race_sector_lines_are_the_same_place_on_every_lap(race_sids):
+    """같은 기준 거리 = 코스의 같은 곳 — 구간 경계를 지난 순간의 위치가 랩마다 경계 지점과 진행 방향으로 2 m 안이다
+    (기준선에 내리는 방법의 약속. 랩 길이로 늘이고 줄이면 이 몇 배가 어긋난다)."""
+    bounds = api.get_sectors(race_sids[0])["sectors"][1:]
+    worst = 0.0
+    for sid in race_sids:
+        for row in api.get_laps(sid)["rows"]:
+            tr = api.get_track(sid, row["lap"])
+            ref, x, y = (np.array(tr[k], float) for k in ("ref_m", "x_m", "y_m"))
+            keep = np.concatenate([[True], np.diff(ref) > 0])
+            for c in bounds:
+                bx, by = np.interp(c["ref_m0"], ref[keep], x[keep]), np.interp(c["ref_m0"], ref[keep], y[keep])
+                h = np.radians(c["heading_deg"])
+                worst = max(worst, abs((bx - c["x_m"]) * np.sin(h) + (by - c["y_m"]) * np.cos(h)))
+    assert worst < 2.0
+
+
+@race
+def test_race_one_frame_for_the_event(race_store, race_sids):
+    frames = list((race_store / store.FRAMES).glob("*.json"))
+    assert len(frames) == 1
+    fr = json.loads(frames[0].read_text(encoding="utf-8"))
+    assert fr["reference"]["sid"] in race_sids and fr["frame_key"] == api.get_session(race_sids[0])["summary"]["frame_id"]
+    lengths = [r["distance_m"] for sid in race_sids for r in api.get_laps(sid)["rows"]]
+    assert fr["ref_len_m"] == pytest.approx(float(np.median(lengths)), rel=0.01)
+    assert {api.get_sectors(s)["ref"]["fixed_at"] for s in race_sids} == {fr["fixed_at"]}
+
+
+@race
+def test_race_estimated_drive_state_agrees_with_the_camera(race_store, race_sids):
+    """주행 상태 추정(배터리 전력 + GPS 속도)을 독립된 측정(카메라 가속도계)에 대 본다 — 제동으로 나온 순간은 실제로 감속하고 있고,
+    앞뒤 가속도의 가운데값이 제동 < 타력 < 가속 순서다."""
+    from lefdata import series as ser
+    for sid in race_sids:
+        ch = {c["channel_id"]: c for c in api.list_channels(sid)}["drive.state_est"]
+        assert ch["derived"] and [lv["value"] for lv in ch["levels"]] == [1, 0, -1]
+        st = pd.read_parquet(race_store / sid / "series" / "drive.parquet")
+        imu = pd.read_parquet(race_store / sid / "series" / "imu.parquet")
+        long_g = ser.sample_at(imu["t_s"].to_numpy(), ser.smooth(imu["t_s"].to_numpy(), imu["long_g"].to_numpy(float), 0.5), st["t_s"].to_numpy())
+        state = st["state_est"].to_numpy(float)
+        assert set(np.unique(state[np.isfinite(state)])) == {-1.0, 0.0, 1.0}
+        med = {k: float(np.nanmedian(long_g[state == k])) for k in (1, 0, -1)}
+        assert med[-1] < -0.2 and med[-1] < med[0] < med[1], med
+        col = api.get_track(sid, color="drive.state_est")["color"]
+        assert {v for v in col["values"] if v is not None} <= {-1.0, 0.0, 1.0} and col["levels"] == ch["levels"]
+
+
+@race
 def test_race_answers_are_fast_enough(race_sids):
     """계약 §9 의 목표 — 3채널 · 4,000점에 0.3 초 안 (캐시가 데워진 뒤)."""
     import time
@@ -333,6 +543,11 @@ def test_race_answers_are_fast_enough(race_sids):
     api.get_series(race_sids[0], ids)
     t0 = time.perf_counter()
     api.get_series(race_sids[0], ids)
+    assert time.perf_counter() - t0 < 0.3
+    api.configure(store_root=api._root())                     # 구간 계산은 캐시가 빈 첫 호출도 목표 안에 (랩마다 기준선에 내리는 계산)
+    t0 = time.perf_counter()
+    api.get_laps(race_sids[0])
+    api.get_delta(race_sids[1], 1, race_sids[0], 1)
     assert time.perf_counter() - t0 < 0.3
 
 
@@ -401,6 +616,34 @@ def test_race_laps_track_and_distance_golden():
     assert max(v for v in d["series"][0]["y_max"] if v is not None) == E.approx("s1.best_lap_vmax_kmh")
     d2 = api.get_series(E["sids"][1], ["gps.speed_kmh"], x="distance", lap=E["s2.best_lap"])
     assert d2["x"]["frame_id"] == E["event_id"] and d2["x"]["values"][-1] == E.approx("s2.best_lap_m")
+
+
+@race
+@E.need
+def test_race_sectors_and_delta_golden(race_store):
+    fr = json.loads(next((race_store / store.FRAMES).glob("*.json")).read_text(encoding="utf-8"))
+    assert [fr["reference"]["sid"], fr["reference"]["lap"]] == E["frame.reference"] and fr["ref_len_m"] == E.approx("frame.ref_len_m")
+    sid = E["sids"][0]
+    laps = api.get_laps(sid)
+    sec = laps["sectors"]
+    assert [sec["best"][f"s{k}_s"]["lap"] for k in (1, 2, 3)] == E["s1.sector_best_laps"]
+    assert sec["theoretical_best_s"] == E.approx("s1.theoretical_best_s")
+    best = next(r for r in laps["rows"] if r["best"])
+    assert [best["s1_s"], best["s2_s"], best["s3_s"]] == pytest.approx(E["s1.best_lap_sectors_s"], abs=E["s1.sector_abs_s"])
+    assert api.get_sectors(sid)["mini"]["count"] == E["frame.mini_25_count"]
+    (la, na), (lb, nb) = E["delta.lap"], E["delta.ref"]
+    d = api.get_delta(la, na, lb, nb)
+    assert d["total_s"] == E.approx("delta.total_s")
+    x, dd = np.array(d["x"]["values"]), np.array(d["delta_s"])
+    assert dd[np.argmin(np.abs(x - x[-1] / 2))] == E.approx("delta.half_s")
+
+
+@race
+@E.need
+def test_race_drive_state_golden():
+    for key, sid in zip(("s1", "s2"), E["sids"]):
+        drive_block = {b["block"]: b for b in api.get_session(sid)["blocks"]}["drive"]
+        assert any(E[f"{key}.drive_fact"] in f for f in drive_block["facts"]), drive_block["facts"]
 
 
 @race

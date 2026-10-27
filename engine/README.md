@@ -86,7 +86,7 @@ pytest                                # 테스트 (아래 §테스트)
 
 | 계층 | 모듈 | 성격 |
 |---|---|---|
-| **공개 계층** | `laps` `events` `gopro` `quality` `sync` `series` | 차량 · 폴더 구조를 모른다. FSAE 규격(75 m 가속, 스키드패드)은 공통이라 다른 팀 데이터에도 그대로 쓴다 |
+| **공개 계층** | `laps` `events` `gopro` `quality` `sync` `series` `sectors` `drive` | 차량 · 폴더 구조를 모른다. FSAE 규격(75 m 가속, 스키드패드)은 공통이라 다른 팀 데이터에도 그대로 쓴다 |
 | 팀 계층 | 장비 어댑터, 폴더 구조, 차량 상수, 보고서 · 엔진(`api`) | 우리 로거 · 폴더를 안다 |
 
 방향은 한쪽뿐이다 — 팀 → 공개는 되지만 반대는 안 된다 (`tests/test_layering.py` 가 감시한다).
@@ -137,7 +137,10 @@ api.get_session(sid)                                  # 요약 · 데이터 현�
 api.list_channels(sid)                                # 채널: 단위 · 부호 · 주기 · 장비 · 계산한 값인지 · 주의
 api.get_series(sid, ["battery.current_a", "imu.long_g"], max_points=4000)   # 같은 x 위의 평균 · 최소 · 최대
 api.get_series(sid, ["gps.speed_kmh"], x="distance", lap=7)                  # 랩마다 계측선부터의 거리축
+api.get_series(sid, ["gps.speed_kmh"], x="ref_distance", lap=7)              # 기준 거리축 — 구간 · 시간 차와 같은 축
 api.get_laps(sid) · api.get_track(sid, color="battery.power_kw") · api.get_quality(sid) · api.open_file(file_id)
+api.get_sectors(sid, mini_m=25)                       # 구간 S1 ~ S3 · 미니 구간 시간, 세션의 구간 최속 · 평균
+api.get_delta(sid, 3, ref_sid, 7)                     # 두 랩의 시간 차 — 거리마다 누적 · 미니 구간마다 · 지도 점마다
 ```
 
 | 모듈 | 하는 일 |
@@ -145,6 +148,15 @@ api.get_laps(sid) · api.get_track(sid, color="battery.power_kw") · api.get_qua
 | `api` | 사이트가 부르는 함수. 돌려주는 값은 전부 JSON 으로 바꿀 수 있고, 없는 값은 `None`. 잘못 부르면 `EngineError` (`.to_json()`) |
 | `session_store` | 세션을 저장소로 미리 만든다 (요약 · 원래 주기 채널 값 · 랩 · 궤적 · 품질 경고 · 내려받을 파일 표). 부를 때마다 원본을 다시 읽지 않게 |
 | `series` | 그래프 값 줄이기 — 칸마다 평균 · 최소 · 최대를 같이 줘서 줄여도 순간 피크가 남는다. 빈 칸은 양옆이 끊기지 않았을 때만 직선으로 잇는다 (기록 간격의 2 배 넘게 빈 곳은 비운다) |
+| `sectors` | 구간 · 시간 차의 바탕인 **기준 거리**. 같은 코스(frame)의 랩 중 기준 랩을 하나 골라, 다른 랩의 점마다 기준 랩 주행선의 가장 가까운 곳을 찾아 그곳까지의 거리를 쓴다 (아래) |
+| `drive` | 주행 상태 추정 — 가속 · 타력 · 제동. 가속페달 · 브레이크 압력 신호가 없을 때 배터리 전력과 GPS 속도 변화율로 가른다 (`drive.state_est`, 추정이라는 주의 글이 같이 간다) |
+
+**기준 거리 (`ref_m`)** — 랩마다 주행선이 달라 달린 거리가 1 % 안팎 다르다. 랩 길이로 늘이고 줄여 맞추면 같은 거리의 점이 랩마다
+코스의 다른 곳(몇 m)에 놓이고, 빠른 곳에서는 그것이 0.1 s 넘는 시간 차가 된다. 그래서 점을 기준선에 내려 잰다
+("기준 거리 s 를 지났다" = "기준선의 s 지점에서 수직으로 그은 선을 지났다"). 헤어핀처럼 코스가 제 옆을 지나는 곳에서
+엉뚱한 쪽에 내리지 않게 랩 길이로 늘이고 줄인 거리 ± 30 m 안에서만 찾고, GPS 흔들림으로 뒤로 간 값은 단조 회귀로 편다.
+기준선과 구간 경계(기본 3 등분)는 frame 마다 한 번 정해 저장소(`_frames/`)에 두고 바꾸지 않는다 — 세션이 더 들어와도 구간 시간이
+날마다 달라지지 않게. 다시 정할 때만 `lefdata sessions --reframe`.
 
 - 세션을 채우는 것은 `catalog_build.build_event` (차량 · 폴더를 아는 코드는 거기 한 곳). LEF-27 은 `Session` 을 채우는 함수만 새로 쓰면 된다
 - 드라이버는 `드라이버 A` 같은 표시만 저장소에 들어간다 (그 밖의 글자는 거절한다)

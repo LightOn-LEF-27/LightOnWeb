@@ -69,8 +69,11 @@ def _cuts(x: np.ndarray, y: np.ndarray, breaks: np.ndarray | None) -> tuple[np.n
     return xs, ys, cut
 
 
-def sample_at(x: np.ndarray, y: np.ndarray, at: np.ndarray, breaks: np.ndarray | None = None) -> np.ndarray:
-    """주어진 위치(at)의 값 — 양옆 표본을 직선으로 잇는다. 끊긴 사이 · 기록 밖이면 NaN (지어내지 않는다)."""
+def sample_at(x: np.ndarray, y: np.ndarray, at: np.ndarray, breaks: np.ndarray | None = None, nearest: bool = False) -> np.ndarray:
+    """주어진 위치(at)의 값 — 양옆 표본을 직선으로 잇는다. 끊긴 사이 · 기록 밖이면 NaN (지어내지 않는다).
+
+    nearest = True 면 잇지 않고 가까운 표본의 값 (정해진 값만 갖는 채널 — 가속 · 타력 · 제동처럼 중간값이 뜻이 없는 것).
+    """
     xs, ys, cut = _cuts(np.asarray(x, float), np.asarray(y, float), breaks)
     at = np.asarray(at, float)
     out = np.full(len(at), np.nan)
@@ -84,7 +87,7 @@ def sample_at(x: np.ndarray, y: np.ndarray, at: np.ndarray, breaks: np.ndarray |
     l, r = left[good], right[good]
     span = xs[r] - xs[l]
     w = np.divide(at[good] - xs[l], span, out=np.zeros(len(l)), where=span > 0)
-    out[good] = ys[l] + w * (ys[r] - ys[l])
+    out[good] = np.where(w < 0.5, ys[l], ys[r]) if nearest else ys[l] + w * (ys[r] - ys[l])
     out[exact] = ys[left[exact]]
     return out
 

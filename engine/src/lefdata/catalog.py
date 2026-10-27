@@ -80,6 +80,7 @@ class Channel:
     cautions: list[str] = field(default_factory=list)
     source: str = ""                  # 레코딩 ID
     digits: int = 3                   # 값을 내보낼 때의 소수 자릿수
+    levels: list[dict] = field(default_factory=list)   # 정해진 값만 갖는 채널의 범례 [{"value": 1, "label": "가속"}, …]
 
     @property
     def title(self) -> str:

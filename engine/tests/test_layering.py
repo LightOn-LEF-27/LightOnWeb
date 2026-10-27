@@ -31,7 +31,7 @@ import pytest
 SRC = Path(__file__).resolve().parents[1] / "src" / "lefdata"
 
 # 떼어내서 공개할 수 있어야 하는 모듈. 서로는 참조해도 되지만 팀 계층은 몰라야 한다.
-PUBLIC = ("laps", "events", "gopro", "quality", "sync", "series")
+PUBLIC = ("laps", "events", "gopro", "quality", "sync", "series", "sectors", "drive")
 
 # 우리 로거·폴더 구조·차량에 묶인 모듈.
 TEAM = ("lef26", "monolith", "motor_runs", "video", "paths", "cli", "writer", "energymeter", "evo_stm32", "orion", "clocks",

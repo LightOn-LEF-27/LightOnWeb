@@ -98,6 +98,7 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("sessions", help="분석 엔진(사이트용)이 읽는 세션 저장소 → 07_데이터/_sessions/<세션 ID>/")
     p.add_argument("--event", type=Path, action="append", help="이벤트 폴더 (여러 번 지정 가능). 없으면 catalog_notes.toml 이 있는 이벤트 전부")
     p.add_argument("--root", type=Path, help="저장소 위치 (기본: LEF_SESSION_ROOT 또는 07_데이터/_sessions)")
+    p.add_argument("--reframe", action="store_true", help="그 이벤트들의 frame(기준선 · 구간 경계)을 다시 정한다 — 구간 시간 · 시간 차가 바뀐다")
 
     args = ap.parse_args(argv)
     t0 = time.perf_counter()
@@ -328,13 +329,18 @@ def main(argv: list[str] | None = None) -> None:
 
     elif args.cmd == "sessions":
         from . import catalog_build, session_store
+        import json
         events = args.event or sorted(p.parent for p in paths.DATA_ROOT.glob(f"*/*/{catalog_build.NOTES_NAME}"))
         root = args.root or session_store.DEFAULT_ROOT
         for ev in events:
             print(f"[sessions] {ev}")
-            for row in session_store.build_event(ev, root):
+            for row in session_store.build_event(ev, root, reframe=args.reframe):
                 have = [d["block"] for d in row["data_status"] if d["status"] in ("have", "warn")]
                 print(f"  {row['sid']}  {row['title']} · {row['duration_s'] / 60:.1f} 분 · {row['laps']}랩 · 데이터 {' · '.join(have)}")
+        for f in sorted((root / session_store.FRAMES).glob("*.json")):
+            fr = json.loads(f.read_text(encoding="utf-8"))
+            ref = fr["reference"]
+            print(f"  frame {fr['frame_key']}: 기준 랩 {ref['sid']} {ref['lap']}랩 · 기준 길이 {fr['ref_len_m']} m · 정한 때 {fr['fixed_at']}")
         print(f"[sessions] → {root}  {time.perf_counter()-t0:.1f}s")
 
     elif args.cmd == "em-laps":
