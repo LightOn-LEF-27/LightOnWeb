@@ -9,6 +9,7 @@
     lefdata check               데이터 품질 검사 (시간축·물리범위·공백·중복)
     lefdata energymeter         FSK 에너지미터(FSK-EEM) .log → normalized/
     lefdata evo-stm32           25Evo STM32 백업 로거 CSV → normalized/ + 시계 속도·시작 시각 맞추기 (--clock em|gps)
+    lefdata evo-can             25Evo Monolith 가 받은 CAN → 가속페달 · Orion 표 (normalized/<레코딩>/apps · orion_can · orion_stream)
     lefdata orion               Orion BMS Connect CSV(Utility 변환본) → normalized/
     lefdata clocks              이벤트 안 장비 시계 차이 측정 → derived/clock_offsets.csv · power_cycles.csv
     lefdata lef26-clock         LEF-26 로거 시계를 로그 자체와 영상 GPS 로 검증 → derived/logger_clock.csv
@@ -25,7 +26,7 @@ import argparse
 import time
 from pathlib import Path
 
-from . import (clocks, em_laps, energymeter, events, evo_stm32, laps, lef26, lef26_clock, lef26_laps, monolith, motor_runs, orion,
+from . import (clocks, em_laps, energymeter, events, evo_can, evo_stm32, laps, lef26, lef26_clock, lef26_laps, monolith, motor_runs, orion,
                paths, quality, video)
 
 
@@ -68,6 +69,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--clock", choices=("em", "gps"), default="em",
                    help="절대시각을 어느 장비 시계로 채울지: em = 에너지미터(전압), gps = Monolith(GPS 속도). 기본 em")
 
+    p = sub.add_parser("evo-can", help="25Evo Monolith CAN → 가속페달(APPS) · Orion 표")
+    p.add_argument("--event", type=Path, default=paths.LEF25EVO_FSK)
     p = sub.add_parser("orion", help="Orion BMS Connect CSV → normalized/")
     p.add_argument("--event", type=Path, default=paths.LEF25EVO_FSK)
     p.add_argument("--src", type=Path, default=paths.LEF25EVO_ORION_CSV, help="Utility 로 변환한 CSV 폴더")
@@ -233,6 +236,11 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"  잰 시계 속도 f (참 시간 = f × 로거 TIME): {meas.min():.4f} ~ {meas.max():.4f}, 중앙 {meas.median():.4f} ({len(meas)}개)")
             print(f"[evo-stm32] 시각 적용 {int(al['applied'].sum())} / 시계 속도를 잰 것 {len(meas)} / 전체 {len(al)}  "
                   f"(기준 시계: {'에너지미터' if args.clock == 'em' else 'Monolith'}, derived/stm32_alignment.csv), {time.perf_counter()-t0:.1f}s")
+
+    elif args.cmd == "evo-can":
+        print(f"[evo-can] {args.event}")
+        for r in evo_can.convert_event(args.event):
+            print("  " + r["recording_id"] + "  " + " · ".join(f"{k} {v:,}" for k, v in r.items() if k != "recording_id"))
 
     elif args.cmd == "orion":
         print(f"[orion] {args.event}  ({args.first} ~ {args.last})")

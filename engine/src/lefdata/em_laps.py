@@ -15,9 +15,11 @@ GPS 쪽 일률은 **위치에서 낸 속도**로 만든다 — 수신기가 주�
 
 먼저 `lefdata energymeter` 와 랩 분할(`lefdata laps` 또는 `gopro --laps`)이 끝나 있어야 한다.
 
-주행이 짧아(가속 몇 번뿐) 파형으로 맞출 창이 모자라면, 같은 전원 스위치에 물린 GPS 로거와 켜지고 꺼진 시각으로 잰 시계 차
+GPS 로거가 같은 팩 전류를 CAN 으로 받아 두었으면(25Evo Monolith 의 Orion `0x447` — `lefdata evo-can` 이 푼 `orion_can.parquet`)
+그 전류에 미터 전류를 직접 맞춘다 — 같은 물리량이라 가장 정확하다 (`method = can_current`, 레코딩 앞 · 뒤 절반에서 따로 재 시계 속도도).
+그것도 파형도 안 되면(주행이 짧아 맞출 창이 모자람) 같은 전원 스위치에 물린 GPS 로거와 켜지고 꺼진 시각으로 잰 시계 차
 (`derived/power_cycles.csv`, `lefdata clocks`)를 쓴다 — `method = power_cycle`, 시계 속도는 1 로 둔다. 구간마다 다시 대 보는
-검증(`em_lag_s`)은 그대로 한다.
+검증(`em_lag_s`)은 어느 방법이든 한다.
 결과는 해석이므로 derived/ 에 둔다.
 
     em_alignment.csv   에너지미터 레코딩 ↔ GPS 레코딩: 시계 차 · 시계 속도 · 맞은 창 수 · 상관
@@ -68,6 +70,9 @@ MIN_COVER = 0.98            # 에너지미터가 구간의 이만큼을 기록�
 P500_S = 0.5
 COAST_A = 5.0               # 전류의 크기가 이보다 작으면 페달을 뗀 것으로 본다
 LAP_LAGS_S = np.arange(-1.0, 1.0001, 0.02)
+CAN_SPAN_S = 3.0            # CAN 전류에 맞출 때 짐작한 시계 차(전원 주기 · 파형) 둘레 이만큼을 훑는다
+CAN_STEP_S = 0.01
+CAN_MIN_CORR = 0.95         # 같은 물리량이라 이보다 덜 닮으면 맞추지 않는다
 
 ALIGN_COLS = ["em_recording", "gps_recording", "method", "accepted", "windows", "inliers", "corr_median", "em_minus_gps_s", "f",
               "rms_s", "span_s", "gps_t_abs_at_em_start", "discharge_wh", "regen_wh"]
@@ -173,11 +178,11 @@ class Alignment:
     rms_s: float
     span_s: float
     t_mid: float                # 맞은 창들의 가운데 (미터 경과시간)
-    method: str = "wave"        # wave = 전력 파형 · power_cycle = 같은 전원 스위치로 잰 시계 차 (파형으로 못 맞췄을 때)
+    method: str = "wave"        # wave = 전력 파형 · can_current = GPS 로거가 CAN 으로 받은 팩 전류 · power_cycle = 같은 전원 스위치로 잰 시계 차
 
     @property
     def accepted(self) -> bool:
-        if self.method == "power_cycle":
+        if self.method in ("power_cycle", "can_current"):
             return True
         return (self.inliers >= MIN_WINDOWS and self.inliers >= MIN_INLIER_SHARE * self.windows
                 and self.corr_median >= MIN_CORR)
@@ -304,6 +309,44 @@ def from_power_cycle(meter: Meter, track: Track, em_minus_gps_s: float) -> Align
     return Alignment(meter, track, -float(em_minus_gps_s), 1.0, 0, 0, np.nan, np.nan, 0.0, float(np.mean(meter.t)), "power_cycle")
 
 
+def _can_lag(t_can, i_can, t_me, i_me, guess: float) -> tuple[float, float]:
+    """CAN 팩 전류(GPS 로거 시계)와 미터 전류(미터 시계)가 가장 잘 겹치는 '미터 시계 − GPS 시계' (guess 둘레) → (값, 상관)."""
+    best = (np.nan, -1.0)
+    for d in np.arange(guess - CAN_SPAN_S, guess + CAN_SPAN_S + 1e-9, CAN_STEP_S):
+        m = np.interp(t_can + d, t_me, i_me, left=np.nan, right=np.nan)
+        ok = np.isfinite(m)
+        if ok.sum() < 100 or np.std(m[ok]) < 1e-6:
+            continue
+        c = float(np.corrcoef(i_can[ok], m[ok])[0, 1])
+        if c > best[1]:
+            best = (float(d), c)
+    return best
+
+
+def from_can_current(meter: Meter, track: Track, rec_dir: Path, guess: float) -> Alignment | None:
+    """GPS 로거가 CAN 으로 받은 팩 전류(`orion_can.parquet`)에 미터 전류를 맞춘다 — 레코딩 앞 · 뒤 절반에서 따로 재 시계 속도까지. 덜 닮으면 None."""
+    path = rec_dir / "orion_can.parquet"
+    if not path.exists():
+        return None
+    c = pd.read_parquet(path, columns=["t_abs", "current_a", "checksum_ok"])
+    c = c[c["checksum_ok"] & c["t_abs"].notna()]
+    t_c, i_c = lc._epoch_s(c["t_abs"]), c["current_a"].to_numpy(float)
+    t_me = meter.start + meter.t
+    inside = (t_c + guess >= t_me[0]) & (t_c + guess <= t_me[-1])
+    if inside.sum() < 200:
+        return None
+    t_c, i_c = t_c[inside], i_c[inside]
+    half = len(t_c) // 2
+    fits = [_can_lag(t_c[s], i_c[s], t_me, meter.amp, guess) for s in (slice(0, half), slice(half, None))]
+    if min(f[1] for f in fits) < CAN_MIN_CORR:
+        return None
+    x = [float(np.median(t_c[s])) + d - meter.start for s, (d, _) in zip((slice(0, half), slice(half, None)), fits)]   # 미터 경과시간
+    d = [f[0] for f in fits]
+    f = 1.0 - (d[1] - d[0]) / (x[1] - x[0]) if x[1] > x[0] else 1.0       # 미터 시계 − GPS 시계 = x (1 − f) − a
+    a = x[0] * (1.0 - f) - d[0]
+    return Alignment(meter, track, a, f, 2, 2, min(fi[1] for fi in fits), np.nan, float(x[1] - x[0]), float(np.mean(x)), "can_current")
+
+
 def _power_cycles(out: Path) -> dict[tuple[str, str], float]:
     """derived/power_cycles.csv → {(에너지미터 레코딩, GPS 레코딩): 미터 시계 − GPS 로거 시계 (s)}. 없으면 빈 것."""
     path = out / "power_cycles.csv"
@@ -316,7 +359,8 @@ def _power_cycles(out: Path) -> dict[tuple[str, str], float]:
 def align_event(event_dir: Path) -> list[Alignment]:
     """랩이 있는 GPS 레코딩마다 시계상 겹칠 수 있는 에너지미터 레코딩을 전부 대 본다 (맞지 않은 것도 돌려준다).
 
-    파형으로 맞추지 못한 짝이 같은 전원 주기(power_cycles.csv)에 있으면 그 시계 차로 맞춘 것을 더한다.
+    GPS 로거가 팩 전류를 CAN 으로 받았으면 그것에 맞춘 것 하나만 (가장 정확하다). 아니면 파형으로 맞춘 것, 그것이 안 되고
+    같은 전원 주기(power_cycles.csv)에 있으면 그 시계 차로 맞춘 것을 더한다.
     """
     norm, out = event_dir / "normalized", event_dir / "derived"
     runs = pd.read_csv(out / "runs.csv", encoding="utf-8-sig")
@@ -328,7 +372,15 @@ def align_event(event_dir: Path) -> list[Alignment]:
         for me in meters:
             if me.start + me.t[-1] < track.t_abs[0] - SEARCH_S or me.start + me.t[0] > track.t_abs[-1] + SEARCH_S:
                 continue
-            al = align(me, track)
+            guess, al = cycles.get((me.rec, rid)), None
+            if guess is None:
+                al = align(me, track)
+                guess = al.em_minus_gps_s if al is not None and al.accepted else None
+            can = from_can_current(me, track, norm / rid, guess) if guess is not None else None
+            if can is not None:
+                found.append(can)
+                continue
+            al = al if al is not None else align(me, track)
             if al is not None:
                 found.append(al)
             if (al is None or not al.accepted) and (me.rec, rid) in cycles:

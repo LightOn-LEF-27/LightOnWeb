@@ -78,6 +78,21 @@ def test_power_cycle_offset_places_the_meter_and_the_segment_check_sees_an_error
     assert lag == pytest.approx(-0.5, abs=0.06)
 
 
+def test_can_current_sets_the_meter_clock_and_rate(tmp_path):
+    """GPS 로거가 같은 팩 전류를 CAN 으로 받았으면 그것에 맞춘다 — 짐작(전원 주기)이 0.3 s 틀려도 시계 차 · 시계 속도를 되찾는다."""
+    meter, track = synthetic(offset_s=87.4, f=1.0004, duration=600.0)
+    x = np.arange(1.0, meter.t[-1] - 1.0, 0.096)                                # 미터 경과시간 (96 ms 마다 CAN 한 프레임)
+    t_gps = meter.start - 87.4 + 1.0004 * x                                     # 같은 순간의 GPS 로거 시각
+    amp = np.interp(x, meter.t, meter.amp)                                      # 그 순간의 팩 전류 (미터와 같은 값)
+    pd.DataFrame({"t_abs": pd.to_datetime(t_gps, unit="s", utc=True), "current_a": amp, "checksum_ok": True}).to_parquet(tmp_path / "orion_can.parquet")
+    al = el.from_can_current(meter, track, tmp_path, guess=87.1)
+    assert al is not None and al.method == "can_current" and al.accepted
+    assert al.f == pytest.approx(1.0004, abs=5e-5)
+    for t_em in (50.0, 500.0):
+        assert float(al.to_gps(t_em)) == pytest.approx(meter.start - 87.4 + 1.0004 * t_em, abs=0.03)
+    assert el.from_can_current(meter, track, tmp_path / "없음", guess=87.1) is None
+
+
 def test_align_does_not_accept_a_different_drive():
     """닮은 곳이 없는 두 파형을 억지로 맞추지 않는다."""
     meter, track = synthetic(meter_periods=(19.0, 5.9, 37.0, 11.3))
@@ -223,14 +238,18 @@ evo_race = pytest.mark.skipif(not (paths.LEF25EVO_FSK / "derived" / "em_alignmen
 
 @evo_race
 @E.need
-def test_evo_race_short_runs_use_the_power_cycle_and_still_sit_on_the_line():
-    """다른 차 · 다른 GPS · 짧은 주행뿐(가속 몇 번) — 파형으로 맞출 창이 모자라 전원 주기 시계 차로 놓는다.
-    그렇게 놓은 미터 전력이 깨끗한 가속에서 GPS 위치의 일률과 따로 대 봐도 겹친다."""
+def test_evo_race_meter_is_set_by_the_can_current_and_agrees_with_the_power_cycle():
+    """다른 차 · 다른 GPS · 짧은 주행뿐(가속 몇 번) — 파형으로 맞출 창이 모자라다. GPS 로거(Monolith)가 같은 팩 전류를 CAN 으로 받았으므로
+    그것에 맞춘다. 서로 다른 방법(같은 전원 스위치의 켜고 끈 시각)과 같고, 깨끗한 가속에서 GPS 위치의 일률과도 겹친다."""
     d = paths.LEF25EVO_FSK / "derived"
     al = pd.read_csv(d / "em_alignment.csv", encoding="utf-8-sig")
     assert set(zip(al["em_recording"], al["gps_recording"])) == {tuple(p) for p in E["race_evo.pairs"]}
-    assert (al["method"] == "power_cycle").all() and al["accepted"].all()
+    assert (al["method"] == E["race_evo.method"]).all() and al["accepted"].all() and (al["corr_median"] >= el.CAN_MIN_CORR).all()
+    cycles = pd.read_csv(d / "power_cycles.csv", encoding="utf-8-sig").set_index(["energymeter", "monolith"])
+    for _, a in al.iterrows():
+        assert a["em_minus_gps_s"] == pytest.approx(cycles.loc[(a["em_recording"], a["gps_recording"]), "em_minus_monolith_s"], abs=E["race_evo.cycle_agree_abs_s"])
+        assert abs(a["f"] - 1) < E["race_evo.f_err_max"]
     run = pd.read_csv(d / "run_energy.csv", encoding="utf-8-sig").set_index(["recording_id", "run"])
     for rec, n in E["race_evo.clean_runs"]:
         r = run.loc[(rec, n)]
-        assert abs(r["em_lag_s"]) <= E["race_evo.lag_max_s"] and r["em_corr"] >= E["race_evo.corr_min"], (rec, n)
+        assert E.range("race_evo.gps_lag_s")[0] <= r["em_lag_s"] <= E.range("race_evo.gps_lag_s")[1] and r["em_corr"] >= E["race_evo.corr_min"], (rec, n)

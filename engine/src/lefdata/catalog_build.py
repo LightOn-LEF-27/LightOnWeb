@@ -14,6 +14,8 @@
                 LEF-26 차량 로거        영상과 시계를 맞춘 로거 레코딩 (`lef26-clock` 의 시계 지도로 로거 시각 → 세션 시간)
     battery · bms · motor
                 25Evo STM32 백업 로거   Monolith GPS 와 시계를 맞춘 레코딩 (`evo-stm32 --clock gps` 가 t_abs 를 채운 것)
+    pedal · bms · battery
+                25Evo 차량 CAN          Monolith 가 받은 CAN 을 `lefdata evo-can` 이 푼 것 (가속페달 · Orion). 같은 Monolith 시계라 GPS 와 같은 축
 
 GPS 가 없는 주행은 **시각 구간 세션**으로 넣는다 (`[[timed_session]]` — Run Sheet 의 시각이나 장비가 켜져 있던 동안).
 GPS 가 없으니 랩 · 코스가 없고, 그 시각에 기록이 있는 장비(에너지미터 · 25Evo STM32 백업 로거 · Orion BMS · LEF-26 로거)를
@@ -48,7 +50,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from . import em_laps, laps as lapmod, lef26, lef26_clock, lef26_laps, paths
+from . import em_laps, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths
 from .catalog import (HAVE, NONE, SEEK, WARN, Channel, CodeRef, DataBlock, Export, FileRef, LapColumn, Missing, Session, code_html,
                       size_text, to_markdown, to_notion, write_session)
 
@@ -65,6 +67,8 @@ REFINE_MAX_S = 4.0          # 세션 안에서 회전수 ↔ GPS 속도를 다�
 REFINE_MIN_S = 0.5          # 이보다 적게 어긋났으면 옮기지 않는다 (GPS 속도 자체가 0.1 ~ 0.2 s 늦다)
 REFINE_MIN_CORR = 0.9       # 옮긴 뒤의 상관이 이보다 높고
 REFINE_GAIN = 0.05          #   옮기기 전보다 이만큼 좋아질 때만 옮긴다
+PEDAL_ON_PCT = 5.0          # 가속페달을 '밟았다' 로 보는 값
+FULL_THROTTLE_PCT = 95.0    # 풀스로틀로 보는 값
 EM_REFINE_MIN_S = 1.0       # 에너지미터 전력에 다시 맞출 때는 이보다 크게 어긋난 것만 옮긴다 — 백업 로거 시각이 1 s 단위이고,
                             #   에너지미터 쪽도 긴 레코딩에서는 구간마다 조금 벗어난다 (그보다 작은 차이를 쫓지 않는다)
 ACCEL_LEAD_S = 10.0         # 가속 출발(정지)은 주행 구간 시작(10 km/h 를 넘는 순간)보다 앞이다 — 그만큼 앞까지 본다
@@ -414,7 +418,9 @@ def _battery_block(r: _Run, al: em_laps.Alignment, run_e: pd.Series, lap_e: pd.D
         lap_columns=[LapColumn("net_wh", "순 에너지", "Wh", 0, chart=True), LapColumn("regen_wh", "돌아온 에너지", "Wh", 1),
                      LapColumn("p_mean_kw", "평균 전력", "kW", 1), LapColumn("i_max_a", "전류 최대", "A", 0, chart=True),
                      LapColumn("v_min_v", "팩 전압 최저", "V", 0)],
-        checks=[f"미터 시계를 같은 전원 스위치로 켜지고 꺼진 시각에 맞춤 (lefdata clocks) — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞. "
+        checks=[f"미터 전류를 같은 레코딩의 Orion 팩 전류(CAN 0x447 — GPS 로거가 받은 것)에 맞춤 — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞, "
+                f"시계 속도 {fit['f']:.5f} (레코딩 앞 · 뒤 절반에서 따로 잼 — 두 쪽 중 낮은 상관 {fit['corr_median']:.4f})" if fit.get("method", "wave") == "can_current" else
+                f"미터 시계를 같은 전원 스위치로 켜지고 꺼진 시각에 맞춤 (lefdata clocks) — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞. "
                 "주행이 짧아 전력 파형으로 맞출 창이 모자랐다" if fit.get("method", "wave") == "power_cycle" else
                 f"미터에는 GPS 가 없어 전력 파형으로 시계를 맞춤 — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞, "
                 f"30 초 창 {int(fit['inliers'])} / {int(fit['windows'])}개가 한 직선 위 (잔차 {fit['rms_s']:.2f} s)",
@@ -726,7 +732,8 @@ def best_lag(t, v, t_ref, v_ref, max_s: float = REFINE_MAX_S, step: float = 0.1)
     return float(k), corr[0.0], corr[k]
 
 
-def _stm32_blocks(r: _Run, stm: _Stm32, em_ref: dict | None = None, al: em_laps.Alignment | None = None) -> list[DataBlock]:
+def _stm32_blocks(r: _Run, stm: _Stm32, em_ref: dict | None = None, al: em_laps.Alignment | None = None, skip: tuple = (),
+                  ref_name: str = "에너지미터") -> list[DataBlock]:
     """25Evo STM32 백업 로거 (GPS 세션). em_ref = 같은 구간의 에너지미터 전력 (있으면 배터리는 그쪽), al = 그 미터를 GPS 에 맞춘 것.
 
     Monolith GPS 에 시계를 맞춘 레코딩은 그대로, 에너지미터에 맞춘 레코딩(대회)은 al 로 GPS 시계까지 한 번 더 옮긴다.
@@ -749,10 +756,11 @@ def _stm32_blocks(r: _Run, stm: _Stm32, em_ref: dict | None = None, al: em_laps.
                  f"그 미터를 GPS 에 맞춘 값으로 한 번 더 옮김. {' · '.join(fits)}")
     else:
         clock = f"로거 시계를 Monolith GPS 에 맞춤 — 모터 회전수 ↔ GPS 속도 파형으로 시작 시각과 시계 속도를 같이 구함 (lefdata evo-stm32 --clock gps). {' · '.join(fits)}"
-    return _stm32_make(r, offs, clock, refine=True, skip=("battery",) if em_ref is not None else (), ref=em_ref)
+    return _stm32_make(r, offs, clock, refine=True, skip=tuple(skip) + (("battery",) if em_ref is not None else ()), ref=em_ref, ref_name=ref_name)
 
 
-def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, skip: tuple = (), ref: dict | None = None) -> list[DataBlock]:
+def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, skip: tuple = (), ref: dict | None = None,
+                ref_name: str = "에너지미터") -> list[DataBlock]:
     """25Evo STM32 백업 로거 → battery (팩 전압 · 전류 · 전력) · bms (셀 · 온도 · SOC) · motor (온도 · 회전수).
 
     recs = {레코딩: 로거 시각에 더하면 기준 시계가 되는 초}. clock = 시계를 어떻게 맞췄나 (블록 '확인' 글).
@@ -776,7 +784,7 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
         if by_speed:
             k, _, c = best_lag(mot["t_s"].to_numpy(), np.abs(mot["rpm"].to_numpy(float)), r.ts, r.gps["speed_kmh"].to_numpy(float))
             also = f" (회전수 ↔ GPS 속도로 재면 {k:+.1f} s, 상관 {c:.2f})" if np.isfinite(c) else ""
-        how = "BMS 전력 ↔ 에너지미터 전력(같은 물리량)"
+        how = f"BMS 전력 ↔ {ref_name} 전력(같은 물리량)"
         if abs(lag) >= EM_REFINE_MIN_S and c1 >= REFINE_MIN_CORR:
             dur = r.t1 - r.t0
             shift = lambda d: d.assign(t_s=d["t_s"] + lag).pipe(lambda d: d[(d["t_s"] >= 0) & (d["t_s"] <= dur)])   # noqa: E731
@@ -786,7 +794,7 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
         elif np.isfinite(c1):
             clock += f" · 이 세션 안에서 {how} 을 다시 대 본 어긋남 {lag:+.1f} s (상관 {c1:.2f}) — 옮기지 않음{also}"
             if abs(lag) >= EM_REFINE_MIN_S:
-                unsure = (f"백업 로거 시계가 에너지미터와 {lag:+.1f} s 어긋났을 수 있다 — 다시 대 본 상관이 {c1:.2f} 라 옮길 만큼 확실하지 않아 그대로 둠. "
+                unsure = (f"백업 로거 시계가 {ref_name}와 {lag:+.1f} s 어긋났을 수 있다 — 다시 대 본 상관이 {c1:.2f} 라 옮길 만큼 확실하지 않아 그대로 둠. "
                           "순간 값의 시각(가속 출발 · 제동 시작)은 믿지 말 것")
     elif by_speed:
         lag, c0, c1 = best_lag(mot["t_s"].to_numpy(), np.abs(mot["rpm"].to_numpy(float)), r.ts, r.gps["speed_kmh"].to_numpy(float))
@@ -873,6 +881,138 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
     if ref is not None and bms is not None and blocks and not refine:      # GPS 세션은 위에서 에너지미터에 맞췄다
         _add_check(blocks[0], _agree(bms["t_s"], bms["power_kw"], ref["t"], ref["kw"], "stm32", "STM32 백업 로거의 BMS 전력을 에너지미터 전력과 대 봄"))
     return blocks
+
+
+# ---------------------------------------------------------------- 25Evo 차량 CAN (Monolith 가 받은 것 — lefdata evo-can)
+
+def _can_frame(r: _Run, name: str) -> pd.DataFrame | None:
+    """GPS 레코딩 폴더의 CAN 표 하나를 세션 구간만 — 같은 Monolith 시계라 그대로 세션 시간이 된다."""
+    path = r.rec_dir / f"{name}.parquet"
+    if not path.exists():
+        return None
+    d = pd.read_parquet(path)
+    d = d[d["t_abs"].notna()]
+    d = d.assign(t_s=_epoch_s(d["t_abs"]) - r.t0_abs)
+    d = d[(d["t_s"] >= 0) & (d["t_s"] <= r.t1 - r.t0)]
+    return d.reset_index(drop=True) if len(d) else None
+
+
+def _corr_at(t, v, t_ref, v_ref) -> float:
+    """같은 순간끼리의 상관 (기준을 표본 시각에 이어서)."""
+    t, v = np.asarray(t, float), np.asarray(v, float)
+    m = np.interp(t, np.asarray(t_ref, float), np.asarray(v_ref, float), left=np.nan, right=np.nan)
+    ok = np.isfinite(m) & np.isfinite(v)
+    return float(np.corrcoef(v[ok], m[ok])[0, 1]) if ok.sum() > 30 and np.std(v[ok]) > 0 and np.std(m[ok]) > 0 else np.nan
+
+
+def _pedal_block(r: _Run, apps: pd.DataFrame, ref: dict | None) -> DataBlock:
+    """25Evo APPS 보드의 진단 프레임 → 가속페달 · 두 센서 · BAMOCAR 로 보낸 토크 명령. ref = 같은 구간의 배터리 전력 (확인용)."""
+    t, src = apps["t_s"].to_numpy(), r.rec
+    pedal = apps["pedal_pct"].to_numpy(float)
+    one, two = (apps[c].to_numpy(float) if c in apps else np.full(len(apps), np.nan) for c in ("apps1_pct", "apps2_pct"))
+    cmd = evo_can.TORQUE_SIGN * apps["torque_cmd_raw"].to_numpy(float) / evo_can.TORQUE_FULL * 100 if "torque_cmd_raw" in apps else None
+    every = "APPS 보드의 진단 프레임 (20 Hz, 0.1 % 단위)"
+    series = [Channel("apps_pct", "가속페달", "%", t, pedal, sign="밟을수록 +", source=src, digits=1, cautions=[every + " — 두 센서를 검증해 정한 최종 값"]),
+              Channel("apps1_pct", "가속페달 센서 1", "%", t, one, source=src, digits=1, cautions=[every]),
+              Channel("apps2_pct", "가속페달 센서 2", "%", t, two, source=src, digits=1, cautions=[every])]
+    if cmd is not None:
+        series.append(Channel("torque_cmd_pct", "토크 명령", "%", t, cmd, sign="가속 +", derived=True,
+                              derivation="APPS 보드가 모터 컨트롤러로 보낸 명령 ÷ 32767 × 100 (이 차는 전진 명령이 음수라 부호를 뒤집음)", source=src, digits=1))
+    full = []
+    for a, b in zip(r.laps["t_start_s"], r.laps["t_end_s"]):
+        m = (t >= a) & (t < b)
+        full.append(float(np.mean(pedal[m] >= FULL_THROTTLE_PCT) * 100) if m.any() else np.nan)
+    r.laps["full_throttle_pct"] = full
+    status = apps["status"].fillna(0).astype(np.int64).to_numpy() if "status" in apps else np.zeros(len(apps), np.int64)
+    latched = int(np.bitwise_or.reduce(apps["fault_latched"].fillna(0).astype(np.int64).to_numpy())) if "fault_latched" in apps else 0
+    names = evo_can.fault_names(int(np.bitwise_or.reduce(status)) | latched)
+    gaps = int(((np.diff(apps["counter"].to_numpy()) % 256) - 1).clip(min=0).sum()) if len(apps) > 1 else 0
+    facts = [f"가속페달 최대 {np.nanmax(pedal):.0f} % · {PEDAL_ON_PCT:g} % 넘게 밟은 시간 {np.mean(pedal > PEDAL_ON_PCT) * 100:.0f} % · "
+             f"풀스로틀({FULL_THROTTLE_PCT:g} % 이상) {np.mean(pedal >= FULL_THROTTLE_PCT) * 100:.0f} %",
+             f"두 센서 차 최대 {np.nanmax(np.abs(one - two)):.1f} %p (규정은 10 % 넘게 다르면 비타당)",
+             f"APPS 고장 표시: {', '.join(names) if names else '없음'} · 진단 프레임 순번 빠짐 {gaps}개"]
+    checks = []
+    if cmd is not None:
+        checks.append(f"모터 컨트롤러로 보낸 토크 명령 ↔ 가속페달 상관 {_corr_at(t, cmd, t, pedal):.3f} (같은 보드가 낸 두 값)")
+    if ref is not None:
+        checks.append(f"가속페달 ↔ 배터리 전력 상관 {_corr_at(t, pedal, ref['t'], ref['kw']):.2f} (같은 순간 — 서로 다른 장비)")
+    bad = status != 0
+    findings = [{"level": "warn", "code": "apps_fault", "t_ranges": _runs(t, bad, min_s=0.0),
+                 "message": f"APPS 보드가 고장을 알렸다: {', '.join(names)}"}] if names else []
+    return DataBlock("pedal", "가속페달 (APPS)", WARN if names else HAVE, "25Evo APPS 보드 — CAN 0x7A0 ~ 0x7A2 (Monolith 가 받은 것) · 20 Hz", facts,
+                     code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "CAN 프레임 → 가속페달 · 토크 명령, 세션 구간만")],
+                     outputs=[FileRef("변환된 표 (레코딩 전체)", "apps.parquet", note="pedal_pct · apps1/2_raw · apps1/2_pct · torque_cmd_raw · flags · status",
+                                      where=r.where(f"normalized/{r.rec}/"))],
+                     channels=series, time_keys=["apps_pct", "torque_cmd_pct"] if cmd is not None else ["apps_pct"], trace_keys=["apps_pct"],
+                     map_key="apps_pct", lap_columns=[LapColumn("full_throttle_pct", "풀스로틀 비율", "%", 0, chart=True)],
+                     checks=checks, cautions=list(r.extra("pedal").get("cautions", [])), series=series, findings=findings)
+
+
+def _orion_can_block(r: _Run, oc: pd.DataFrame, stream: pd.DataFrame | None) -> DataBlock | None:
+    """Orion BMS 가 차량 CAN 에 낸 요약(0x446, 96 ms)과 Connect 스트림 슬롯(0x6D0) → bms 블록."""
+    s = oc[oc["summary_ok"].fillna(False).astype(bool)] if "summary_ok" in oc else oc.iloc[0:0]
+    if len(s) < 2:
+        return None
+    t, src = s["t_s"].to_numpy(), r.rec
+    every = "Orion 이 차량 CAN 에 96 ms 마다 낸 요약 (0x446)"
+    series = [Channel(k, label, unit, t, s[k].to_numpy(float), source=src, digits=dg, cautions=[every])
+              for k, label, unit, dg in (("soc_pct", "SOC", "%", 1), ("cell_min_v", "셀 최저 전압", "V", 4),
+                                         ("temp_max_c", "셀 최고 온도", "°C", 0), ("temp_min_c", "셀 최저 온도", "°C", 0))]
+    slots = evo_can.stream_signals(stream) if stream is not None else {}
+    slow = "Orion Connect 스트림(0x6D0)의 슬롯 — 슬롯마다 약 1.4 s 에 한 번. 공식 정의가 없어 Orion 로그와 맞대 푼 값"
+    for k, label, unit, dg in (("dcl_kw", "방전 출력 한계 (DCL)", "kW", 1), ("temp_avg_c", "셀 평균 온도", "°C", 0),
+                               ("bms_heatsink_c", "BMS 방열판 온도", "°C", 0), ("pack_resistance_ohm", "팩 저항", "Ω", 3)):
+        if k in slots:
+            series.append(Channel(k, label, unit, *slots[k], source=src, digits=dg, cautions=[slow]))
+    _lap_stat(r, "cell_t_max_c", t, s["temp_max_c"].to_numpy(float), np.nanmax)
+    _lap_stat(r, "cell_v_min", t, s["cell_min_v"].to_numpy(float), np.nanmin)
+    facts = [f"SOC {s['soc_pct'].iloc[0]:.1f} → {s['soc_pct'].iloc[-1]:.1f} %", f"셀 최저 전압 {s['cell_min_v'].min():.3f} V",
+             f"셀 최고 온도 {s['temp_max_c'].iloc[0]:.0f} → {s['temp_max_c'].iloc[-1]:.0f} °C (가장 높을 때 {s['temp_max_c'].max():.0f} °C)"]
+    if "dcl_kw" in slots:
+        facts.append(f"방전 출력 한계(DCL) {np.nanmin(slots['dcl_kw'][1]):.1f} ~ {np.nanmax(slots['dcl_kw'][1]):.1f} kW")
+    keys = {c.key for c in series}
+    return DataBlock("bms", "배터리 상태 (BMS)", HAVE, "Orion BMS 2 — 차량 CAN 0x446 (96 ms) · 0x6D0 슬롯 (Monolith 가 받은 것)", facts,
+                     code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "CAN 프레임 → BMS 값, 세션 구간만")],
+                     outputs=[FileRef("변환된 표 (레코딩 전체)", "orion_can.parquet · orion_stream.parquet", where=r.where(f"normalized/{r.rec}/"))],
+                     channels=series, time_keys=[k for k in ("soc_pct", "temp_max_c", "dcl_kw") if k in keys],
+                     lap_columns=[LapColumn("cell_t_max_c", "셀 최고 온도", "°C", 0, chart=True), LapColumn("cell_v_min", "셀 최저 전압", "V", 3)],
+                     checks=["체크섬이 맞는 프레임만 (0x446 · 0x447 = 바이트 합, 0x6D0 = ID + 8 + 바이트 합)"],
+                     cautions=list(r.extra("bms").get("cautions", [])), series=series)
+
+
+def _can_battery_block(r: _Run, stream: pd.DataFrame, oc: pd.DataFrame | None) -> tuple[DataBlock | None, dict, dict | None]:
+    """Orion Connect 스트림(0x6D0)의 팩 전압 · 전류 (평균 80 Hz 대) → battery 블록 · 세션 요약 값 · 다른 장비와 대 볼 파형. 에너지미터가 없을 때."""
+    s = stream[stream["checksum_ok"]]
+    if len(s) < 30:
+        return None, {}, None
+    t, i, v = s["t_s"].to_numpy(), s["current_a"].to_numpy(float), s["pack_v"].to_numpy(float)
+    kw = v * i / 1000.0
+    src = r.rec
+    series = [Channel("current_a", "배터리 전류", "A", t, i, sign="방전 +, 배터리로 돌아오면 −", source=src, digits=1),
+              Channel("voltage_v", "팩 전압", "V", t, v, source=src, digits=1),
+              Channel("power_kw", "전력", "kW", t, kw, sign="방전 +", derived=True, derivation="전압 × 전류", source=src, digits=2)]
+    energy, mean = [], []
+    for a, b in zip(r.laps["t_start_s"], r.laps["t_end_s"]):
+        m = (t >= a) & (t < b)
+        energy.append(float(np.trapezoid(kw[m], t[m]) / 3.6) if m.sum() > 1 else np.nan)
+        mean.append(float(np.mean(kw[m])) if m.any() else np.nan)
+    r.laps["net_wh"], r.laps["p_mean_kw"] = energy, mean
+    net = float(np.trapezoid(kw, t) / 3.6)
+    checks = []
+    if oc is not None and len(oc):
+        okc = oc[oc["checksum_ok"]]
+        checks.append(f"같은 BMS 가 96 ms 마다 낸 팩 전류(0x447)와 같은 순간끼리 상관 {_corr_at(okc['t_s'], okc['current_a'], t, i):.3f}")
+    block = DataBlock("battery", "배터리 전압 · 전류", HAVE, "Orion BMS 2 — 차량 CAN 0x6D0 의 팩 전압 · 전류 (Monolith 가 받은 것, 평균 80 Hz 대)",
+                      [f"표본 {len(t):,}개", f"순 에너지 {net:,.0f} Wh (전력을 시간으로 적분)", f"전류 최대 {np.nanmax(i):.0f} A · 전력 최대 {np.nanmax(kw):.1f} kW",
+                       f"팩 전압 {np.nanmin(v):.0f} ~ {np.nanmax(v):.0f} V"],
+                      code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "CAN 프레임 → 팩 전압 · 전류, 세션 구간만")],
+                      outputs=[FileRef("변환된 표 (레코딩 전체)", "orion_stream.parquet", note="current_a(방전 +) · pack_v · slot · slot_raw",
+                                       where=r.where(f"normalized/{r.rec}/"))],
+                      channels=series, time_keys=["current_a", "voltage_v", "power_kw"], trace_keys=["current_a", "power_kw"], map_key="power_kw",
+                      lap_columns=[LapColumn("net_wh", "순 에너지", "Wh", 0, chart=True), LapColumn("p_mean_kw", "평균 전력", "kW", 1)],
+                      checks=checks, cautions=["0.1 A · 0.1 V 단위. 주최측 에너지미터가 있는 세션은 그쪽을 쓴다"] + list(r.extra("battery").get("cautions", [])),
+                      series=series)
+    return block, {"net_wh": round(net), "i_max_a": round(float(np.nanmax(i)))}, {"t": t, "kw": kw}
 
 
 def _auto_sessions(runs: pd.DataFrame, derived: Path) -> dict[tuple, dict]:
@@ -1459,17 +1599,30 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
     stats = {"distance_km": round(float(run["distance_m"]) / 1000, 2), "laps_n": int(run["full_laps"]),
              "best_lap_s": round(float(mine["lap_time_s"].min()), 2) if len(mine) else None, "vmax_kmh": round(float(run["vmax_kmh"]), 1)}
     al = ctx.aligned[(e["em_recording"], rec)] if e is not None else None
-    blocks = [_gps_block(r), _imu_block(r)] + _logger_blocks(r, ctx.loggers.for_video(r.rec)) + _stm32_blocks(r, ctx.stm, _em_ref(r, al, e) if al else None, al)
+    can = {name: _can_frame(r, name) for name in evo_can.TABLES}                 # 차량 CAN (Monolith 가 받은 것 — lefdata evo-can)
+    can_bat, can_st, can_ref = _can_battery_block(r, can["orion_stream"], can["orion_can"]) if al is None and can["orion_stream"] is not None else (None, {}, None)
+    can_bms = _orion_can_block(r, can["orion_can"], can["orion_stream"]) if can["orion_can"] is not None else None
+    ref = _em_ref(r, al, e) if al else can_ref
+    blocks = [_gps_block(r), _imu_block(r)] + _logger_blocks(r, ctx.loggers.for_video(r.rec)) + _stm32_blocks(
+        r, ctx.stm, ref, al, skip=("bms",) if can_bms is not None else (), ref_name="에너지미터" if al else "Orion CAN")
+    if can_bat is not None:
+        blocks.append(can_bat)
+        stats.update(can_st)
     if al is not None:
         fit = ctx.fits[(ctx.fits["em_recording"] == e["em_recording"]) & (ctx.fits["gps_recording"] == rec)].iloc[0]
         em = _battery_block(r, al, e, lap_e, fit)
         pc = ctx.cycles[(ctx.cycles["energymeter"] == e["em_recording"]) & (ctx.cycles["monolith"] == rec)] if ctx.cycles is not None else pd.DataFrame()
         if len(pc) and fit.get("method", "wave") != "power_cycle":
             x = float(pc.iloc[0]["em_minus_monolith_s"])
-            em.checks.append(f"같은 전원 스위치로 켜지고 꺼진 시각으로 따로 잰 시계 차 {x:.1f} s (lefdata clocks) — 파형으로 맞춘 값과 "
+            how = "CAN 전류로" if fit.get("method", "wave") == "can_current" else "파형으로"
+            em.checks.append(f"같은 전원 스위치로 켜지고 꺼진 시각으로 따로 잰 시계 차 {x:.1f} s (lefdata clocks) — {how} 맞춘 값과 "
                              f"{float(fit['em_minus_gps_s']) - x:+.2f} s 차이")
         blocks.append(em)
         stats.update(net_wh=round(float(e["net_wh"])), wh_per_km=round(float(e["wh_per_km"])), i_max_a=round(float(e["i_max_a"])))
+    if can_bms is not None:
+        blocks.append(can_bms)
+    if can["apps"] is not None:
+        blocks.append(_pedal_block(r, can["apps"], ref))
     blocks.append(_video_block(r))
     start = pd.Timestamp(r.t0_abs, unit="s", tz="UTC").tz_convert(TZ)
     shown = []

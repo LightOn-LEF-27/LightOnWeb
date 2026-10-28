@@ -17,6 +17,7 @@
 | 25Evo STM32 백업 로거 CSV | LEF-25evo | BMS · 모터 값, 잘린 바이트 되살리기, 시계 속도 보정, 다른 장비에 시간 맞추기 |
 | GoPro 온보드 영상 (GPMF) | 공통 | 영상을 풀지 않고 GPS · 가속도 · 자이로만 꺼내기, 표본 시각 복원 |
 | Orion BMS Connect (Utility 변환 CSV) | LEF-25evo | 셀 · 팩 · 제한 상태 |
+| Monolith 가 받은 차량 CAN | LEF-25evo | 가속페달(APPS 보드 진단) · Orion 요약 · 팩 V/I · Connect 스트림 슬롯, 체크섬 · 순번 (`evo_can`) |
 
 ## 설치
 
@@ -34,7 +35,8 @@ lefdata laps --event <이벤트>          # GPS 로 주행 구간 · 랩 → der
 lefdata venue --name <경기장> --from-event <이벤트>   # 경기장 정하기 — 그 이벤트의 계측선 · 원점 · 최속 랩 주행선
 lefdata events --event <이벤트>        # 가속(75 m) · 스키드패드
 lefdata motor-runs                    # GPS 없는 로거: 모터 속도로 주행 구간
-lefdata em-laps --event <이벤트>       # 에너지미터를 GPS 랩에 붙이기 (전력 ↔ 위치로 시계를 맞춘다)
+lefdata evo-can --event <이벤트>       # 25Evo: Monolith 가 받은 차량 CAN → 가속페달(APPS) · Orion 표 (em-laps 전에)
+lefdata em-laps --event <이벤트>       # 에너지미터를 GPS 랩에 붙이기 (CAN 팩 전류 · 전력 ↔ 위치 · 전원 주기 순으로 시계를 맞춘다)
 lefdata lef26-clock | lef26-laps      # LEF-26: 로거 시계 검증 · 랩마다 로거 값
 lefdata clocks                        # 장비끼리 시계 차 · 전원 주기로 짝짓기
 lefdata check --event <이벤트>         # 데이터 품질 검사

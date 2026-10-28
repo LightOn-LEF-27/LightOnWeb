@@ -374,6 +374,8 @@ def test_evo_race_sessions_keep_their_promises(sevo):
         assert "clock_mismatch" not in _codes(s), s.sid
     for s in (s for s in sevo if s.split_by == "gps"):
         assert "에너지미터" in _blocks(s)["battery"].device and "에너지미터 전력(같은 물리량)" in _blocks(s)["motor"].checks[0], s.sid
+        if (EVO / "normalized" / s.blocks[0].series[0].source / "apps.parquet").exists():          # 차량 CAN (lefdata evo-can) — 가속페달 · Orion
+            assert {"pedal", "bms"} <= set(_blocks(s)) and "Orion" in _blocks(s)["bms"].device, s.sid
 
 
 @need_evo

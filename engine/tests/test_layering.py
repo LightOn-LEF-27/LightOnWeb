@@ -34,7 +34,7 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "lefdata"
 PUBLIC = ("laps", "events", "gopro", "quality", "sync", "series", "sectors", "drive")
 
 # 우리 로거·폴더 구조·차량에 묶인 모듈.
-TEAM = ("lef26", "monolith", "motor_runs", "video", "paths", "cli", "writer", "energymeter", "evo_stm32", "orion", "clocks",
+TEAM = ("lef26", "monolith", "motor_runs", "video", "paths", "cli", "writer", "energymeter", "evo_stm32", "evo_can", "orion", "clocks",
         "lef26_clock", "lef26_laps", "lef26_report", "report", "report_charts", "em_laps", "catalog", "catalog_charts",
         "catalog_build", "session_store", "api", "venue")
 
