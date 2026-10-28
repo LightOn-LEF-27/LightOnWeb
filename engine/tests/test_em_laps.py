@@ -66,6 +66,18 @@ def test_align_recovers_the_clock_rate_too():
         assert float(al.to_gps(t_em)) == pytest.approx(T0 + EM_FROM + 1.004 * t_em, abs=0.1)
 
 
+def test_power_cycle_offset_places_the_meter_and_the_segment_check_sees_an_error():
+    """파형으로 못 맞출 때 쓰는 전원 주기 시계 차 — 맞는 값이면 구간 검증이 0 근처, 0.5 s 틀리게 주면 그만큼 보인다."""
+    meter, track = synthetic(offset_s=87.4)
+    right = el.from_power_cycle(meter, track, 87.4)
+    assert right.accepted and right.method == "power_cycle" and right.em_minus_gps_s == pytest.approx(87.4)
+    t0 = T0 + EM_FROM + 100.0
+    lag, corr = el.segment_lag(right, t0, t0 + 120.0)
+    assert abs(lag) <= 0.04 and corr > 0.9
+    lag, _ = el.segment_lag(el.from_power_cycle(meter, track, 87.9), t0, t0 + 120.0)
+    assert lag == pytest.approx(-0.5, abs=0.06)
+
+
 def test_align_does_not_accept_a_different_drive():
     """닮은 곳이 없는 두 파형을 억지로 맞추지 않는다."""
     meter, track = synthetic(meter_periods=(19.0, 5.9, 37.0, 11.3))
@@ -204,3 +216,21 @@ def test_evo_week_alignment_agrees_with_power_cycles():
     for key, al in found.items():
         assert al.em_minus_gps_s == pytest.approx(cycles.loc[key, "em_minus_monolith_s"], abs=E["week.agree_abs_s"])
         assert al.f == pytest.approx(1.0, abs=E["week.f_err_max"])
+
+
+evo_race = pytest.mark.skipif(not (paths.LEF25EVO_FSK / "derived" / "em_alignment.csv").exists(), reason="25Evo 대회 em-laps 결과 없음")
+
+
+@evo_race
+@E.need
+def test_evo_race_short_runs_use_the_power_cycle_and_still_sit_on_the_line():
+    """다른 차 · 다른 GPS · 짧은 주행뿐(가속 몇 번) — 파형으로 맞출 창이 모자라 전원 주기 시계 차로 놓는다.
+    그렇게 놓은 미터 전력이 깨끗한 가속에서 GPS 위치의 일률과 따로 대 봐도 겹친다."""
+    d = paths.LEF25EVO_FSK / "derived"
+    al = pd.read_csv(d / "em_alignment.csv", encoding="utf-8-sig")
+    assert set(zip(al["em_recording"], al["gps_recording"])) == {tuple(p) for p in E["race_evo.pairs"]}
+    assert (al["method"] == "power_cycle").all() and al["accepted"].all()
+    run = pd.read_csv(d / "run_energy.csv", encoding="utf-8-sig").set_index(["recording_id", "run"])
+    for rec, n in E["race_evo.clean_runs"]:
+        r = run.loc[(rec, n)]
+        assert abs(r["em_lag_s"]) <= E["race_evo.lag_max_s"] and r["em_corr"] >= E["race_evo.corr_min"], (rec, n)

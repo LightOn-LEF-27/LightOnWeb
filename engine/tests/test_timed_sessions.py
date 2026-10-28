@@ -293,8 +293,10 @@ def sevo():
 
 @need_evo
 def test_evo_race_sessions_keep_their_promises(sevo):
-    """GPS 없는 세션의 약속 — 모든 표본이 세션 안, 에너지 = 전력의 시간 적분, 장비끼리 시계가 어긋나 보이지 않는다."""
-    assert sevo and all(s.split_by == "time" and s.track is None and s.laps.empty for s in sevo)
+    """GPS 없는 세션의 약속 — 모든 표본이 세션 안, 에너지 = 전력의 시간 적분, 장비끼리 시계가 어긋나 보이지 않는다.
+    같은 이벤트의 GPS 세션(Monolith 가 있는 전원 주기)도 배터리는 에너지미터, STM32 는 그 미터를 거쳐 GPS 시계로 옮겨져 있다."""
+    timed = [s for s in sevo if s.split_by == "time"]
+    assert timed and all(s.track is None and s.laps.empty for s in timed)
     for s in sevo:
         for b in s.blocks:
             for c in b.series or b.channels:
@@ -303,13 +305,16 @@ def test_evo_race_sessions_keep_their_promises(sevo):
         ok = np.isfinite(p.v)
         assert s.stats["net_wh"] == pytest.approx(np.trapezoid(p.v[ok], p.t_s[ok]) / 3.6, abs=max(2.0, 0.01 * abs(s.stats["net_wh"])))
         assert "clock_mismatch" not in _codes(s), s.sid
+    for s in (s for s in sevo if s.split_by == "gps"):
+        assert "에너지미터" in _blocks(s)["battery"].device and "에너지미터 전력(같은 물리량)" in _blocks(s)["motor"].checks[0], s.sid
 
 
 @need_evo
 @E.need
 def test_evo_race_golden(sevo):
-    assert len(sevo) == E["evo_race.sessions"] and [s.name for s in sevo] == E["evo_race.names"]
-    assert all(list(_blocks(s)) == E["evo_race.blocks"] for s in sevo)
+    timed = [s for s in sevo if s.split_by == "time"]
+    assert len(timed) == E["evo_race.sessions"] and [s.name for s in timed] == E["evo_race.names"]
+    assert all(list(_blocks(s)) == E["evo_race.blocks"] for s in timed)
     s = next(x for x in sevo if x.sid == E["evo_race.endurance_sid"])
     assert store.summary(s)["start"] == E["evo_race.endurance_start"]
     assert s.stats["net_wh"] == E.approx("evo_race.endurance_net_wh")

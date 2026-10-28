@@ -96,11 +96,32 @@ def test_evo_backup_logger_blocks_and_clock_check(sevo):
         assert store.drive_block(s) is not None
         lag = _rpm_lag(s)
         if lag is not None and np.isfinite(lag[2]) and abs(lag[0]) > 0.55:
-            assert any(f["code"] == "logger_clock_uncertain" for f in b["battery"].findings), (s.sid, lag)
+            assert any(f["code"] == "logger_clock_uncertain" for x in s.blocks for f in x.findings), (s.sid, lag)
     track = [s for s in sevo if s.discipline == "트랙" and "battery" in _blocks(s)]
     for s in track:                                                           # 랩 에너지 = 평균 전력 × 랩 시간 (같은 값을 두 길로)
         ok = s.laps["net_wh"].notna() & s.laps["p_mean_kw"].notna()
         assert np.allclose(s.laps.loc[ok, "net_wh"], s.laps.loc[ok, "p_mean_kw"] * s.laps.loc[ok, "lap_time_s"] / 3.6, rtol=0.05)
+
+
+@need_evo
+def test_evo_energymeter_takes_the_battery_where_it_recorded(sevo):
+    """에너지미터가 덮은 세션 — 배터리는 에너지미터(100 Hz), STM32 는 BMS · 모터만 내고 그 시계를 에너지미터 전력(같은 물리량)에 다시 대 본다.
+    에너지미터 시계는 파형으로 맞춘 값과 같은 전원 스위치로 잰 값이 같다 (서로 다른 두 방법)."""
+    if not (EVO / "derived" / "run_energy.csv").exists():
+        pytest.skip("lefdata em-laps 결과 없음")
+    em = [s for s in sevo if "battery" in _blocks(s) and "에너지미터" in _blocks(s)["battery"].device]
+    assert em
+    for s in em:
+        b = _blocks(s)
+        assert len(_channel(s, "battery", "current_a").t_s) > 50 * s.duration_s          # 100 Hz (STM32 는 초당 몇 개)
+        cycle = next((c for c in b["battery"].checks if "같은 전원 스위치" in c), None)
+        if cycle is not None:
+            assert abs(float(cycle.split("값과 ")[1].split(" s")[0])) <= 0.2, (s.sid, cycle)
+        if "motor" in b:
+            assert "에너지미터 전력(같은 물리량)" in b["motor"].checks[0], s.sid
+        assert not any(f["code"] == "clock_mismatch" for x in s.blocks for f in x.findings), s.sid
+        if len(s.laps):
+            assert s.laps["net_wh"].notna().all()
 
 
 @need26
@@ -137,8 +158,10 @@ def test_lef26_testweek_golden(s26):
 def test_evo_testweek_golden(sevo):
     from collections import Counter
     assert len(sevo) == E["evo.sessions"] and dict(Counter(s.discipline for s in sevo)) == E["evo.by_discipline"]
-    moved = [s.sid for s in sevo if "battery" in _blocks(s) and "옮겼다" in _blocks(s)["battery"].checks[0]]
+    moved = [s.sid for s in sevo if "motor" in _blocks(s) and "옮겼다" in _blocks(s)["motor"].checks[0]]
     assert moved == E["evo.clock_moved"]
+    if (EVO / "derived" / "run_energy.csv").exists():
+        assert sum("에너지미터" in _blocks(s)["battery"].device for s in sevo if "battery" in _blocks(s)) == E["evo.em_sessions"]
     s = next(x for x in sevo if x.sid == E["evo.track_sid"])
     assert store.drive_block(s).facts[0].endswith(E["evo.track_drive_fact"])
     assert float(s.laps["net_wh"].sum()) == E.approx("evo.track_net_wh")

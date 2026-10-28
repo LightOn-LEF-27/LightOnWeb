@@ -63,6 +63,8 @@ REFINE_MAX_S = 4.0          # 세션 안에서 회전수 ↔ GPS 속도를 다�
 REFINE_MIN_S = 0.5          # 이보다 적게 어긋났으면 옮기지 않는다 (GPS 속도 자체가 0.1 ~ 0.2 s 늦다)
 REFINE_MIN_CORR = 0.9       # 옮긴 뒤의 상관이 이보다 높고
 REFINE_GAIN = 0.05          #   옮기기 전보다 이만큼 좋아질 때만 옮긴다
+EM_REFINE_MIN_S = 1.0       # 에너지미터 전력에 다시 맞출 때는 이보다 크게 어긋난 것만 옮긴다 — 백업 로거 시각이 1 s 단위이고,
+                            #   에너지미터 쪽도 긴 레코딩에서는 구간마다 조금 벗어난다 (그보다 작은 차이를 쫓지 않는다)
 ACCEL_LEAD_S = 10.0         # 가속 출발(정지)은 주행 구간 시작(10 km/h 를 넘는 순간)보다 앞이다 — 그만큼 앞까지 본다
 AGREE_SMOOTH_S = 1.0        # 두 장비가 같은 물리량을 잰 것을 대 볼 때 이만큼 평균한 뒤 (1 초 간격 장비에 맞춘다)
 AGREE_TOL_S = {"stm32": 1.0, "orion": 2.0, "lef26_logger": 1.0}   # 이보다 더 어긋나 보이면 경고 — 그 장비 시각의 해상도 · 평균 길이
@@ -351,9 +353,22 @@ def _runs(t: np.ndarray, flag: np.ndarray, min_s: float = 0.0) -> list[list[floa
     return [[round(float(t[a]), 3), round(float(t[b]), 3)] for a, b in zip(starts, ends) if t[b] - t[a] >= min_s]
 
 
+def _em_mask(r: _Run, al: em_laps.Alignment, run_e: pd.Series) -> np.ndarray:
+    """세션 구간에 든 에너지미터 표본 — 미터 시간 경계(반올림해 둔 것)와 세션 시간 둘 다로 자른다."""
+    me = al.meter
+    ts = al.to_gps(me.t) - r.t0_abs
+    return (me.t >= float(run_e["em_t_start_s"])) & (me.t <= float(run_e["em_t_end_s"])) & (ts >= 0) & (ts <= r.t1 - r.t0)
+
+
+def _em_ref(r: _Run, al: em_laps.Alignment, run_e: pd.Series) -> dict:
+    """에너지미터 전력을 세션 시간으로 — 다른 장비(STM32 BMS 전력)와 대 볼 파형."""
+    m = _em_mask(r, al, run_e)
+    return {"t": al.to_gps(al.meter.t[m]) - r.t0_abs, "kw": al.meter.kw[m]}
+
+
 def _battery_block(r: _Run, al: em_laps.Alignment, run_e: pd.Series, lap_e: pd.DataFrame, fit: pd.Series) -> DataBlock:
     me = al.meter
-    m = (me.t >= float(run_e["em_t_start_s"])) & (me.t <= float(run_e["em_t_end_s"]))
+    m = _em_mask(r, al, run_e)
     ts = al.to_gps(me.t[m]) - r.t0_abs
     meta = json.loads((r.event_dir / "normalized" / me.rec / "meta.json").read_text(encoding="utf-8"))
     raw = r.event_dir / meta["source"]["file"]
@@ -395,9 +410,12 @@ def _battery_block(r: _Run, al: em_laps.Alignment, run_e: pd.Series, lap_e: pd.D
         lap_columns=[LapColumn("net_wh", "순 에너지", "Wh", 0, chart=True), LapColumn("regen_wh", "돌아온 에너지", "Wh", 1),
                      LapColumn("p_mean_kw", "평균 전력", "kW", 1), LapColumn("i_max_a", "전류 최대", "A", 0, chart=True),
                      LapColumn("v_min_v", "팩 전압 최저", "V", 0)],
-        checks=[f"미터에는 GPS 가 없어 전력 파형으로 시계를 맞춤 — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞, "
+        checks=[f"미터 시계를 같은 전원 스위치로 켜지고 꺼진 시각에 맞춤 (lefdata clocks) — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞. "
+                "주행이 짧아 전력 파형으로 맞출 창이 모자랐다" if fit.get("method", "wave") == "power_cycle" else
+                f"미터에는 GPS 가 없어 전력 파형으로 시계를 맞춤 — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞, "
                 f"30 초 창 {int(fit['inliers'])} / {int(fit['windows'])}개가 한 직선 위 (잔차 {fit['rms_s']:.2f} s)",
-                f"랩 하나씩 따로 다시 대 본 어긋남 {lag.min():+.2f} ~ {lag.max():+.2f} s"],
+                f"랩 하나씩 따로 다시 대 본 어긋남 {lag.min():+.2f} ~ {lag.max():+.2f} s" if lag.notna().any() else
+                f"이 주행 구간만 따로 다시 대 본 어긋남 {run_e['em_lag_s']:+.2f} s (상관 {run_e['em_corr']:.2f})"],
         cautions=cautions, series=series, findings=findings)
 
 
@@ -653,17 +671,24 @@ def _logger_imu_block(r, logs: list, how: str) -> DataBlock | None:
 # ---------------------------------------------------------------- 25Evo STM32 백업 로거 (Monolith GPS 시계에 맞춘 것)
 
 class _Stm32:
-    """이벤트의 STM32 레코딩 중 GPS 레코딩과 시계가 맞은 것 (derived/stm32_alignment.csv 의 gps_ok · applied)."""
+    """이벤트의 STM32 레코딩 중 시계를 맞춘 것 (derived/stm32_alignment.csv 의 applied).
+
+    clock = gps 면 t_abs 가 GPS 로거 시계 (그 GPS 레코딩과 짝, gps_ok), em 이면 에너지미터 시계 (그 미터 레코딩과 짝, em_ok).
+    """
 
     def __init__(self, event_dir: Path):
         self.norm = event_dir / "normalized"
         a = _read(event_dir / "derived" / "stm32_alignment.csv")
-        self.table = a[a["gps_ok"].astype(bool) & a["applied"].astype(bool)] if a is not None else None
+        self.table = a[a["applied"].astype(bool)] if a is not None else None
 
-    def for_gps(self, gps_rec: str) -> pd.DataFrame:
+    def for_gps(self, gps_rec: str, em_rec: str | None = None) -> pd.DataFrame:
         if self.table is None:
             return pd.DataFrame()
-        return self.table[self.table["gps_recording"] == gps_rec]
+        t = self.table
+        clock = t["clock"] if "clock" in t else pd.Series("gps", index=t.index)
+        on_gps = (clock == "gps") & t["gps_ok"].astype(bool) & (t["gps_recording"] == gps_rec)
+        on_em = (clock == "em") & t["em_ok"].astype(bool) & (t["em_recording"] == em_rec) if em_rec else False
+        return t[on_gps | on_em]
 
 
 def _stm32_frame(r, rec: str, name: str, offset_s: float = 0.0) -> pd.DataFrame | None:
@@ -697,21 +722,39 @@ def best_lag(t, v, t_ref, v_ref, max_s: float = REFINE_MAX_S, step: float = 0.1)
     return float(k), corr[0.0], corr[k]
 
 
-def _stm32_blocks(r: _Run, stm: _Stm32) -> list[DataBlock]:
-    """25Evo STM32 백업 로거 (GPS 세션) — Monolith GPS 와 시계를 맞춘 레코딩만."""
-    rows = stm.for_gps(r.rec)
+def _stm32_blocks(r: _Run, stm: _Stm32, em_ref: dict | None = None, al: em_laps.Alignment | None = None) -> list[DataBlock]:
+    """25Evo STM32 백업 로거 (GPS 세션). em_ref = 같은 구간의 에너지미터 전력 (있으면 배터리는 그쪽), al = 그 미터를 GPS 에 맞춘 것.
+
+    Monolith GPS 에 시계를 맞춘 레코딩은 그대로, 에너지미터에 맞춘 레코딩(대회)은 al 로 GPS 시계까지 한 번 더 옮긴다.
+    """
+    rows = stm.for_gps(r.rec, al.meter.rec if al is not None else None)
     if rows.empty:
         return []
-    fits = " · ".join(f"{x['recording_id']} 시계 속도 {x['gps_f']:.4f} (창 {int(x['gps_windows'])}개)" for _, x in rows.iterrows())
-    clock = f"로거 시계를 Monolith GPS 에 맞춤 — 모터 회전수 ↔ GPS 속도 파형으로 시작 시각과 시계 속도를 같이 구함 (lefdata evo-stm32 --clock gps). {fits}"
-    return _stm32_make(r, {rec: 0.0 for rec in rows["recording_id"]}, clock, refine=True)
+    offs, fits, on_em = {}, [], False
+    for _, x in rows.iterrows():
+        if x.get("clock", "gps") == "em":
+            mid = float(al.to_em(r.t0_abs + (r.t1 - r.t0) / 2))                 # 세션 가운데의 미터 경과시간
+            offs[x["recording_id"]] = al.a + (al.f - 1) * mid                    # 미터 시계 → GPS 시계
+            fits.append(f"{x['recording_id']} 시계 속도 {x['em_f']:.4f} (창 {int(x['em_windows'])}개)")
+            on_em = True
+        else:
+            offs[x["recording_id"]] = 0.0
+            fits.append(f"{x['recording_id']} 시계 속도 {x['gps_f']:.4f} (창 {int(x['gps_windows'])}개)")
+    if on_em:
+        clock = (f"로거 시계를 에너지미터에 맞춤 — DC 버스 전압 ↔ 미터 전압 파형으로 시작 시각과 시계 속도를 같이 구함 (lefdata evo-stm32), "
+                 f"그 미터를 GPS 에 맞춘 값으로 한 번 더 옮김. {' · '.join(fits)}")
+    else:
+        clock = f"로거 시계를 Monolith GPS 에 맞춤 — 모터 회전수 ↔ GPS 속도 파형으로 시작 시각과 시계 속도를 같이 구함 (lefdata evo-stm32 --clock gps). {' · '.join(fits)}"
+    return _stm32_make(r, offs, clock, refine=True, skip=("battery",) if em_ref is not None else (), ref=em_ref)
 
 
-def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, skip: tuple = ()) -> list[DataBlock]:
+def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, skip: tuple = (), ref: dict | None = None) -> list[DataBlock]:
     """25Evo STM32 백업 로거 → battery (팩 전압 · 전류 · 전력) · bms (셀 · 온도 · SOC) · motor (온도 · 회전수).
 
     recs = {레코딩: 로거 시각에 더하면 기준 시계가 되는 초}. clock = 시계를 어떻게 맞췄나 (블록 '확인' 글).
     refine = 세션 안에서 GPS 속도와 한 번 더 대 본다 (GPS 세션만). skip = 만들지 않을 블록 (다른 장비가 더 촘촘한 값을 줄 때).
+    ref = 같은 구간의 에너지미터 전력 {t, kw}. refine 이면 회전수 ↔ GPS 속도 대신 BMS 전력 ↔ 에너지미터 전력(같은 물리량,
+    에너지미터는 GPS 위치에 맞춰 둔 것)으로 다시 맞추고, 아니면 대 본 결과만 첫 블록의 '확인' 에 적는다 (어긋나 보이면 clock_mismatch).
     """
     parts = {name: [d for d in (_stm32_frame(r, rec, name, off) for rec, off in recs.items()) if d is not None and len(d)]
              for name in ("bms", "motor")}
@@ -722,7 +765,26 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
     src = ", ".join(recs)
     unsure = ""
     # 레코딩 전체를 직선 하나로 맞춘 시계는 긴 레코딩의 한 구간에서 몇 초 벗어날 수 있다 → 이 세션 안에서 한 번 더 대 본다
-    if refine and mot is not None and "rpm" in mot and mot["rpm"].notna().sum() >= 30:
+    by_speed = refine and mot is not None and "rpm" in mot and mot["rpm"].notna().sum() >= 30
+    if refine and ref is not None and bms is not None and bms["power_kw"].notna().sum() >= 30:
+        lag, c0, c1 = best_lag(*_smoothed(bms["t_s"], bms["power_kw"]), *_smoothed(ref["t"], ref["kw"]))
+        also = ""
+        if by_speed:
+            k, _, c = best_lag(mot["t_s"].to_numpy(), np.abs(mot["rpm"].to_numpy(float)), r.ts, r.gps["speed_kmh"].to_numpy(float))
+            also = f" (회전수 ↔ GPS 속도로 재면 {k:+.1f} s, 상관 {c:.2f})" if np.isfinite(c) else ""
+        how = "BMS 전력 ↔ 에너지미터 전력(같은 물리량)"
+        if abs(lag) >= EM_REFINE_MIN_S and c1 >= REFINE_MIN_CORR:
+            dur = r.t1 - r.t0
+            shift = lambda d: d.assign(t_s=d["t_s"] + lag).pipe(lambda d: d[(d["t_s"] >= 0) & (d["t_s"] <= dur)])   # noqa: E731
+            bms = shift(bms)
+            mot = shift(mot) if mot is not None else None
+            clock += f" · 이 세션 안에서 {how} 을 다시 대 보니 {lag:+.1f} s 어긋나 있어 옮겼다 (상관 {c0:.2f} → {c1:.2f}){also}"
+        elif np.isfinite(c1):
+            clock += f" · 이 세션 안에서 {how} 을 다시 대 본 어긋남 {lag:+.1f} s (상관 {c1:.2f}) — 옮기지 않음{also}"
+            if abs(lag) >= EM_REFINE_MIN_S:
+                unsure = (f"백업 로거 시계가 에너지미터와 {lag:+.1f} s 어긋났을 수 있다 — 다시 대 본 상관이 {c1:.2f} 라 옮길 만큼 확실하지 않아 그대로 둠. "
+                          "순간 값의 시각(가속 출발 · 제동 시작)은 믿지 말 것")
+    elif by_speed:
         lag, c0, c1 = best_lag(mot["t_s"].to_numpy(), np.abs(mot["rpm"].to_numpy(float)), r.ts, r.gps["speed_kmh"].to_numpy(float))
         if abs(lag) >= REFINE_MIN_S and c1 >= REFINE_MIN_CORR and c1 - c0 >= REFINE_GAIN:
             dur = r.t1 - r.t0
@@ -751,13 +813,13 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
                           cautions=["아랫자리만 남아 있어 윗자리를 DC 버스 전압으로 되살린 값", slow]),
                   Channel("power_kw", "전력", "kW", t, bms["power_kw"].to_numpy(), sign="방전 +", source=src, digits=1,
                           cautions=["BMS 가 보낸 팩 전력 (0.1 kW 단위)", slow])]
-        _lap_stat(r, "p_mean_kw", t, bms["power_kw"].to_numpy(), np.nanmean)
-        energy = []
-        for a, b in zip(r.laps["t_start_s"], r.laps["t_end_s"]):              # 랩 에너지 = 전력을 시간으로 적분 (표본 수가 아니라 시간 열로)
-            m = (t >= a) & (t < b)
-            energy.append(float(np.trapezoid(bms["power_kw"].to_numpy()[m], t[m]) / 3.6) if m.sum() > 1 else np.nan)
-        r.laps["net_wh"] = energy
         if "battery" not in skip:
+            _lap_stat(r, "p_mean_kw", t, bms["power_kw"].to_numpy(), np.nanmean)
+            energy = []
+            for a, b in zip(r.laps["t_start_s"], r.laps["t_end_s"]):          # 랩 에너지 = 전력을 시간으로 적분 (표본 수가 아니라 시간 열로)
+                m = (t >= a) & (t < b)
+                energy.append(float(np.trapezoid(bms["power_kw"].to_numpy()[m], t[m]) / 3.6) if m.sum() > 1 else np.nan)
+            r.laps["net_wh"] = energy
             blocks.append(DataBlock("battery", "배터리 전압 · 전류", HAVE, "25Evo STM32 백업 로거 — BMS 값 (팩 전압 · 전류 · 전력)",
                                     [f"표본 {len(t):,}개", f"전력 최대 {np.nanmax(bms['power_kw']):.1f} kW · 전류 최대 {np.nanmax(bms['current_a']):.0f} A",
                                      f"팩 전압 {np.nanmin(bms['pack_v']):.0f} ~ {np.nanmax(bms['pack_v']):.0f} V"],
@@ -802,6 +864,10 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
                                     raw=raw, code=code, outputs=[FileRef("변환된 표 (레코딩 전체)", "motor.parquet", where=where)],
                                     channels=series, time_keys=[c.key for c in series if c.key in ("t_igbt_c", "t_motor_c")], lap_columns=cols,
                                     checks=[clock], cautions=extra, series=series))
+    if findings and "battery" in skip and blocks:                   # 경고는 배터리 블록에 달았다 — 그것을 만들지 않았으면 처음 블록에
+        blocks[0].findings = blocks[0].findings + findings
+    if ref is not None and bms is not None and blocks and not refine:      # GPS 세션은 위에서 에너지미터에 맞췄다
+        _add_check(blocks[0], _agree(bms["t_s"], bms["power_kw"], ref["t"], ref["kw"], "stm32", "STM32 백업 로거의 BMS 전력을 에너지미터 전력과 대 봄"))
     return blocks
 
 
@@ -1144,17 +1210,12 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks) -> tuple[list[
     if part:
         skip = tuple(k for k, b in (("battery", em), ("bms", orion)) if b is not None)
         made = _stm32_make(w, {x.rec: off for x, off in part},
-                           f"백업 로거 시각(lefdata evo-stm32 가 다른 장비에 맞춰 둔 것)을 기준 시계로 옮김 — {said(part)}", skip=skip)
+                           f"백업 로거 시각(lefdata evo-stm32 가 다른 장비에 맞춰 둔 것)을 기준 시계로 옮김 — {said(part)}", skip=skip, ref=em_ref)
         bat = next((b for b in made if b.key == "battery"), None)
         if bat is not None and em is None:
             p, i = (next(c for c in bat.series if c.key == k) for k in ("power_kw", "current_a"))
             ok = np.isfinite(p.v)
             stats.update(net_wh=round(float(np.trapezoid(p.v[ok], p.t_s[ok]) / 3.6)), i_max_a=round(float(np.nanmax(i.v))))
-        frames = [f for f in (_stm32_frame(w, x.rec, "bms", off) for x, off in part) if f is not None and len(f)]
-        if em_ref is not None and made and frames:
-            d = pd.concat(frames).sort_values("t_s")
-            _add_check(made[0], _agree(d["t_s"], d["power_kw"], em_ref["t"], em_ref["kw"], "stm32",
-                                       "STM32 백업 로거의 BMS 전력을 에너지미터 전력과 대 봄"))
         blocks += made
     if orion is not None:
         if em_ref is not None and orion_ref is not None:
@@ -1264,18 +1325,23 @@ def _gps_sessions(event_dir: Path, notes: dict, made: dict) -> list[Session]:
     runs, laps = _read(derived / "runs.csv"), _read(derived / "laps.csv")
     if runs is None or laps is None:
         raise FileNotFoundError("runs.csv · laps.csv 가 없다 — 먼저 랩 분할(lefdata laps 또는 gopro --laps)을 돌릴 것")
+    if "run" not in laps:                                      # 완주 랩이 하나도 없는 이벤트 (가속 · 스키드패드뿐)
+        laps = pd.DataFrame(columns=["recording_id", "run", "lap", "t_start_s", "t_end_s", "lap_time_s", "distance_m", "vmax_kmh", "vmin_kmh"])
     gate_file = json.loads((derived / "gate.json").read_text(encoding="utf-8"))
     origin = gate_file["origin"]
     gate = {"x_m": round(float(gate_file["gate"]["x"]), 2), "y_m": round(float(gate_file["gate"]["y"]), 2),
             "heading_deg": round(float(gate_file["gate"]["heading_deg"]), 1), "half_width_m": float(gate_file.get("half_width_m", 0.0))}
     run_e, lap_e, fits = _read(derived / "run_energy.csv"), _read(derived / "lap_energy.csv"), _read(derived / "em_alignment.csv")
-    aligned = {a.meter.rec: a for a in em_laps.align_event(event_dir) if a.accepted} if run_e is not None else {}
+    aligned = {(a.meter.rec, a.track.rec): a for a in em_laps.align_event(event_dir) if a.accepted} if run_e is not None else {}
+    cycles = _read(derived / "power_cycles.csv")                # 같은 전원 스위치 — 켜지고 꺼진 시각으로 따로 잰 시계 차 (있으면)
     ev = notes.get("event", {})
     named = {(s["recording"], int(s["run"])): s for s in notes.get("session", [])}
     if ev.get("sessions") == "auto":
         named = {**_auto_sessions(runs, derived), **named}
     loggers, stm = _Loggers(event_dir), _Stm32(event_dir)
     day_notes = ev.get("day_notes", {})
+    clocks = _Clocks(notes) if ev.get("clock") else None        # 시각 구간 세션과 섞인 이벤트 — 시작 시각을 같은 기준 시계로 보인다
+    gps_recs = {x.rec: x for x in _recordings(event_dir) if x.device in GPS_DEVICES} if clocks else {}
 
     sessions = []
     for _, run in runs.iterrows():
@@ -1285,19 +1351,29 @@ def _gps_sessions(event_dir: Path, notes: dict, made: dict) -> list[Session]:
         info = named[key]
         mine = laps[(laps["recording_id"] == key[0]) & (laps["run"] == key[1])]
         r = _Run(event_dir, key[0], run, mine, origin, notes)
-        blocks = [_gps_block(r), _imu_block(r)] + _logger_blocks(r, loggers.for_video(r.rec)) + _stm32_blocks(r, stm)
         stats = {"distance_km": round(float(run["distance_m"]) / 1000, 2), "laps_n": int(run["full_laps"]),
                  "best_lap_s": round(float(mine["lap_time_s"].min()), 2) if len(mine) else None, "vmax_kmh": round(float(run["vmax_kmh"]), 1)}
-        if run_e is not None:
-            e = run_e[(run_e["recording_id"] == key[0]) & (run_e["run"] == key[1])]
-            if len(e) and e.iloc[0]["em_recording"] in aligned:
-                e = e.iloc[0]
-                blocks.append(_battery_block(r, aligned[e["em_recording"]], e,
-                                             lap_e[(lap_e["recording_id"] == key[0]) & (lap_e["run"] == key[1])],
-                                             fits[fits["em_recording"] == e["em_recording"]].iloc[0]))
-                stats.update(net_wh=round(float(e["net_wh"])), wh_per_km=round(float(e["wh_per_km"])), i_max_a=round(float(e["i_max_a"])))
+        e = run_e[(run_e["recording_id"] == key[0]) & (run_e["run"] == key[1])] if run_e is not None else pd.DataFrame()
+        e = e.iloc[0] if len(e) and (e.iloc[0]["em_recording"], key[0]) in aligned and e.iloc[0]["cover_share"] >= em_laps.MIN_COVER else None
+        al = aligned[(e["em_recording"], key[0])] if e is not None else None
+        blocks = [_gps_block(r), _imu_block(r)] + _logger_blocks(r, loggers.for_video(r.rec)) + _stm32_blocks(r, stm, _em_ref(r, al, e) if al else None, al)
+        if al is not None:
+            fit = fits[(fits["em_recording"] == e["em_recording"]) & (fits["gps_recording"] == key[0])].iloc[0]
+            em = _battery_block(r, al, e, lap_e[(lap_e["recording_id"] == key[0]) & (lap_e["run"] == key[1])], fit)
+            pc = cycles[(cycles["energymeter"] == e["em_recording"]) & (cycles["monolith"] == key[0])] if cycles is not None else pd.DataFrame()
+            if len(pc) and fit.get("method", "wave") != "power_cycle":
+                x = float(pc.iloc[0]["em_minus_monolith_s"])
+                em.checks.append(f"같은 전원 스위치로 켜지고 꺼진 시각으로 따로 잰 시계 차 {x:.1f} s (lefdata clocks) — 파형으로 맞춘 값과 "
+                                 f"{float(fit['em_minus_gps_s']) - x:+.2f} s 차이")
+            blocks.append(em)
+            stats.update(net_wh=round(float(e["net_wh"])), wh_per_km=round(float(e["wh_per_km"])), i_max_a=round(float(e["i_max_a"])))
         blocks.append(_video_block(r))
         start = pd.Timestamp(r.t0_abs, unit="s", tz="UTC").tz_convert(TZ)
+        shown = []
+        x = gps_recs.get(r.rec)
+        if x is not None and clocks.known(x) and clocks.offset(x):
+            start += pd.Timedelta(seconds=clocks.offset(x))
+            shown = [f"시작 시각은 이벤트의 기준 시계로 옮겨 보인다 — {clocks.text(x)}. 세션 안의 시간축(t_s)은 GPS 로거 그대로"]
         gps_cols = [c for c in r.laps.columns if c not in ("t_start_s", "t_end_s")]
         blocks[0].exports.append(Export("laps.csv", "이 세션의 랩별 값 전체 (모든 데이터 종류의 열을 한 표에)", r.laps[gps_cols].round(3), f"{len(r.laps)} 랩"))
         track = pd.DataFrame({"t_s": r.ts, "x_m": r.x, "y_m": r.y, "dist_m": r.dist})
@@ -1309,7 +1385,7 @@ def _gps_sessions(event_dir: Path, notes: dict, made: dict) -> list[Session]:
             blocks=[b for b in blocks if b is not None],
             missing=[Missing(m["data"], m["status"], m["reason"], m.get("ask", ""), m.get("block", "")) for m in notes.get("missing", [])
                      if not m.get("sessions") or info.get("name") in m["sessions"]],
-            notes=list(info.get("notes", [])) + _segment_notes(info, derived, r) + list(day_notes.get(f"{start:%Y-%m-%d}", [])), made=made))
+            notes=list(info.get("notes", [])) + _segment_notes(info, derived, r) + shown + list(day_notes.get(f"{start:%Y-%m-%d}", [])), made=made))
     return sessions
 
 

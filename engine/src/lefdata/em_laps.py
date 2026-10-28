@@ -14,6 +14,10 @@ GPS 쪽 일률은 **위치에서 낸 속도**로 만든다 — 수신기가 주�
 시계도 위치의 시간축에 맞춰야 하는데, GoPro 의 속도 열은 위치보다 1/10 초 남짓 늦다.
 
 먼저 `lefdata energymeter` 와 랩 분할(`lefdata laps` 또는 `gopro --laps`)이 끝나 있어야 한다.
+
+주행이 짧아(가속 몇 번뿐) 파형으로 맞출 창이 모자라면, 같은 전원 스위치에 물린 GPS 로거와 켜지고 꺼진 시각으로 잰 시계 차
+(`derived/power_cycles.csv`, `lefdata clocks`)를 쓴다 — `method = power_cycle`, 시계 속도는 1 로 둔다. 구간마다 다시 대 보는
+검증(`em_lag_s`)은 그대로 한다.
 결과는 해석이므로 derived/ 에 둔다.
 
     em_alignment.csv   에너지미터 레코딩 ↔ GPS 레코딩: 시계 차 · 시계 속도 · 맞은 창 수 · 상관
@@ -65,7 +69,7 @@ P500_S = 0.5
 COAST_A = 5.0               # 전류의 크기가 이보다 작으면 페달을 뗀 것으로 본다
 LAP_LAGS_S = np.arange(-1.0, 1.0001, 0.02)
 
-ALIGN_COLS = ["em_recording", "gps_recording", "accepted", "windows", "inliers", "corr_median", "em_minus_gps_s", "f",
+ALIGN_COLS = ["em_recording", "gps_recording", "method", "accepted", "windows", "inliers", "corr_median", "em_minus_gps_s", "f",
               "rms_s", "span_s", "gps_t_abs_at_em_start", "discharge_wh", "regen_wh"]
 JOIN_COLS = ["t_abs_start", "em_recording", "em_t_start_s", "em_t_end_s", "cover_share", "em_lag_s", "em_corr"]
 VALUE_COLS = ["discharge_wh", "regen_wh", "net_wh", "wh_per_km", "p_mean_kw", "p_max_kw", "p500_max_kw",
@@ -169,9 +173,12 @@ class Alignment:
     rms_s: float
     span_s: float
     t_mid: float                # 맞은 창들의 가운데 (미터 경과시간)
+    method: str = "wave"        # wave = 전력 파형 · power_cycle = 같은 전원 스위치로 잰 시계 차 (파형으로 못 맞췄을 때)
 
     @property
     def accepted(self) -> bool:
+        if self.method == "power_cycle":
+            return True
         return (self.inliers >= MIN_WINDOWS and self.inliers >= MIN_INLIER_SHARE * self.windows
                 and self.corr_median >= MIN_CORR)
 
@@ -292,11 +299,29 @@ def driven_meters(norm: Path) -> list[Path]:
     return [norm / r for r in rows.loc[rows["hv_on"] & (rows["discharge_wh"] >= MIN_WH), "recording_id"]]
 
 
+def from_power_cycle(meter: Meter, track: Track, em_minus_gps_s: float) -> Alignment:
+    """같은 전원 스위치로 켜지고 꺼진 두 장비 — 시계 차 하나로 맞춘다 (시계 속도 1, 둘 다 크리스털 시계)."""
+    return Alignment(meter, track, -float(em_minus_gps_s), 1.0, 0, 0, np.nan, np.nan, 0.0, float(np.mean(meter.t)), "power_cycle")
+
+
+def _power_cycles(out: Path) -> dict[tuple[str, str], float]:
+    """derived/power_cycles.csv → {(에너지미터 레코딩, GPS 레코딩): 미터 시계 − GPS 로거 시계 (s)}. 없으면 빈 것."""
+    path = out / "power_cycles.csv"
+    if not path.exists():
+        return {}
+    rows = pd.read_csv(path, encoding="utf-8-sig")
+    return {(r["energymeter"], r["monolith"]): float(r["em_minus_monolith_s"]) for _, r in rows.iterrows()}
+
+
 def align_event(event_dir: Path) -> list[Alignment]:
-    """랩이 있는 GPS 레코딩마다 시계상 겹칠 수 있는 에너지미터 레코딩을 전부 대 본다 (맞지 않은 것도 돌려준다)."""
+    """랩이 있는 GPS 레코딩마다 시계상 겹칠 수 있는 에너지미터 레코딩을 전부 대 본다 (맞지 않은 것도 돌려준다).
+
+    파형으로 맞추지 못한 짝이 같은 전원 주기(power_cycles.csv)에 있으면 그 시계 차로 맞춘 것을 더한다.
+    """
     norm, out = event_dir / "normalized", event_dir / "derived"
     runs = pd.read_csv(out / "runs.csv", encoding="utf-8-sig")
     meters = [read_meter(p) for p in driven_meters(norm)]
+    cycles = _power_cycles(out)
     found = []
     for rid in runs["recording_id"].unique():
         track = read_track(norm / rid)
@@ -306,11 +331,13 @@ def align_event(event_dir: Path) -> list[Alignment]:
             al = align(me, track)
             if al is not None:
                 found.append(al)
+            if (al is None or not al.accepted) and (me.rec, rid) in cycles:
+                found.append(from_power_cycle(me, track, cycles[(me.rec, rid)]))
     return found
 
 
 def alignment_table(found: list[Alignment]) -> pd.DataFrame:
-    rows = [{"em_recording": al.meter.rec, "gps_recording": al.track.rec, "accepted": al.accepted, "windows": al.windows,
+    rows = [{"em_recording": al.meter.rec, "gps_recording": al.track.rec, "method": al.method, "accepted": al.accepted, "windows": al.windows,
              "inliers": al.inliers, "corr_median": round(al.corr_median, 3), "em_minus_gps_s": round(al.em_minus_gps_s, 2),
              "f": round(al.f, 5), "rms_s": round(al.rms_s, 3), "span_s": round(al.span_s, 1),
              "gps_t_abs_at_em_start": lc._iso(float(al.to_gps(0.0))),
