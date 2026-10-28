@@ -35,7 +35,7 @@ import pandas as pd
 
 from . import __version__, paths, sectors, series as ser, session_store as store
 
-CONTRACT_VERSION = "0.6"
+CONTRACT_VERSION = "0.7"
 MAX_POINTS = 20_000
 MAX_CHANNELS = 16
 MAX_SMOOTH_S = 10.0

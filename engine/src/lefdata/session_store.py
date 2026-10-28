@@ -16,7 +16,7 @@
 저장소 위치 기본값은 `07_데이터/_sessions` — 환경 변수 `LEF_SESSION_ROOT` 로 바꾼다.
 
 엔진이 계산해 더하는 블록: `drive` (주행 상태 추정 — 배터리 전력 + GPS 속도, `lefdata.drive`). 페달 신호가 생기면 그쪽으로 바꾼다.
-시각 구간 세션(`split_by = "time"`, GPS 없음)은 랩 · 코스 · frame 이 없다 — track.parquet 를 쓰지 않고 랩 표는 비어 있다.
+코스가 없는 세션(`has_track = false` — GPS 가 없는 시각 구간 세션)은 랩 · frame 이 없다 — track.parquet 를 쓰지 않고 랩 표는 비어 있다.
 frame 은 같은 `frame_id` 의 세션 전부에서 기준 랩을 하나 고른 것이다 (`lefdata.sectors`). 세션이 더 들어와도 바뀌지 않아야
 구간 시간 · 시간 차가 날마다 달라지지 않는다. frame_id 가 없는 세션은 그 세션만의 frame 을 갖는다 (다른 세션과 비교하지 않는다).
 """
@@ -72,7 +72,7 @@ def summary(s: Session, blocks: list[DataBlock] | None = None) -> dict:
             "event_title": s.event_title, "discipline": s.discipline, "place": s.place, "driver_label": s.driver,
             "start": _iso(s.start), "duration_s": _num(s.duration_s, 2), "distance_km": st.get("distance_km"), "laps": st.get("laps_n"),
             "best_lap_s": st.get("best_lap_s"), "stats": {k: v for k, v in st.items() if k not in ("distance_km", "laps_n", "best_lap_s")},
-            "frame_id": s.frame_id or None, "split_by": s.split_by, "blocks": blocks, "data_status": status}
+            "frame_id": s.frame_id or None, "split_by": s.split_by, "has_track": s.track is not None, "blocks": blocks, "data_status": status}
 
 
 def _channel_specs(b: DataBlock) -> list[tuple[Channel, dict]]:

@@ -202,6 +202,7 @@ def test_store_and_api_answer_a_session_without_gps(timed_store):
     sid = timed_store[0]["sid"]
     row = next(r for r in api.list_sessions() if r["sid"] == sid)
     assert row["split_by"] == "time" and row["laps"] is None and row["distance_km"] is None and row["frame_id"] is None
+    assert row["has_track"] is False
     assert row["blocks"]["have"] == ["battery", "motor", "bms"]
     s = json.loads(json.dumps(api.get_session(sid), allow_nan=False))
     assert s["best_lap"] is None and [b["block"] for b in s["blocks"]] == ["battery", "motor", "bms"]
@@ -218,6 +219,59 @@ def test_store_and_api_answer_a_session_without_gps(timed_store):
         assert e.value.code == "bad_argument"
     assert all(f["code"] != "clock_mismatch" for f in api.get_quality(sid))
     assert not list((api._root() / store.FRAMES).glob("*.json"))                   # 랩이 없으니 frame 도 없다
+
+
+# ---------------------------------------------------------------- GPS 가 덮는 시각 구간 (데이터 없이)
+
+def write_gps_event(root, notes: str):
+    """반지름 R 원을 다섯 바퀴 도는 GoPro 레코딩 하나 (시각 T0 부터, 앞뒤 30 s 서 있다) + 랩 분할 + 메모."""
+    import test_venue
+    from lefdata import laps
+    ev = test_venue.write_event(root, "2027-06-05_gps")
+    rec = ev / "normalized" / "2027-06-05_gps_rec"
+    g = pd.read_parquet(rec / "gps.parquet")
+    g["t_abs"] = _stamp(T0, g["t_rel_ms"] / 1000.0).to_numpy()
+    g.to_parquet(rec / "gps.parquet", index=False)
+    span = float(g["t_rel_ms"].iloc[-1]) / 1000.0
+    (rec / "meta.json").write_text(json.dumps({"car": "LEF-27", "label": "practice", "source": {"logger": "GoPro 온보드 영상 (GPMF)", "file": "raw/x.mp4"},
+                                               "time": {"t_abs_start": T0.isoformat(), "duration_s": span}}, ensure_ascii=False), encoding="utf-8")
+    laps.run_event(ev)
+    (ev / cb.NOTES_NAME).write_text('[event]\ncar = "LEF-27"\nclock = "gopro"\nsessions = "auto"\n' + notes, encoding="utf-8")
+    return ev
+
+
+LAP_S = 2 * np.pi * 60.0 / (50 / 3.6)                                          # test_venue 의 원 한 바퀴
+
+
+def test_a_time_window_covered_by_gps_gets_laps_and_takes_the_run(tmp_path):
+    """Run Sheet 시각이 GPS 주행을 덮으면 GPS 세션과 같은 랩 · 코스가 나오고, 그 주행은 자동 GPS 세션으로 따로 생기지 않는다."""
+    ev = write_gps_event(tmp_path, '[[timed_session]]\nstart = "2027-06-05 10:00:10"\nend = "2027-06-05 10:03:10"\ndiscipline = "연습 주행"\n')
+    [s] = cb.build_event(ev)
+    own = pd.read_csv(ev / "derived" / "laps.csv", encoding="utf-8-sig")
+    assert s.split_by == "time" and s.track is not None and s.frame_id and s.start == T0 + pd.Timedelta(seconds=10)
+    assert np.allclose(s.laps["lap_time_s"], own["lap_time_s"]) and list(s.laps["lap"]) == list(range(1, len(own) + 1))
+    assert {"gps"} <= {b.key for b in s.blocks} and any("이 구간을 덮는 GPS 기록" in n for n in s.notes)
+    assert store.summary(s)["has_track"] is True
+
+
+def test_a_short_window_keeps_only_its_laps_renumbered(tmp_path):
+    """주행의 일부만 덮는 시각 구간 — 구간 안에 다 든 랩만, 1 부터 다시 센다 (주행 대부분이 밖이라 자동 GPS 세션도 남는다)."""
+    ev = write_gps_event(tmp_path, "")
+    own = pd.read_csv(ev / "derived" / "laps.csv", encoding="utf-8-sig")
+    a, b = own["t_start_s"].iloc[1] - 2.0, own["t_end_s"].iloc[2] + 2.0          # 2 · 3 번째 랩만 다 들어간다
+    with open(ev / cb.NOTES_NAME, "a", encoding="utf-8") as f:
+        f.write(f'[[timed_session]]\nstart = "{(T0 + pd.Timedelta(seconds=a)).isoformat()}"\n'
+                f'end = "{(T0 + pd.Timedelta(seconds=b)).isoformat()}"\ndiscipline = "연습 주행"\n')
+    timed = [s for s in cb.build_event(ev) if s.split_by == "time"]
+    assert len(timed) == 1 and list(timed[0].laps["lap"]) == [1, 2]
+    assert np.allclose(timed[0].laps["lap_time_s"], LAP_S, rtol=0.01)
+
+
+def test_the_same_run_written_twice_stops(tmp_path):
+    ev = write_gps_event(tmp_path, '[[timed_session]]\nstart = "2027-06-05 10:00:10"\nend = "2027-06-05 10:03:10"\ndiscipline = "연습 주행"\n'
+                                   '[[session]]\nrecording = "2027-06-05_gps_rec"\nrun = 1\ndiscipline = "연습 주행"\n')
+    with pytest.raises(ValueError, match="두 번"):
+        cb.build_event(ev)
 
 
 # ---------------------------------------------------------------- 우리 데이터 — LEF-26 테스트위크 (보편)
@@ -268,6 +322,19 @@ def test_logger_time_window_matches_the_video_session(s26):
     for key in ("long_g", "lat_g", "yaw_dps"):                                        # 로거 축 ↔ 카메라 축 (서로 다른 센서)
         lag, c = _lag(_ch(t, "imu", key), _ch(g, "imu", key))
         assert abs(lag) <= 0.3 and c > 0.9, (key, lag, c)
+
+
+@need26
+def test_a_time_window_over_a_video_run_matches_the_gps_session(s26):
+    """트랙데이 Run Sheet 처럼 시각으로 적은 구간이 영상 GPS 주행을 덮으면 — 같은 랩 · 같은 블록, 그 주행은 시각 구간 세션이 가져간다."""
+    g = max((s for s in s26 if s.discipline == "트랙"), key=lambda s: len(s.laps))
+    notes = {**cb.load_notes(L26), "clocks": {"lef26_logger": {"offset_s": 0.0}},
+             "timed_session": [{"start": (g.start - pd.Timedelta(seconds=20)).isoformat(),
+                                "end": (g.start + pd.Timedelta(seconds=g.duration_s + 20)).isoformat(), "discipline": "트랙"}]}
+    notes["event"] = {**notes.get("event", {}), "clock": "gopro"}
+    [t], covered = cb._timed(L26, notes, {}, cb._GpsCtx(L26, notes, {}))
+    assert t.split_by == "time" and t.track is not None and len(covered) == 1
+    assert np.allclose(t.laps["lap_time_s"], g.laps["lap_time_s"]) and [b.key for b in t.blocks] == [b.key for b in g.blocks]
 
 
 @need26
