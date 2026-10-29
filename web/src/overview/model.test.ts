@@ -13,7 +13,7 @@ function page(over: Partial<SessionRow> = {}, best_lap: number | null = 5): Sess
     sid: 'DEMO-1_2027-05-08_S1', title: 't', name: '기본 세팅', car: 'DEMO-1', event_id: 'e', event_kind: '테스트', event_title: '데모 시험',
     discipline: '연습', place: '가상 서킷', driver_label: '드라이버 A', start: '2027-05-08T09:58:12.400+09:00', duration_s: 612.4,
     distance_km: 6.3, laps: 7, best_lap_s: 61.84, stats: { vmax_kmh: 88.4, net_wh: 1480 }, frame_id: 'f', split_by: 'gps', has_track: true,
-    blocks: { have: [], warn: [], seek: [], none: [] }, data_status: [], day_order: 1, ...over,
+    blocks: { have: [], warn: [], seek: [], none: [] }, data_status: [], day_order: 1, run_no: null, purpose: null, ...over,
   } as SessionRow
   return { summary, notes: [], blocks: [], missing: [], best_lap, made: { built_at: '', commit: '', command: '' } }
 }
@@ -85,7 +85,7 @@ describe('개요 표시', () => {
     expect(formatBytes(4_000_517_007)).toBe('4.0 GB')
     expect(formatBytes(undefined)).toBe('')
     expect(formatValue(2509, 0)).toBe('2,509')
-    expect(fileUrl('LEF-26_2026-08-30_S1/files/laps.csv')).toBe('/api/files/LEF-26_2026-08-30_S1/files/laps.csv')
+    expect(fileUrl('DEMO-1_2027-05-08_S1/files/laps.csv')).toBe('/api/files/DEMO-1_2027-05-08_S1/files/laps.csv')
     expect(fileUrl('A_B/raw/x y.log')).toBe('/api/files/A_B/raw/x%20y.log')
   })
 })

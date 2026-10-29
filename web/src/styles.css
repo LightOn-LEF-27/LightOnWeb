@@ -889,7 +889,8 @@ ul.plain {
 }
 .lap-chip {
   height: 22px;
-  width: 184px;
+  width: auto;
+  max-width: 340px; /* 다 보여 주되, 아주 길면 줄인다 */
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1093,10 +1094,13 @@ ul.plain {
   border: 0;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 16px;
+  line-height: 18px;
+  border-radius: 3px;
 }
 .axis-x:hover {
   color: var(--text-strong);
+  background: var(--raised);
 }
 .axis-read {
   font-size: 11px;
@@ -1264,4 +1268,189 @@ ul.plain {
 .gg-bar input[type='range'] {
   flex: 1;
   accent-color: var(--text-strong);
+}
+
+/* 분석 — 워크시트 탭 · + 추가 · 크게 보기 · 다른 세션 랩 고르기 창 */
+.btn-dashed {
+  height: 22px;
+  border-style: dashed;
+  background: var(--bg);
+  color: var(--text-muted);
+}
+.sheet-tabs {
+  height: 28px;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0 0 0 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.sheet-tabs > label,
+.sheet-tabs > select {
+  align-self: center;
+  margin-right: 6px;
+}
+.sheet-tabs > select {
+  height: 20px;
+  margin-right: 10px;
+}
+.sheet-tab {
+  padding: 0 14px;
+  background: none;
+  border: 0;
+  border-left: 1px solid var(--line-soft);
+  border-top: 2px solid transparent;
+  color: var(--text-label);
+  cursor: pointer;
+}
+.sheet-tab[aria-selected='true'] {
+  color: var(--text-strong);
+  background: var(--bg);
+  border-top-color: var(--accent);
+}
+.sheet-hidden {
+  align-self: center;
+  padding-left: 12px;
+  font-size: 11px;
+}
+.side.wide {
+  width: 560px;
+}
+.modal-back {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.modal {
+  width: 760px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.modal-head {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 12px;
+  background: var(--bar);
+  border-bottom: 1px solid var(--line);
+}
+.modal-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+}
+.modal-list {
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+.modal-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  padding: 5px 10px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line-faint);
+  text-align: left;
+  cursor: pointer;
+}
+.modal-item:hover:not(:disabled),
+.modal-item.on {
+  background: var(--row-hover);
+}
+.modal-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.modal-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modal-laps {
+  overflow-y: auto;
+}
+
+/* 그래프 아래 이동 막대 */
+.nav {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  background: var(--panel);
+  border-top: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.nav-bar {
+  position: relative;
+  flex: 1;
+  height: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  cursor: pointer;
+}
+.nav-win {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 6px;
+  background: var(--raised);
+  border: 1px solid var(--accent);
+  cursor: grab;
+}
+.nav-win.full {
+  border-color: var(--line);
+  cursor: default;
+}
+.nav-text {
+  min-width: 120px;
+  font-size: 11px;
+  text-align: right;
+}
+
+/* 그래프 위 마우스 자리의 값 (선 옆) */
+.chart-tip {
+  position: absolute;
+  top: 2px;
+  display: none;
+  padding: 1px 6px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-strong);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  font-variant-numeric: tabular-nums;
+}
+.chart-tip i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: 0 4px 0 7px;
+}
+.chart-tip div > i:first-child {
+  margin-left: 0;
+}
+.chart-tip .tip-name {
+  color: var(--text-muted);
+}
+.chart-tip .tip-unit {
+  margin-left: 4px;
+  color: var(--text-muted);
 }

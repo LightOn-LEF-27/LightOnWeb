@@ -7,23 +7,24 @@ import { MAX_CMP } from './state'
 interface Props {
   table: LapTable
   refLap: number | 'all'
-  cmp: number[]
+  cmp: number[] // 이 세션의 비교 랩
+  max: number // 이 세션에서 더 고를 수 있는 비교 랩 수 (다른 세션 랩이 칸을 차지하면 줄어든다)
   colors: string[]
+  colorOf: (lap: number) => string
   onRef: (lap: number | 'all') => void
   onCmp: (laps: number[]) => void
 }
 
 const SHOW = ['lap_time_s', 's1_s', 's2_s', 's3_s', 'vmax_kmh', 'net_wh', 'i_max_a', 'cell_t_max_c']
 
-export default function LapPicker({ table, refLap, cmp, colors, onRef, onCmp }: Props) {
+export default function LapPicker({ table, refLap, cmp, max, colors, colorOf, onRef, onCmp }: Props) {
   const cols = table.columns.filter((c) => SHOW.includes(c.key))
-  const colorOf = (lap: number) => (lap === refLap ? colors[0] : cmp.includes(lap) ? colors[cmp.indexOf(lap) + 1] : 'transparent')
-  const toggle = (lap: number) => onCmp(cmp.includes(lap) ? cmp.filter((c) => c !== lap) : [...cmp, lap].slice(-MAX_CMP))
+  const toggle = (lap: number) => onCmp(cmp.includes(lap) ? cmp.filter((c) => c !== lap) : max > 0 ? [...cmp, lap].slice(-max) : cmp)
   return (
     <section className="lap-picker" aria-label="랩 고르기">
       <div className="lap-picker-head">
         <strong>랩</strong>
-        <span className="muted">● 기준 하나 · ☑ 비교 최대 {MAX_CMP}</span>
+        <span className="muted">● 기준 하나 · ☑ 비교 최대 {MAX_CMP} (다른 세션 랩은 위의 + 추가)</span>
         <span style={{ flex: 1 }} />
         <span className="muted">
           <span className="best">보라</span> 세션 최속 (랩타임 · 구간)
@@ -65,7 +66,8 @@ export default function LapPicker({ table, refLap, cmp, colors, onRef, onCmp }: 
                   <input type="radio" name="ref" aria-label={`랩 ${r.lap} 을 기준으로`} checked={r.lap === refLap} onChange={() => onRef(r.lap)} />
                 </td>
                 <td>
-                  <input type="checkbox" aria-label={`랩 ${r.lap} 비교`} checked={cmp.includes(r.lap)} disabled={r.lap === refLap || refLap === 'all'}
+                  <input type="checkbox" aria-label={`랩 ${r.lap} 비교`} checked={cmp.includes(r.lap)}
+                         disabled={r.lap === refLap || refLap === 'all' || (!cmp.includes(r.lap) && max <= 0)}
                          onChange={() => toggle(r.lap)} />
                 </td>
                 <td className="num">{r.lap}</td>

@@ -10,6 +10,8 @@ import { applyFilters, facet, readFilters, SORTS, toggle, writeFilters, hasSeek,
 import { formatDuration, formatNumber, formatStart, lapsCell, sessionName } from '../sessions/format'
 import type { SessionRow } from '../types'
 
+const UNCLASSIFIED = '미분류' // 엔진이 랩 · 종목을 못 알아본 주행 (계약 v0.11)
+
 const FACETS: { key: FacetKey; title: string }[] = [
   { key: 'car', title: '차량' },
   { key: 'event', title: '이벤트' },
@@ -198,7 +200,13 @@ function SessionTable({ rows, columns, computed, hidden }: { rows: SessionRow[];
               </td>
               <td>{r.car}</td>
               <td title={`${r.event_title} · ${r.event_kind} · ${r.place}`}>{r.event_title}</td>
-              <td>{r.discipline}</td>
+              {r.discipline === UNCLASSIFIED ? (
+                <td className="st-warn" title="종목을 알아보지 못한 주행 — 확인 필요 (세션 정리에서 종목을 정하거나 버린다)">
+                  ▲ {r.discipline}
+                </td>
+              ) : (
+                <td>{r.discipline}</td>
+              )}
               <td className="num">{formatDuration(r.duration_s)}</td>
               <td className="num">{formatNumber(r.distance_km, 2)}</td>
               <td className={`num${laps.muted ? ' muted' : ''}`} title={laps.tip}>{laps.text}</td>

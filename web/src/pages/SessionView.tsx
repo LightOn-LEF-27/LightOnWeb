@@ -9,7 +9,7 @@ import DataStatus from '../overview/DataStatus'
 import { Toast, useDownload } from '../overview/Download'
 import LapTable from '../overview/LapTable'
 import { bandItems, lapEmptyText, summaryRows } from '../overview/model'
-import { formatStart, sessionName } from '../sessions/format'
+import { formatStart, runLabel, sessionName } from '../sessions/format'
 import type { LapTable as Laps, QualityItem, Resolved, SessionPage } from '../types'
 
 // 넘어왔을 때 띠에 붙는 이유 (계약 §6-10 의 why)
@@ -117,7 +117,7 @@ export default function SessionView() {
         <nav className="crumbs" aria-label="위치">
           <Link to="/sessions">세션</Link> / {s.car}
           {date && ` / ${date}`}
-          {s.day_order ? ` / R${s.day_order}` : ''}
+          {runLabel(s) && ` / ${runLabel(s)}`}
         </nav>
         <div className="head-row">
           <h1>

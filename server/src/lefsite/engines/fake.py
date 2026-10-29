@@ -18,7 +18,7 @@ from pathlib import Path
 from . import fake_series, fake_track
 from .base import EngineError, check_file_id, check_sid
 
-CONTRACT = "0.11"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
+CONTRACT = "0.12"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
 
 # 블록마다 화면 이름 · 장비 설명 · 채널 (이름, 라벨, 단위, 부호, 주기 Hz, 자릿수, 계산한 채널인가)
 BLOCKS: dict[str, dict] = {
@@ -97,6 +97,8 @@ class FakeSession:
     cautions: dict[str, list[str]] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
     quality: tuple[tuple, ...] = ()              # (level, code, block, message, t_ranges | None) — 계약 §6-7
+    run_no: str | None = None                    # 일정표(Run Sheet)와 짝이 맞았을 때만 (v0.12)
+    purpose: str | None = None
 
     @property
     def car(self) -> str:
@@ -122,22 +124,24 @@ def _all(have: str = "have", **override: str) -> dict[str, str]:
 # 합성 세션. S 번호는 일부러 그날 순서와 다르다 (계약 §3-1 — 나중에 들어온 세션은 시간상 앞이어도 다음 번호)
 SESSIONS: list[FakeSession] = [
     FakeSession("DEMO-1_2027-05-08_S1", E_TEST, "연습", "기본 세팅 확인", "A", "2027-05-08T09:58:12.400+09:00",
-                612.4, 7, 61.84, 5, 6.3, 88.4, 1480, 210, _all()),
+                612.4, 7, 61.84, 5, 6.3, 88.4, 1480, 210, _all(), run_no="1", purpose="기본 세팅 확인"),
     FakeSession("DEMO-1_2027-05-08_S2", E_TEST, "연습", "댐퍼 앞 · 브레이크 바이어스", "A", "2027-05-08T10:46:30.050+09:00",
                 705.9, 8, 60.97, 6, 7.2, 90.1, 1702, 221, _all(bms="warn"),
                 cautions={"bms": ["셀 전압 프레임이 41.2 s 동안 들어오지 않음 (그 구간은 값 없음)"]},
-                quality=(("warn", "logger_not_recording", "bms", "BMS 프레임이 2 s 넘게 들어오지 않은 구간 1곳 · 합계 41.2 s", [[212.4, 253.6]]),)),
+                quality=(("warn", "logger_not_recording", "bms", "BMS 프레임이 2 s 넘게 들어오지 않은 구간 1곳 · 합계 41.2 s", [[212.4, 253.6]]),),
+                run_no="2", purpose="댐퍼 앞 2클릭 · 브레이크 바이어스 앞 58 %"),
     FakeSession("DEMO-1_2027-05-08_S5", E_TEST, "연습", "토크 맵 100 %", "B", "2027-05-08T11:05:44.900+09:00",
                 498.2, 6, 60.42, 4, 5.4, 91.6, 1391, 248, _all(tire="none"),
-                notes=("나중에 들어온 기록으로 만든 세션이라, 시간상 앞이지만 다음 번호를 받았습니다",)),
+                notes=("나중에 들어온 기록으로 만든 세션이라, 시간상 앞이지만 다음 번호를 받았습니다",), run_no="4", purpose="토크 맵 100 %"),
     FakeSession("DEMO-1_2027-05-08_S3", E_TEST, "연습", "타이어 공기압", "B", "2027-05-08T11:38:02.700+09:00",
-                655.0, 8, 61.12, 3, 7.1, 89.7, 1655, 230, _all()),
+                655.0, 8, 61.12, 3, 7.1, 89.7, 1655, 230, _all(), run_no="5", purpose="타이어 공기압 −0.1 bar"),
     FakeSession("DEMO-1_2027-05-08_S4", E_TEST, "내구", "완주 연습", "B", "2027-05-08T13:10:21.300+09:00",
                 1395.6, 20, 62.03, 12, 17.9, 87.2, 4310, 226, _all(suspension="warn", video="seek"),
                 cautions={"suspension": ["뒤 오른쪽 센서가 14 ~ 15랩에서 끝값(75 mm)에 붙음 — 배선 확인 필요"]},
                 quality=(("warn", "sensor_at_limit", "suspension", "뒤 오른쪽 스트로크가 센서 끝값에 붙은 구간 2곳 · 합계 9.6 s",
                           [[905.2, 911.0], [968.3, 972.1]]),
-                         ("info", "battery_gap", "battery", "팩 전류 표본이 빠진 곳 4곳 · 합계 0.3 s", [[120.0, 120.1], [480.5, 480.6]]))),
+                         ("info", "battery_gap", "battery", "팩 전류 표본이 빠진 곳 4곳 · 합계 0.3 s", [[120.0, 120.1], [480.5, 480.6]])),
+                run_no="6", purpose="내구 완주 연습"),
     FakeSession("DEMO-1_2027-04-24_S1", E_CAMPUS, "가속", "가속 1", "A", "2027-04-24T11:18:40.000+09:00",
                 38.6, 0, None, None, 0.31, 97.3, 52, 262,
                 _all(cooling="none", tire="none", steer="warn"), cautions={"steer": ["0점이 1.8° 치우침 — 직진에서 0 이 아님"]}),
@@ -150,12 +154,15 @@ SESSIONS: list[FakeSession] = [
                 quality=(("warn", "apps_fault", "pedal", "가속 페달 센서 둘이 10 % 넘게 어긋난 구간 1곳 · 합계 0.8 s", [[233.1, 233.9]]),)),
     FakeSession("DEMO-2_2026-11-14_S1", E_TRACKDAY, "연습", "트랙데이 오전", "A", "2026-11-14T10:45:30.000+09:00",
                 540.0, 7, 66.81, 6, 5.9, 84.9, None, None,
-                {"gps": "have", "imu": "have", "motor": "have", "bms": "have", "video": "have", "pedal": "seek", "battery": "none"}),
+                {"gps": "have", "imu": "have", "motor": "have", "bms": "have", "video": "have", "pedal": "seek", "battery": "none"},
+                run_no="1", purpose="새 차 첫 주행 — 기본 세팅"),
     FakeSession("DEMO-2_2026-11-14_S2", E_TRACKDAY, "연습", "트랙데이 오후", "B", "2026-11-14T13:20:00.000+09:00",
                 600.0, None, None, None, None, None, 1210, 196,
                 {"battery": "have", "motor": "have", "bms": "have", "gps": "seek", "imu": "none"}, split_by="time",
                 notes=("시각으로 나눈 세션 — 데모 BMS 시계 기준 13:20 ~ 13:30 (GPS 기록 없음)",),
-                quality=(("warn", "clock_mismatch", "battery", "팩 전류와 모터 전류의 파형이 1.6 s 어긋나 보인다 — 장비 시계 차를 다시 볼 것", None),)),
+                quality=(("warn", "clock_mismatch", "battery", "팩 전류와 모터 전류의 파형이 1.6 s 어긋나 보인다 — 장비 시계 차를 다시 볼 것", None),
+                         ("info", "runsheet_unplanned", "battery", "그날 일정표에 없는 주행 — 일정표에 줄을 더하거나, 피트 이동이면 [[session]] skip",
+                          [[0.0, 600.0]]))),
 ]
 
 # 없어진 sid (계약 §3-1 · §6-10) — 화면이 "넘기기" · "고르기" · "없어진 세션" 을 다 보여 볼 수 있게
@@ -206,7 +213,7 @@ def _row(s: FakeSession, day_order: dict[str, int]) -> dict:
         "discipline": s.discipline, "place": s.event.place, "driver_label": f"드라이버 {s.driver}" if s.driver else "",
         "start": s.start, "duration_s": s.duration_s, "distance_km": s.distance_km, "laps": s.laps, "best_lap_s": s.best_lap_s,
         "stats": stats, "frame_id": s.event.frame_id if s.has_track else None, "split_by": s.split_by, "has_track": s.has_track,
-        "blocks": blocks, "data_status": _data_status(s), "day_order": day_order.get(s.sid),
+        "run_no": s.run_no, "purpose": s.purpose, "blocks": blocks, "data_status": _data_status(s), "day_order": day_order.get(s.sid),
     }
 
 

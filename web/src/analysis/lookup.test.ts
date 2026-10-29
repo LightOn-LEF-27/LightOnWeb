@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { DeltaResponse, SectorsResponse, SeriesResponse, TrackResponse } from '../types'
-import { channelColors, deltaColors, floorIndex, nearestIndex, paceColor, paceColors, PURPLE, trackIndex, valueAt, xOfTrackPoint } from './lookup'
+import { centerZero, channelColors, channelPalette, deltaColors, floorIndex, nearestIndex, paceColor, paceColors, PURPLE, trackIndex, valueAt, xOfTrackPoint } from './lookup'
 import { axisData, DELTA, tracesFor } from './traces'
 
 const track = (over: Partial<TrackResponse> = {}): TrackResponse => ({
@@ -58,14 +58,34 @@ describe('트랙맵 색', () => {
     expect(lv.colors).toEqual(['#18b04f', '#8e959e', '#e2261c', null])
     expect(channelColors([10, 20]).min).toBe(10)
   })
+  it('채널마다 색표 — 가속도는 크기만(부호 무시), 회생 전력은 노랑', () => {
+    const g = channelColors([-1, 0, 1], undefined, 'imu.lat_g', 'g').colors
+    expect(g[0]).toBe(g[2]) // 좌 · 우 같은 크기면 같은 색
+    expect(channelPalette('imu.lat_g', 'g').kind).toBe('magnitude')
+    expect(channelPalette('pedal.apps_pct', '%').legend).toContain('초록')
+    expect(channelPalette('pedal.brake_f_bar', 'bar').legend).toContain('빨강')
+    const pw = channelColors([-5, 10], undefined, 'battery.power_kw', 'kW').colors
+    expect(pw[0]).toMatch(/^rgb\((2\d\d), (1[7-9]\d|2\d\d), (4\d|5\d|6\d)\)$/) // 노랑 쪽
+  })
 })
 
 describe('시간 차 축', () => {
   it('비교 랩마다 엔진의 시간 차를 기준 거리 위에 — 기준 랩은 선이 없다', () => {
     const d = { x: { values: [0, 100, 200] }, delta_s: [0, 0.1, 0.3] } as unknown as DeltaResponse
-    const { data, meta } = axisData(tracesFor(7, [3]), new Map(), [DELTA], 'distance', new Map([['cmp0', d]]))
+    const { data, meta } = axisData(tracesFor('A', 7, [{ sid: null, lap: 3 }]), new Map(), [DELTA], 'distance', new Map([['cmp0', d]]))
     expect(meta.map((m) => `${m.trace.key}:${m.kind}`)).toEqual(['cmp0:v', 'cmp0:min', 'cmp0:max'])
     expect(data[1]).toEqual([0, 0.1, 0.3])
-    expect(axisData(tracesFor(7, [3]), new Map(), [DELTA], 'time', new Map([['cmp0', d]])).meta).toEqual([]) // 시간축에는 없다
+    expect(axisData(tracesFor('A', 7, [{ sid: null, lap: 3 }]), new Map(), [DELTA], 'time', new Map([['cmp0', d]])).meta).toEqual([]) // 시간축에는 없다
+  })
+})
+
+describe('0 을 가운데 두는 채널', () => {
+  it('두 방향이 같은 무게인 것만 — 가속도 · 요레이트. 배터리 전류처럼 한쪽이 주인 것 · 위치(원점이 아무 점)는 아니다', () => {
+    expect(centerZero({ unit: 'g', sign: '좌선회 +, 우선회 −' })).toBe(true)
+    expect(centerZero({ unit: 'm', sign: '동쪽 +' })).toBe(false)
+    expect(centerZero({ unit: '°/s', sign: '좌회전 +' })).toBe(true)
+    expect(centerZero({ unit: 'A', sign: '방전 +, 배터리로 돌아오면 −' })).toBe(false)
+    expect(centerZero({ unit: 'mm', sign: '' })).toBe(false)
+    expect(centerZero(undefined)).toBe(false)
   })
 })

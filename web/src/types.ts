@@ -33,6 +33,8 @@ export interface SessionRow {
   blocks: Record<BlockStatus, string[]>
   data_status: DataStatus[]
   day_order: number | null // v0.9 — 그 차 · 그날 몇 번째 (화면용, 바뀔 수 있다)
+  run_no: string | null // v0.12 — 일정표의 R번호 (일정표와 짝이 맞은 세션만)
+  purpose: string | null // v0.12 — 일정표의 목적
 }
 
 export interface FileRef {

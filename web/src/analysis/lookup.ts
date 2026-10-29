@@ -104,18 +104,50 @@ export function deltaColors(track: TrackResponse, edges: number[], miniDelta: nu
   return track.ref_m.map((r) => paceColor(smoothAt(edges, v, r)))
 }
 
-// 채널 색 — 정해진 값(가속 · 타력 · 제동)은 그 색, 나머지는 범위 안 파랑 → 빨강
+// 채널 색 — 정해진 값(가속 · 타력 · 제동)은 그 색, 나머지는 채널마다 색표 (사이트_설계.md §7 "트랙맵 색" 검토안)
 const LEVEL_COLORS: Record<number, string> = { 1: '#18b04f', 0: '#8e959e', [-1]: '#e2261c' }
+const GRAY = [110, 116, 124]
 
-export function channelColors(values: (number | null)[], levels?: { value: number }[]): { colors: (string | null)[]; min: number; max: number } {
+export interface Palette {
+  kind: 'ramp' | 'magnitude' | 'regen' | 'hue'
+  from: number[]
+  to: number[]
+  legend: string
+}
+
+export function channelPalette(id: string, unit: string): Palette {
+  if (/apps|throttle|torque_cmd/.test(id)) return { kind: 'ramp', from: GRAY, to: [24, 176, 79], legend: '회색 → 진한 초록 (많이 밟음)' }
+  if (/brake/.test(id)) return { kind: 'ramp', from: GRAY, to: [226, 38, 28], legend: '회색 → 진한 빨강 (세게 밟음)' }
+  if (/^imu\.(lat|long)_g$/.test(id)) return { kind: 'magnitude', from: GRAY, to: [255, 255, 255], legend: '크기만 — 0 g 회색 → 큰 값 흰색 (방향 없음)' }
+  if (/^battery\.power/.test(id)) return { kind: 'regen', from: GRAY, to: [235, 235, 235], legend: '회생(−) 노랑 · 방전 회색 → 흰색' }
+  if (unit === '°C') return { kind: 'hue', from: [], to: [], legend: '파랑 낮음 → 빨강 높음' }
+  return { kind: 'hue', from: [], to: [], legend: '파랑 낮음 → 빨강 높음' }
+}
+
+export function channelColors(values: (number | null)[], levels?: { value: number }[], id = '', unit = ''): { colors: (string | null)[]; min: number; max: number } {
   const ok = values.filter((v): v is number => v !== null)
   const min = ok.length ? Math.min(...ok) : 0
   const max = ok.length ? Math.max(...ok) : 1
+  const p = channelPalette(id, unit)
+  const top = Math.max(...ok.map(Math.abs), 1e-9)
   const colors = values.map((v) => {
     if (v === null) return null
     if (levels) return LEVEL_COLORS[Math.round(v)] ?? '#8e959e'
+    if (p.kind === 'magnitude') return mix(p.from, p.to, Math.abs(v) / top) // 화면 처리 — 값은 그대로, 색만 |값| (계약 §6-6)
+    if (p.kind === 'regen') return v < 0 ? mix([200, 170, 40], [250, 220, 60], Math.min(1, -v / top)) : mix(p.from, p.to, Math.max(0, v) / Math.max(max, 1e-9))
+    if (p.kind === 'ramp') return mix(p.from, p.to, max > min ? (v - min) / (max - min) : 0)
     const t = max > min ? (v - min) / (max - min) : 0.5
     return `hsl(${Math.round(220 - 220 * t)}, 75%, 55%)`
   })
   return { colors, min, max }
+}
+
+// 그래프 채널 목록 · 겹치기에서 빼는 채널 — 위치(경기장 원점에서 동 · 북 m)는 지도 좌표라 시간 · 거리 그래프로 볼 일이 없다
+// (사용자 결정 2026-10-29). 트랙맵은 엔진의 코스 좌표(get_track)를 따로 받으므로 상관없다. 옛 주소에 있으면 그대로 그린다
+export const GRAPH_HIDDEN = new Set(['gps.x_m', 'gps.y_m'])
+
+// 0 을 가운데 두는 채널 — 좌 · 우, 앞 · 뒤처럼 두 방향이 같은 무게인 것 (가속도 · 요레이트 · 조향각).
+// 부호가 있어도 한쪽이 주가 되는 것(배터리 전류 · 전력 — 방전 +)과 위치(원점이 경기장마다 정한 아무 점이라 0 에 뜻이 없다)는 아니다
+export function centerZero(c: { unit: string; sign: string } | undefined): boolean {
+  return !!c?.sign && ['g', '°/s', '°'].includes(c.unit)
 }

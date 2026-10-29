@@ -4,17 +4,18 @@
 import uPlot from 'uplot'
 
 import type { DeltaResponse, QualityItem, SeriesResponse } from '../types'
-import type { XMode } from './state'
+import type { CmpLap, XMode } from './state'
 
 export interface Trace {
   key: string // 'ref' · 'cmp0' · 'cmp1'
+  sid: string // 이 계열의 세션 (비교 랩은 다른 세션일 수 있다)
   lap: number | null // null = 세션 전체
   slot: 0 | 1 | 2 // 색 순서 (기준 · 비교 1 · 비교 2)
 }
 
-export function tracesFor(ref: number | 'all', cmp: number[]): Trace[] {
-  const base: Trace = { key: 'ref', lap: ref === 'all' ? null : ref, slot: 0 }
-  return [base, ...cmp.map((lap, i): Trace => ({ key: `cmp${i}`, lap, slot: (i + 1) as 1 | 2 }))]
+export function tracesFor(sid: string, ref: number | 'all', cmp: CmpLap[]): Trace[] {
+  const base: Trace = { key: 'ref', sid, lap: ref === 'all' ? null : ref, slot: 0 }
+  return [base, ...cmp.map((c, i): Trace => ({ key: `cmp${i}`, sid: c.sid ?? sid, lap: c.lap, slot: (i + 1) as 1 | 2 }))]
 }
 
 // 시간축에서 랩을 겹칠 때는 그 랩의 시작을 0 으로 옮긴다 (화면의 "이동" — 값은 그대로)
@@ -71,4 +72,22 @@ export function shadeRanges(quality: QualityItem[], channels: string[], x: XMode
   const blocks = new Set(channels.map((c) => c.split('.')[0]))
   const shift = xShift(ref, x, lap)
   return quality.filter((q) => q.level !== 'info' && blocks.has(q.block) && q.t_ranges).flatMap((q) => q.t_ranges!.map(([a, b]): [number, number] => [a - shift, b - shift]))
+}
+
+// 확대해서 다시 받은 촘촘한 값(detail)을 처음 받은 값(base)에 끼운다 — detail 이 덮는 x 구간은 detail, 그 밖은 base.
+// 옆으로 넘기거나 확대 범위를 바꾸는 동안 새 값이 오기 전에도 빈 화면 대신 처음 값이 보이게 (값은 둘 다 엔진이 준 그대로)
+export function mergeDetail(base: SeriesResponse | undefined, detail: SeriesResponse | undefined): SeriesResponse | undefined {
+  const dx = detail?.x.values
+  if (!base || !detail || !dx?.length) return base ?? detail
+  const bx = base.x.values
+  let a = 0
+  while (a < bx.length && bx[a] < dx[0]) a++
+  let b = a
+  while (b < bx.length && bx[b] <= dx[dx.length - 1]) b++
+  const cat = <T,>(bv: T[], dv: T[]): T[] => [...bv.slice(0, a), ...dv, ...bv.slice(b)]
+  const series = base.series.map((s) => {
+    const d = detail.series.find((v) => v.channel_id === s.channel_id)
+    return d ? { ...s, values: cat(s.values, d.values), y_min: cat(s.y_min ?? s.values, d.y_min ?? d.values), y_max: cat(s.y_max ?? s.values, d.y_max ?? d.values) } : s
+  })
+  return { ...base, x: { ...base.x, values: cat(bx, dx) }, series, reduced: detail.reduced }
 }

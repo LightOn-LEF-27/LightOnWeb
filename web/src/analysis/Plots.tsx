@@ -1,9 +1,10 @@
-// 가운데 그래프 — 축(채널 1 ~ 2)을 위아래로 쌓는다. 축 머리에 채널 이름 · 마우스 위치의 값(랩마다 색) · 오른쪽 축 더하기 · 빼기
+// 가운데 그래프 — 축(채널 1 ~ 2)을 위아래로 쌓는다. 축 머리에 채널 이름 · 마우스 위치의 값(랩마다 색) · 채널 겹치기(둘째는 오른쪽 눈금) · 빼기
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Channel, DeltaResponse, QualityItem, SeriesResponse } from '../types'
-import Chart, { type ZoomGroup } from './Chart'
+import Chart, { panBy, setRange, type ZoomGroup } from './Chart'
+import { GRAPH_HIDDEN } from './lookup'
 import type { XMode } from './state'
 import { axisData, DELTA, shadeRanges, type Trace } from './traces'
 
@@ -61,6 +62,7 @@ export default function Plots(p: Props) {
                    showX={i === p.axes.length - 1} refResp={refResp} refLap={refLap} />
         ))}
       </div>
+      <Navigator group={p.group} unit={p.x === 'time' ? 's' : 'm'} />
       <div className="plots-foot">
         <span>{xLabel}</span>
         <span ref={xRead} />
@@ -71,12 +73,66 @@ export default function Plots(p: Props) {
   )
 }
 
+// 이동 막대 — 처음 범위 중 지금 보는 곳. 끌거나 ◀ ▶ 로 옆으로 넘기고, 빈 곳을 누르면 그리로 옮긴다
+function Navigator({ group, unit }: { group: ZoomGroup; unit: string }) {
+  const [, tick] = useState(0)
+  const bar = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const f = () => tick((n) => n + 1)
+    group.listeners.add(f)
+    return () => void group.listeners.delete(f)
+  }, [group])
+  const full = group.full
+  const r = group.range
+  if (!full || full.max <= full.min) return null
+  const span = full.max - full.min
+  const lo = r ? (r.min - full.min) / span : 0
+  const w = r ? (r.max - r.min) / span : 1
+  const toVal = (clientX: number) => {
+    const b = bar.current!.getBoundingClientRect()
+    return full.min + ((clientX - b.left) / b.width) * span
+  }
+  const drag = (e: React.PointerEvent) => {
+    if (!r) return
+    e.preventDefault()
+    const start = toVal(e.clientX)
+    const r0 = { ...r }
+    const move = (ev: PointerEvent) => {
+      const d = toVal(ev.clientX) - start
+      setRange(group, r0.min + d, r0.max + d)
+    }
+    const up = () => (window.removeEventListener('pointermove', move), window.removeEventListener('pointerup', up))
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  const jump = (e: React.MouseEvent) => {
+    if (!r || e.target !== bar.current) return
+    const c = toVal(e.clientX)
+    const half = (r.max - r.min) / 2
+    setRange(group, c - half, c + half)
+  }
+  return (
+    <div className="nav">
+      <button type="button" className="btn btn-sm" aria-label="왼쪽으로" disabled={!r} onClick={() => panBy(group, -0.5)}>
+        ◀
+      </button>
+      <div className="nav-bar" ref={bar} onClick={jump} title={r ? '끌어서 옆으로 넘기기 · 빈 곳을 누르면 그리로' : '확대하면 여기서 옆으로 넘길 수 있습니다'}>
+        <div className={`nav-win${r ? '' : ' full'}`} style={{ left: `${lo * 100}%`, width: `${w * 100}%` }} onPointerDown={drag} />
+      </div>
+      <button type="button" className="btn btn-sm" aria-label="오른쪽으로" disabled={!r} onClick={() => panBy(group, 0.5)}>
+        ▶
+      </button>
+      <span className="muted nav-text">{r ? `${r.min.toFixed(unit === 's' ? 1 : 0)} ~ ${r.max.toFixed(unit === 's' ? 1 : 0)} ${unit}` : '전체'}</span>
+    </div>
+  )
+}
+
 function AxisRow(p: Props & { index: number; ids: string[]; width: number; height: number; showX: boolean; refResp?: SeriesResponse; refLap: number | null }) {
   const [readout, setReadout] = useState<HTMLDivElement | null>(null)
   const chs = useMemo(() => p.ids.map((id) => p.channels.get(id)).filter((c): c is Channel => !!c), [p.ids, p.channels])
   const data = useMemo(() => axisData(p.traces, p.responses, p.ids, p.x, p.deltas), [p.traces, p.responses, p.ids, p.x, p.deltas])
   const shade = useMemo(() => shadeRanges(p.quality, p.ids, p.x, p.refResp, p.refLap), [p.quality, p.ids, p.x, p.refResp, p.refLap])
-  const others = [...p.channels.values()].filter((c) => !p.ids.includes(c.channel_id))
+  const others = [...p.channels.values()].filter((c) => !p.ids.includes(c.channel_id) && !GRAPH_HIDDEN.has(c.channel_id))
 
   return (
     <div className="axis-row" style={{ height: p.height }}>
@@ -108,9 +164,9 @@ function AxisRow(p: Props & { index: number; ids: string[]; width: number; heigh
           ))}
         </div>
         {chs.length === 1 && (
-          <select className="field axis-add" aria-label="오른쪽 세로축에 채널 더하기" value=""
+          <select className="field axis-add" aria-label="이 칸에 채널 겹치기" title="이 칸에 채널을 하나 더 겹쳐 그립니다. 눈금은 오른쪽에 나옵니다." value=""
                   onChange={(e) => e.target.value && p.onAdd(p.index, e.target.value)}>
-            <option value="">+ 오른쪽 축</option>
+            <option value="">+ 채널 겹치기</option>
             {others.map((c) => (
               <option key={c.channel_id} value={c.channel_id}>
                 {c.label} ({c.unit || '-'})

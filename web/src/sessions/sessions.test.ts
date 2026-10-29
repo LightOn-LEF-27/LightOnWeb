@@ -11,7 +11,7 @@ function row(over: Partial<SessionRow> = {}, status: Record<string, DataStatus['
     sid: 'DEMO-1_2027-05-08_S3', title: 'DEMO-1 · 05-08 · 연습 2', name: '연습 2', car: 'DEMO-1', event_id: 'DEMO-1/2027-05-08_x',
     event_kind: '테스트', event_title: '데모 시험', discipline: '연습', place: '가상', driver_label: '드라이버 B',
     start: '2027-05-08T11:40:02.100+09:00', duration_s: 655, distance_km: 7.1, laps: 8, best_lap_s: 61.1, stats: {},
-    frame_id: 'venue/x', split_by: 'gps', has_track: true, day_order: 4,
+    frame_id: 'venue/x', split_by: 'gps', has_track: true, day_order: 4, run_no: null, purpose: null,
     blocks: { have: [], warn: [], seek: [], none: [] }, data_status, ...over,
   }
 }
@@ -20,6 +20,9 @@ describe('세션 이름', () => {
   it('날짜 · R순번 · 출발 · 종목 · 드라이버, 목적은 따로', () => {
     expect(sessionName(row())).toEqual({ main: '05-08 · R4 · 11:40 · 연습 · B', purpose: '연습 2' })
     expect(sessionName(row(), { withCar: true }).main).toBe('DEMO-1 · 05-08 · R4 · 11:40 · 연습 · B')
+  })
+  it('일정표가 있으면 R번호 · 목적은 일정표에서 (그날 순번 · 세션 이름보다 먼저)', () => {
+    expect(sessionName(row({ run_no: '6', purpose: '토크 맵 100 %' }))).toEqual({ main: '05-08 · R6 · 11:40 · 연습 · B', purpose: '토크 맵 100 %' })
   })
   it('순번 · 드라이버를 모르면 그 칸을 뺀다', () => {
     expect(sessionName(row({ day_order: null, driver_label: '' })).main).toBe('05-08 · 11:40 · 연습')

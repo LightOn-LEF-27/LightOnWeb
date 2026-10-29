@@ -60,7 +60,8 @@ export default function TrackMap(p: Props) {
     let colors: (string | null)[] | null = null
     if (p.mode === 'pace' && p.sectors && p.refLap !== null) colors = paceColors(p.track, p.sectors, p.refLap)
     else if (p.mode === 'delta' && p.delta) colors = deltaColors(p.track, p.delta.mini.edges_ref_m, p.delta.mini.delta_s)
-    else if (p.mode.startsWith('ch:') && p.colored?.color) colors = channelColors(p.colored.color.values, p.colored.color.levels).colors
+    else if (p.mode.startsWith('ch:') && p.colored?.color)
+      colors = channelColors(p.colored.color.values, p.colored.color.levels, p.colored.color.channel_id, p.colored.color.unit).colors
     const plain = cssVar('--text-muted') || '#8e959e'
     ctx.lineWidth = 3.5
     ctx.lineCap = 'round'
@@ -118,7 +119,7 @@ export default function TrackMap(p: Props) {
       if (!base.current) return
       ctx.putImageData(base.current, 0, 0)
       ctx.save()
-      ctx.scale(dpr, dpr)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0) // 배율을 새로 — scale 을 겹쳐 곱하면 화면 배율(125 % 등)에서 점이 밀린다
       const muted = cssVar('--text-muted') || '#9aa1aa'
       dot(hover, null, muted, true)
       dot(p.cursorB, cssVar('--bg') || '#121417', muted)

@@ -3,8 +3,8 @@
 import type { SessionRow } from '../types'
 
 // 이름 규칙 (사이트_설계.md §7): 날짜 · R순번 · 출발 시각 · 종목 · 드라이버 · 목적
-// R순번은 엔진의 day_order (화면용 — 세션이 더 들어오면 바뀐다. 주소 · 저장은 sid 로만)
-// 목적 칸이 아직 없어 엔진의 세션 이름(name)을 목적 자리에 둔다 — 세팅 기록이 생기면 그쪽으로
+// R순번 · 목적은 일정표(run_no · purpose)가 먼저, 없으면 엔진의 day_order · 세션 이름(name)
+// (day_order 는 화면용 — 세션이 더 들어오면 바뀐다. 주소 · 저장은 sid 로만)
 export interface SessionName {
   main: string
   purpose: string
@@ -22,11 +22,14 @@ function localParts(start: string | null): { date: string; md: string; hm: strin
 
 export function sessionName(row: SessionRow, opts: { withCar?: boolean } = {}): SessionName {
   const t = localParts(row.start)
-  const parts = t
-    ? [t.md, row.day_order ? `R${row.day_order}` : '', t.hm, row.discipline, driverShort(row.driver_label)]
-    : [row.title]
+  const parts = t ? [t.md, runLabel(row), t.hm, row.discipline, driverShort(row.driver_label)] : [row.title]
   if (opts.withCar && t) parts.unshift(row.car)
-  return { main: parts.filter(Boolean).join(' · '), purpose: t ? row.name : '' }
+  return { main: parts.filter(Boolean).join(' · '), purpose: t ? (row.purpose ?? row.name) : '' }
+}
+
+export function runLabel(row: Pick<SessionRow, 'run_no' | 'day_order'>): string {
+  const n = row.run_no ?? row.day_order
+  return n ? `R${n}` : ''
 }
 
 export function formatStart(start: string | null, opts: { seconds?: boolean } = {}): string {
