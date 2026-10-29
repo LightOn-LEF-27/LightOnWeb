@@ -92,3 +92,80 @@ def test_reading_rules():
         "드라이버 A", "드라이버 B", "드라이버 C", "드라이버 A", "드라이버 B", "", None]
     assert [runsheet.car_of(x, "LEF-27") for x in ("", "26", "LEF-25Evo", "모름")] == ["LEF-27", "LEF-26", "LEF-25evo", None]
     assert [runsheet.kind_of(x) for x in ("가속 연습", "스키드패드", "내구 1", "연습")] == ["가속", "스키드패드", "트랙", None]
+
+
+# ---------------------------------------------------------------- 짝 없는 줄 → 폰 시각 구간 세션 (GPS 없는 날)
+
+def meter_with_drive(ev, meter_start, drive=(60.0, 240.0), amps=50.0, span_s=600.0):
+    """진짜 에너지미터 기록 (lefdata energymeter 로 변환) — 미터 경과시간 drive 동안만 amps (280 V). meter_start 는 미터 시계."""
+    import numpy as np
+    from lefdata import energymeter as em
+    from test_ingest import _xor_fill
+    raw_dir = ev / "raw_energymeter"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    n = int(span_s * 100)
+    head = np.zeros(32, "u1")
+    head[0], head[1], head[20] = em.MAGIC, em.T_HEADER, 1
+    head[24:30] = [meter_start.year - 2000, meter_start.month, meter_start.day, meter_start.hour, meter_start.minute, meter_start.second]
+    _xor_fill(head)
+    rec = np.zeros(n, em.RECORD)
+    t_ms = np.arange(n) * 10
+    rec["magic"], rec["type"], rec["t_ms"] = em.MAGIC, em.T_RECORD, t_ms
+    on = (t_ms >= drive[0] * 1000) & (t_ms < drive[1] * 1000)
+    rec["ch"][:, 0], rec["ch"][:, 1], rec["ch"][:, 2], rec["ch"][:, 3] = 2800, np.where(on, int(amps * 10), 0), 1200, 2500
+    raw = rec.view("u1").reshape(n, 16)
+    for r in raw:
+        _xor_fill(r)
+    (raw_dir / f"{meter_start:%Y-%m-%d-%H-%M-%S}-000_test.log").write_bytes(head.tobytes() + raw.tobytes())
+    em.convert_event(ev)
+
+
+def no_gps_event(tmp_path, csv, notes=""):
+    ev = tmp_path / "LEF-27" / "2027-06-05_test"
+    ev.mkdir(parents=True)
+    (ev / cb.NOTES_NAME).write_text('[event]\ncar = "LEF-27"\nsessions = "auto"\n' + notes, encoding="utf-8")
+    (ev / f"runsheet_{DAY}.csv").write_text(csv, encoding="utf-8")
+    # 전원 켬 10:00:00 (폰) — 미터는 그 순간 켜졌지만 시계가 183 s 앞서 10:03:03 으로 적었다. 주행은 켠 뒤 60 ~ 240 s (폰 10:01 ~ 10:04)
+    meter_with_drive(ev, pd.Timestamp(f"{DAY} 10:03:03", tz="Asia/Seoul"))
+    return ev
+
+
+SHEET = "차,R번호,전원 켬,출발,도착,종목,드라이버,목적\nLEF-27,1,10:00:00,10:01:00,10:04:00,연습,A,회생 끔\nLEF-27,2,,10:20:00,10:22:00,연습,B,\n"
+
+
+def test_a_row_without_gps_becomes_a_time_window_session(tmp_path):
+    """GPS 가 없는 날 — 일정표 줄이 폰 시각 구간 세션이 되고, 에너지미터는 전원 켬으로 잰 시계 차(183 s)로 옮겨 잘린다."""
+    report = {}
+    [s] = cb.build_event(no_gps_event(tmp_path, SHEET), report)
+    assert (s.split_by, s.run_no, s.discipline, s.driver, s.purpose, s.name) == ("time", "1", "연습", "드라이버 A", "회생 끔", "R1 연습")
+    assert s.start == pd.Timestamp(f"{DAY} 10:01:00", tz="Asia/Seoul") and s.duration_s == pytest.approx(180.0)
+    assert s.stats["net_wh"] == pytest.approx(280 * 50 * 180 / 3600, rel=0.02)              # 주행 180 s 가 통째로 들어왔다 (시계가 맞았다)
+    bat = next(b for b in s.blocks if b.key == "battery")
+    assert any("-183.0 s" in c and "전원 켬" in c for c in bat.checks)
+    assert "runsheet_timed" in _codes(s)
+    c = report["runsheet"]
+    assert [m["run_no"] for m in c["timed_sessions"]] == ["1"] and c["power_on"][0]["recordings"] == {"2027-06-05_100303_em": 183.0}
+    [left] = c["unmatched_rows"]
+    assert left["run_no"] == "2" and "기록이 남은 장비가 없다" in left["why"]
+    assert any("시각 구간 세션으로 만듦" in line for line in runsheet.check_text(c))
+
+
+def test_clock_written_by_hand_comes_first(tmp_path):
+    """catalog_notes.toml 에 폰 기준으로 적은 시계 차가 전원 켬으로 잰 값보다 먼저 — 3 s 다르게 적으면 주행 3 s 가 구간 밖으로 밀린다."""
+    ev = no_gps_event(tmp_path, SHEET)
+    (ev / cb.NOTES_NAME).write_text('[event]\ncar = "LEF-27"\nsessions = "auto"\nclock = "phone"\n[clocks.energymeter]\noffset_s = -180.0\nbasis = "사람이 잼"\n',
+                                    encoding="utf-8")
+    [s] = cb.build_event(ev)
+    bat = next(b for b in s.blocks if b.key == "battery")
+    assert any("-180.0 s" in c and "사람이 잼" in c for c in bat.checks)
+    assert s.stats["net_wh"] == pytest.approx(280 * 50 * 177 / 3600, rel=0.02)
+
+
+def test_a_row_overlapping_a_session_is_not_built_again(tmp_path):
+    """이미 세션이 있는 시각의 줄(짝은 못 지었지만 겹친다)은 새로 만들지 않고 이유를 남긴다."""
+    csv = "차,R번호,출발,도착,종목\nLEF-27,1,10:00:26,10:02:42,연습\nLEF-27,9,10:02:20,10:03:00,연습\n"      # R9 는 R1 세션의 끝에 걸친다
+    report = {}
+    sessions = cb.build_event(event(tmp_path, csv), report)
+    assert all(s.split_by == "gps" for s in sessions) and [s.run_no for s in sessions] == ["1", ""]
+    [nine] = [u for u in report["runsheet"]["unmatched_rows"] if u["run_no"] == "9"]
+    assert "겹친다" in nine["why"] and report["runsheet"]["timed_sessions"] == []

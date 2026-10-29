@@ -9,12 +9,14 @@
     전원 켬 = LV(또는 HV) 를 켠 순간 · 출발 = 피트에서 바퀴가 구르기 시작한 순간 · 도착 = 피트로 돌아와 완전히 멈춘 순간 (결승선 통과는 적지 않는다)
 드라이버는 A · B (driver_1 · driver_2 · 1 · 2 도 받는다). 그 밖의 글자(실명)는 넣지 않고 알린다.
 
-짝짓기 — 세션(GPS 주행 구간 · 시각 구간)의 시작과 일정표의 출발이 MATCH_SLACK_S 안인 쌍들로 일정표 ↔ 세션 시계 차(중앙값)를 재고,
+짝짓기 — 일정표 ↔ 세션 시계 차의 후보(줄마다 MATCH_SLACK_S 안에서 가장 가까운 세션 시작과의 차) 중 짝을 지었을 때 겹친 시간의 합이 가장 큰 것을 쓰고,
 그만큼 옮긴 [출발, 도착] 과 세션 구간이 둘 중 짧은 쪽의 MATCH_SHARE 넘게 겹치면 같은 주행 (겹친 길이가 긴 짝부터 하나씩). 도착이 없으면 출발만으로 (START_ONLY_S 안).
 짝이 맞으면 세션에 R번호 · 목적 · 메모를 붙이고, 종목 · 드라이버는 일정표를 따른다 — catalog_notes.toml 에 손으로 적은 세션은 그쪽이 먼저.
     데이터로 본 종목(트랙 · 가속 · 스키드패드)과 다르면 경고 runsheet_mismatch, 미분류는 일정표의 종목으로 풀린다
     그날 일정표가 있는데 짝이 없는 세션 → runsheet_unplanned (info) · 짝이 없는 일정표 줄 → 확인 보고 (기록이 없는 주행)
-전원 켬 ↔ 로거가 켜진 시각(Monolith · 에너지미터 · LEF-26 로거)으로 장비마다 폰과의 시계 차를 잰다 — 시각 구간 세션의 [clocks] 에 적을 값 (적는 것은 사람이).
+전원 켬 ↔ 로거가 켜진 시각(Monolith · 에너지미터 · LEF-26 로거)으로 장비마다 폰과의 시계 차를 잰다 (레코딩마다).
+짝이 없는 줄(GPS 주행이 없는 주행 — 영상 없는 LEF-26 등)은 catalog_build 가 그 [출발, 도착] 을 폰 시각 구간 세션으로 만든다 —
+장비 시계는 catalog_notes.toml 에 폰 기준으로 적은 값 > 이 전원 켬 값 > GPS 주행 ↔ 출발 시계 차 순으로 옮긴다 (경고 runsheet_timed 로 근거를 남긴다).
 """
 
 from __future__ import annotations
@@ -148,6 +150,29 @@ def _clock(t: pd.Timestamp | None) -> str:
     return t.strftime("%H:%M:%S") if t is not None else "-"
 
 
+def _pairs(timed: list[dict], span: list[tuple[float, float]], offset: float) -> tuple[dict[int, int], float]:
+    """시계 차 offset 으로 옮긴 일정표 줄 ↔ 세션 구간 — 겹친 길이가 긴 것부터 하나씩 → ({줄: 세션}, 겹친 시간의 합)."""
+    cand = []
+    for i, r in enumerate(timed):
+        o = _epoch(r["out"]) + offset
+        e = _epoch(r["in"]) + offset if r["in"] is not None else None
+        for j, (a, b) in enumerate(span):
+            if e is None:                               # 도착을 안 적은 줄 — 출발만으로
+                if abs(a - o) <= START_ONLY_S:
+                    cand.append((-(START_ONLY_S - abs(a - o)), i, j))
+                continue
+            over = min(b, e) - max(a, o)
+            if over > 0 and over >= MATCH_SHARE * min(b - a, e - o):
+                cand.append((-over, i, j))
+    pair, used, total = {}, set(), 0.0
+    for score, i, j in sorted(cand):
+        if i not in pair and j not in used:
+            pair[i] = j
+            used.add(j)
+            total -= score
+    return pair, total
+
+
 def apply(sessions: list, rows: list[dict], problems: list[str], recordings: list = (), explicit: set[int] = frozenset()) -> dict:
     """일정표 줄 ↔ 세션을 짝짓고 세션을 고친다 (이름 · 종목 · 드라이버 · R번호 · 목적 · 메모 · 경고). → 확인 보고.
 
@@ -156,30 +181,19 @@ def apply(sessions: list, rows: list[dict], problems: list[str], recordings: lis
     """
     span = [(_epoch(s.start), _epoch(s.start) + float(s.duration_s)) for s in sessions]
     timed = [r for r in rows if r["out"] is not None]
-    d = []
-    for r in timed:                                     # 1. 일정표(폰) ↔ 세션 시계 차
+    # 1. 일정표(폰) ↔ 세션 시계 차 — 줄마다 가장 가까운 세션 시작과의 차가 후보. 후보마다 짝을 지어 보고 겹친 시간의 합이 가장 큰 것
+    #    (중앙값만 쓰면 계획에 없던 주행 · 기록이 없는 줄의 차가 섞여 줄이 적을 때 끌려간다)
+    tries = {0.0}
+    for r in timed:
         o = _epoch(r["out"])
         near = min(((a - o) for a, _ in span), key=abs, default=None)
         if near is not None and abs(near) <= MATCH_SLACK_S:
-            d.append(near)
-    offset = float(np.median(d)) if d else 0.0
-    cand = []
-    for i, r in enumerate(timed):                       # 2. 짝 — 겹친 길이가 긴 것부터
-        o = _epoch(r["out"]) + offset
-        e = _epoch(r["in"]) + offset if r["in"] is not None else None
-        for j, (a, b) in enumerate(span):
-            if e is None:
-                if abs(a - o) <= START_ONLY_S:
-                    cand.append((-START_ONLY_S + abs(a - o), i, j))
-                continue
-            over = min(b, e) - max(a, o)
-            if over > 0 and over >= MATCH_SHARE * min(b - a, e - o):
-                cand.append((-over, i, j))
-    pair, used = {}, set()
-    for _, i, j in sorted(cand):
-        if i not in pair and j not in used:
-            pair[i] = j
-            used.add(j)
+            tries.add(round(near, 1))
+    best = max(((_pairs(timed, span, off), off) for off in sorted(tries)), key=lambda x: (x[0][1], len(x[0][0]), -abs(x[1])))
+    (pair, _), offset = best
+    used = set(pair.values())
+    d = [_epoch(sessions[j].start) - _epoch(timed[i]["out"]) for i, j in pair.items()]     # 짝이 맞은 쌍의 실제 차 — 보고용 중앙값
+    offset = float(np.median(d)) if d else offset
     matched, unmatched = [], []
     for i, r in enumerate(timed):
         if i not in pair:
@@ -202,6 +216,7 @@ def apply(sessions: list, rows: list[dict], problems: list[str], recordings: lis
                                      "t_ranges": [[0.0, round(float(s.duration_s), 3)]]})
     return {"rows": len(rows), "offset_s": round(offset, 1), "offset_pairs": len(d), "matched": matched,
             "unmatched_rows": [_row_text(r) for r in unmatched] + [_row_text(r) for r in rows if r["out"] is None],
+            "timed_sessions": [], "_unmatched": unmatched,
             "unplanned_sessions": unplanned, "power_on": power_on(rows, recordings), "problems": list(problems)}
 
 
@@ -238,26 +253,30 @@ def power_on(rows: list[dict], recordings) -> list[dict]:
     out = []
     ons = [_epoch(r["power_on"]) for r in rows if r["power_on"] is not None]
     for device, label in POWER_DEVICES.items():
-        starts = np.array(sorted(x.t0 for x in recordings if x.device == device))
+        mine = sorted((x.t0, x.rec) for x in recordings if x.device == device)
+        starts = np.array([s for s, _ in mine])
         if not len(starts) or not ons:
             continue
         cand = sorted((abs(s - p), i, k) for i, p in enumerate(ons) for k, s in enumerate(starts) if abs(s - p) <= POWER_ON_WINDOW_S)
-        d, used_on, used_rec = [], set(), set()
+        d, per, used_on, used_rec = [], {}, set(), set()
         for _, i, k in cand:                            # 가까운 것부터 하나씩 — 레코딩 하나는 전원 켬 하나에만
             if i not in used_on and k not in used_rec:
                 used_on.add(i)
                 used_rec.add(k)
                 d.append(float(starts[k] - ons[i]))
+                per[mine[k][1]] = round(d[-1], 1)
         if d:
             out.append({"device": device, "label": label, "pairs": len(d), "device_minus_phone_s": round(float(np.median(d)), 1),
-                        "min_s": round(min(d), 1), "max_s": round(max(d), 1)})
+                        "min_s": round(min(d), 1), "max_s": round(max(d), 1), "recordings": per})
     return out
 
 
 def write_check(event_dir: Path, check: dict) -> Path:
     """확인 보고 → <이벤트>/derived/runsheet_check.csv (사람이 표로 볼 것: 짝 · 일정표만 · 세션만 · 전원 켬 · 문제)."""
     rows = [{"kind": "짝", **m} for m in check["matched"]] + [{"kind": "일정표에만", **r} for r in check["unmatched_rows"]]
-    rows += [{"kind": "세션에만", **s} for s in check["unplanned_sessions"]] + [{"kind": "전원 켬", **p} for p in check["power_on"]]
+    rows += [{"kind": "시각 구간으로 만듦", **s} for s in check.get("timed_sessions", [])]
+    rows += [{"kind": "세션에만", **s} for s in check["unplanned_sessions"]]
+    rows += [{"kind": "전원 켬", **{k: v for k, v in p.items() if k != "recordings"}} for p in check["power_on"]]
     rows += [{"kind": "문제", "note": p} for p in check["problems"]]
     out = Path(event_dir) / "derived" / "runsheet_check.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -268,8 +287,10 @@ def write_check(event_dir: Path, check: dict) -> Path:
 def check_text(check: dict) -> list[str]:
     """확인 보고 → 사람이 읽을 줄들 (lefdata sessions · ingest 가 보여 준다)."""
     lines = [f"일정표 {check['rows']}줄 · 세션과 짝 {len(check['matched'])} · 일정표 ↔ 세션 시계 차 {check['offset_s']:+.1f} s ({check['offset_pairs']}쌍)"]
-    lines += [f"일정표에 있는데 세션이 없음: R{r['run_no'] or '?'} {r['day']} {r['out']} ~ {r['in']} {r['discipline']} ({r['where']}) — 장비가 안 켜졌거나 GPS 가 없는 주행 "
-              f"([[timed_session]] 으로 넣으려면 장비 시계 차를 적는다)" for r in check["unmatched_rows"]]
+    lines += [f"일정표 R{s['run_no'] or '?'} → 시각 구간 세션으로 만듦 ({s['out']} ~ {s['in']} 폰 시각, 장비: {' · '.join(s['blocks']) or '-'})"
+              for s in check.get("timed_sessions", [])]
+    lines += [f"일정표에 있는데 세션이 없음: R{r['run_no'] or '?'} {r['day']} {r['out']} ~ {r['in']} {r['discipline']} ({r['where']}) — "
+              + (r.get("why") or "장비가 안 켜졌거나 GPS 가 없는 주행") for r in check["unmatched_rows"]]
     lines += [f"일정표에 없는 주행: {s['session_start']} {s['session']}" for s in check["unplanned_sessions"]]
     lines += [f"전원 켬 ↔ {p['label']} 기록 시작: 장비 시계 − 폰 {p['device_minus_phone_s']:+.1f} s ({p['pairs']}쌍, {p['min_s']:+.1f} ~ {p['max_s']:+.1f})"
               for p in check["power_on"]]
