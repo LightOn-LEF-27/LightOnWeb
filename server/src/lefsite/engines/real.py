@@ -52,6 +52,12 @@ class RealEngine:
         return self._api.list_channels(check_sid(sid))
 
     @_translate
+    def get_series(self, sid: str, channel_ids: list[str], x: str = "time", t0=None, t1=None, lap=None, max_points: int = 4000,
+                   smooth_s=None, d0=None, d1=None) -> dict:
+        return self._api.get_series(check_sid(sid), list(channel_ids), x=x, t0=t0, t1=t1, lap=lap, max_points=max_points,
+                                    smooth_s=smooth_s, d0=d0, d1=d1)
+
+    @_translate
     def get_laps(self, sid: str) -> dict:
         return self._api.get_laps(check_sid(sid))
 

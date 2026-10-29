@@ -162,3 +162,47 @@ def test_unknown_files(fake, file_id):
     with pytest.raises(EngineError) as e:
         fake.open_file(file_id)
     assert e.value.code == "unknown_file"
+
+
+# ---------------------------------------------------------------- 그래프 값 (F5)
+
+S4 = "DEMO-1_2027-05-08_S4"
+
+
+def test_series_shape_and_ranges(fake):
+    r = fake.get_series(S4, ["gps.speed_kmh", "suspension.rr_mm"], x="time", max_points=800)
+    xs = r["x"]["values"]
+    assert r["x"]["kind"] == "time" and len(xs) == 800 and xs == sorted(xs)
+    assert all(len(s["values"]) == len(s["y_min"]) == len(s["y_max"]) == len(xs) for s in r["series"])
+    for s in r["series"]:
+        for v, lo, hi in zip(s["values"], s["y_min"], s["y_max"]):
+            assert (v is None) == (lo is None) == (hi is None)
+            assert v is None or lo <= v <= hi                    # 줄여도 최소 · 최대 안에
+    # 품질 경고 구간(t_ranges)의 블록은 비어 있다 — 화면이 선을 끊는다
+    gap = next(q for q in fake.get_quality(S4) if q["block"] == "suspension")["t_ranges"][0]
+    sus = r["series"][1]["values"]
+    assert any(v is None for x, v in zip(xs, sus) if gap[0] <= x <= gap[1])
+    assert all(v is not None for v in r["series"][0]["values"])
+
+
+def test_series_lap_and_distance(fake):
+    laps = fake.get_laps(S4)["rows"]
+    r = fake.get_series(S4, ["gps.speed_kmh"], x="time", lap=3)
+    assert r["laps"] == [{"lap": 3, "x_start": laps[2]["t_start_s"], "x_end": laps[2]["t_end_s"]}]
+    assert laps[2]["t_start_s"] <= r["x"]["values"][0] and r["x"]["values"][-1] <= laps[2]["t_end_s"]
+    d = fake.get_series(S4, ["gps.speed_kmh"], x="distance", lap=3, d0=100, d1=300)
+    assert d["x"]["frame_id"] and 100 <= d["x"]["values"][0] and d["x"]["values"][-1] <= 300
+
+
+@pytest.mark.parametrize("kw, code", [
+    ({"channel_ids": ["nope.x"]}, "unknown_channel"),
+    ({"channel_ids": ["gps.speed_kmh"], "x": "distance"}, "bad_argument"),            # 거리축은 랩이 있어야
+    ({"channel_ids": ["gps.speed_kmh"], "lap": 99}, "bad_argument"),
+    ({"channel_ids": ["gps.speed_kmh"], "t0": 1, "d0": 2}, "bad_argument"),
+    ({"channel_ids": ["gps.speed_kmh"], "max_points": 1}, "bad_argument"),
+    ({"channel_ids": []}, "bad_argument"),
+])
+def test_series_bad_calls(fake, kw, code):
+    with pytest.raises(EngineError) as e:
+        fake.get_series(S4, **kw)
+    assert e.value.code == code

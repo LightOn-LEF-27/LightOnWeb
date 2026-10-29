@@ -8,8 +8,10 @@ import Later from './pages/Later'
 import Login from './pages/Login'
 import NotFound from './pages/NotFound'
 import SessionList from './pages/SessionList'
+import Analysis from './pages/Analysis'
 import SessionView from './pages/SessionView'
 import { applyTheme, savedTheme, type Theme } from './theme'
+import { ThemeContext } from './themeContext'
 import type { Info, Me } from './types'
 
 type Auth = { state: 'loading' } | { state: 'in'; me: Me } | { state: 'out'; mode: string; refused?: string } | { state: 'down' }
@@ -65,6 +67,9 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
           <NavLink to="/sessions" className={tab}>
             세션
           </NavLink>
+          <NavLink to="/analysis" className={tab}>
+            분석
+          </NavLink>
           {/* 레이싱 라인은 아직 없지만 탭은 둔다 — 누르면 "구현 중" 안내 (사이트_설계.md §7) */}
           <NavLink to="/racing-line" className={({ isActive }) => `tab later${isActive ? ' active' : ''}`}>
             레이싱 라인 <span className="tag">준비 중</span>
@@ -93,14 +98,17 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       </header>
 
       <main className="main">
+        <ThemeContext.Provider value={theme}>
         <Routes>
           <Route path="/" element={<Navigate to="/sessions" replace />} />
           <Route path="/login" element={<Navigate to="/sessions" replace />} />
           <Route path="/sessions" element={<SessionList total={info.data?.engine.store.sessions ?? null} />} />
           <Route path="/sessions/:sid" element={<SessionView />} />
           <Route path="/racing-line" element={<Later what="레이싱 라인" />} />
+          <Route path="/analysis" element={<Analysis />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
+        </ThemeContext.Provider>
       </main>
 
       <footer className="statusbar">

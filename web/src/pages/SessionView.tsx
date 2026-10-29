@@ -119,10 +119,15 @@ export default function SessionView() {
           {date && ` / ${date}`}
           {s.day_order ? ` / R${s.day_order}` : ''}
         </nav>
-        <h1>
-          {name.main}
-          {name.purpose && <span className="muted" style={{ fontWeight: 400 }}> · {name.purpose}</span>}
-        </h1>
+        <div className="head-row">
+          <h1>
+            {name.main}
+            {name.purpose && <span className="muted" style={{ fontWeight: 400 }}> · {name.purpose}</span>}
+          </h1>
+          <Link className="btn btn-primary" to={`/analysis?sid=${encodeURIComponent(s.sid)}`}>
+            분석 화면 열기
+          </Link>
+        </div>
         <div className="sub">
           <span className="mono-id">{s.sid}</span>
           {s.split_by === 'time' && <span>시각으로 나눈 세션</span>}

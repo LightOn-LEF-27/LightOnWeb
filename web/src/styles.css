@@ -25,6 +25,9 @@
   --spot: #5ccfe6; /* ★ 바뀐 세팅 전용 */
   --best: #b07cf0; /* 세션 최속 전용 */
   --warn-band: #2e2a16;
+  --trace-0: #f08a3c; /* 기준 랩 */
+  --trace-1: #e8e8e8; /* 비교 1 */
+  --trace-2: #5b9bf0; /* 비교 2 */
   color-scheme: dark;
 }
 
@@ -52,6 +55,9 @@
   --spot: #0f7f96;
   --best: #7a3fc4;
   --warn-band: #fbf3d5;
+  --trace-0: #e06a12;
+  --trace-1: #3a4048; /* 라이트에서는 흰색이 안 보여 진한 회색 */
+  --trace-2: #2463c4;
   color-scheme: light;
 }
 
@@ -817,4 +823,373 @@ ul.plain {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.btn-link,
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none !important;
+}
+.btn-primary {
+  height: 26px;
+  padding: 0 14px;
+  color: #ffffff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  font-weight: 600;
+}
+.btn-primary:hover {
+  color: #ffffff;
+  filter: brightness(1.1);
+}
+.head-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.head-row h1 {
+  flex: 1;
+}
+.toast.info {
+  border-color: var(--accent);
+}
+.toast.info .toast-mark {
+  color: var(--accent);
+}
+
+/* ---------------------------------------------------------------- 분석 (보드 3) */
+
+.analysis {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.analysis-tools {
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 8px;
+}
+.sess-select {
+  max-width: 280px;
+}
+.tool-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  margin: 0 4px;
+}
+.lap-chip {
+  height: 22px;
+  width: 184px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  background: var(--bg);
+  border: 1px solid var(--input-line);
+}
+.lap-chip-line {
+  width: 12px;
+  height: 3px;
+  flex-shrink: 0;
+}
+.lap-chip-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lap-chip-x {
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.analysis-tools .seg {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+}
+.analysis-tools .seg button {
+  height: 22px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.analysis-tools .seg button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.analysis-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.channels {
+  width: 230px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+.channels-search {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.channels-search .field {
+  width: 100%;
+}
+.channels-list {
+  flex: 1;
+  overflow-y: auto;
+}
+.ch-group {
+  width: 100%;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-label);
+  background: var(--bar);
+  border: 0;
+  border-bottom: 1px solid var(--line-faint);
+  cursor: pointer;
+  text-align: left;
+}
+.ch-group span[aria-hidden] {
+  width: 10px;
+  color: var(--text-muted);
+}
+.ch-group-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-item {
+  width: 100%;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 22px;
+  font-size: 11px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.ch-item:hover {
+  background: var(--row-hover);
+}
+.ch-item.on {
+  background: var(--raised);
+  color: var(--text-strong);
+}
+.ch-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  background: var(--line-soft);
+}
+.ch-item.on .ch-dot {
+  background: var(--trace-0);
+}
+.ch-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-unit {
+  width: 38px;
+  text-align: right;
+}
+.channels-foot {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  border-top: 1px solid var(--line);
+}
+.analysis-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.plots {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.plots-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.axis-row {
+  display: flex;
+  border-bottom: 1px solid var(--line-soft);
+}
+.axis-head {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px 4px 8px;
+  background: var(--panel);
+  border-right: 1px solid var(--line-soft);
+  overflow: hidden;
+}
+.axis-title {
+  position: relative;
+  padding-right: 18px;
+}
+.axis-ch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.axis-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.axis-line {
+  width: 14px;
+  flex-shrink: 0;
+  border-top: 2px solid var(--text-muted);
+}
+.axis-line.dashed {
+  border-top-style: dashed;
+}
+.axis-x {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+.axis-x:hover {
+  color: var(--text-strong);
+}
+.axis-read {
+  font-size: 11px;
+}
+.axis-read div {
+  display: flex;
+  gap: 8px;
+}
+.axis-add {
+  margin-top: auto;
+  height: 20px;
+  font-size: 11px;
+  width: 100%;
+}
+.chart-plot {
+  flex: 1;
+  min-width: 0;
+}
+.plots-foot {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text-label);
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.lap-picker {
+  max-height: 190px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.lap-picker-head {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px;
+  font-size: 11px;
+  background: var(--bar);
+  border-bottom: 1px solid var(--line);
+}
+.lap-picker-scroll {
+  overflow: auto;
+}
+.lap-picker .lap-table {
+  width: auto;
+  min-width: 0;
+}
+.lap-picker .lap-table th,
+.lap-picker .lap-table td {
+  height: 22px;
+  min-width: 0;
+  padding: 0 12px;
+}
+.lap-picker .swatch {
+  width: 22px;
+  padding: 0 4px;
+}
+.lap-picker .swatch span {
+  display: block;
+  width: 12px;
+  height: 3px;
+}
+.lap-picker tr.picked {
+  background: var(--row-hover) !important;
+}
+.lap-picker input {
+  margin: 0;
+  accent-color: var(--trace-0);
+}
+.lap-picker-empty {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.analysis-status {
+  height: 20px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 11px;
+  background: var(--panel-2);
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+/* uPlot 의 끌어 확대 상자 */
+.u-select {
+  background: rgba(91, 155, 240, 0.15);
 }

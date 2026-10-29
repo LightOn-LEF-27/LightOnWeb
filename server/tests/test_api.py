@@ -114,3 +114,13 @@ def test_lead_downloads_and_it_is_logged(make_client):
 def test_unknown_or_odd_file_ids(client, file_id):
     r = client.get(f"/api/files/{file_id}")
     assert r.status_code == 404 and r.json()["error"]["code"] in ("unknown_file", "not_found")
+
+
+def test_series_endpoint(client):
+    r = client.get("/api/sessions/DEMO-1_2027-05-08_S4/series", params=[("ch", "gps.speed_kmh"), ("ch", "imu.lat_g"), ("x", "distance"),
+                                                                       ("lap", 3), ("max_points", 300)])
+    body = r.json()
+    assert r.status_code == 200 and [s["channel_id"] for s in body["series"]] == ["gps.speed_kmh", "imu.lat_g"]
+    assert len(body["x"]["values"]) == 300
+    assert client.get("/api/sessions/DEMO-1_2027-05-08_S4/series", params={"ch": "gps.speed_kmh", "x": "distance"}).status_code == 400
+    assert client.get("/api/sessions/DEMO-1_2027-05-08_S4/series").status_code == 422          # ch 없음

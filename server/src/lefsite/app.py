@@ -9,7 +9,9 @@ import logging
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, FastAPI, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -53,6 +55,13 @@ def api_router(engine: Engine, settings: config.Settings, db: Db) -> APIRouter:
     @r.get("/sessions/{sid}/channels")
     def channels(sid: str, user: User = Depends(require("view"))) -> list[dict]:
         return engine.list_channels(sid)
+
+    @r.get("/sessions/{sid}/series")
+    def series(sid: str, ch: Annotated[list[str], Query()], x: str = "time", lap: int | None = None, t0: float | None = None,
+               t1: float | None = None, d0: float | None = None, d1: float | None = None, max_points: int = 4000,
+               smooth_s: float | None = None, user: User = Depends(require("view"))) -> dict:
+        """그래프 값 (F5) — ch 를 여러 번 (?ch=gps.speed_kmh&ch=imu.lat_g). 줄이기 · 범위 · 부드럽게는 엔진이 한다."""
+        return engine.get_series(sid, ch, x=x, t0=t0, t1=t1, lap=lap, max_points=max_points, smooth_s=smooth_s, d0=d0, d1=d1)
 
     @r.get("/sessions/{sid}/laps")
     def laps(sid: str, user: User = Depends(require("view"))) -> dict:

@@ -4,7 +4,7 @@
 차량 이름부터 `DEMO-*` 라 화면에서 진짜와 헷갈리지 않는다. 수치는 그럴듯한 범위에서 손으로 지은 값이다 — 어떤 차의 측정값도 아니다.
 
 진짜 엔진과 모양이 같은지는 `tests/test_fake_parity.py` 가 본다 (엔진 · 세션 저장소가 있는 PC 에서만 돈다).
-지금 있는 것: F1 ~ F4 · F6 랩 표 · F8 품질 · F12 파일 · F15. 그래프 · 코스 · 구간 · 시간 차(F5 · F7 · F13 · F14)는 분석 화면을 만들 때 더한다.
+지금 있는 것: F1 ~ F6 (그래프 값은 `fake_series`) · F8 품질 · F12 파일 · F15. 코스 · 구간 · 시간 차(F7 · F13 · F14)는 트랙맵을 만들 때 더한다.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
+from . import fake_series
 from .base import EngineError, check_file_id, check_sid
 
 CONTRACT = "0.10"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
@@ -226,8 +227,9 @@ def _block(s: FakeSession, b: str) -> dict:
         "exports": _exports(s, b),
         "code": [{"key": "fake", "title": "가짜 연결부", "role": "계약 모양을 따르는 합성 세션"}],
         "channels": chans,
-        "default_views": {"time": chans[:3], "distance": chans[:2] if s.has_track else [], "map": chans[0] if chans and s.has_track else None,
-                          "gg": b == "imu"},
+        "default_views": {"time": [c for c in chans if c not in ("gps.x_m", "gps.y_m")][:2],
+                          "distance": [c for c in chans if c not in ("gps.x_m", "gps.y_m")][:1] if s.has_track else [],
+                          "map": chans[0] if chans and s.has_track else None, "gg": b == "imu"},
     }
 
 
@@ -362,9 +364,9 @@ class FakeEngine:
     def engine_info(self) -> dict:
         return {"contract": CONTRACT, "engine": {"name": "lefdata (가짜 연결부 — 합성 세션)", "version": "fake"},
                 "store": {"format": 1, "sessions": len(SESSIONS), "retired_sids": len(RETIRED)},
-                "formats": [], "functions": ["engine_info", "list_sessions", "get_session", "list_channels", "get_laps", "get_quality",
-                                             "open_file", "resolve_session"],
-                "not_yet": ["get_series", "get_track", "get_sectors", "get_delta", "detect", "ingest", "get_job"]}
+                "formats": [], "functions": ["engine_info", "list_sessions", "get_session", "list_channels", "get_series", "get_laps",
+                                             "get_quality", "open_file", "resolve_session"],
+                "not_yet": ["get_track", "get_sectors", "get_delta", "detect", "ingest", "get_job"]}
 
     def list_sessions(self, car=None, event_id=None, discipline=None, limit=None, offset=0) -> list[dict]:
         for name, v, low in (("limit", limit, 1), ("offset", offset, 0)):
@@ -401,6 +403,13 @@ class FakeEngine:
                     ch["levels"] = LEVELS[cid]
                 out.append(ch)
         return out
+
+    def get_series(self, sid: str, channel_ids, x: str = "time", t0=None, t1=None, lap=None, max_points: int = 4000,
+                   smooth_s=None, d0=None, d1=None) -> dict:
+        s = self._get(sid)
+        channels = {c["channel_id"]: c for c in self.list_channels(sid)}
+        return fake_series.get_series(s, channels, _lap_rows(s), s.quality, channel_ids, x=x, t0=t0, t1=t1, lap=lap,
+                                      max_points=max_points, smooth_s=smooth_s, d0=d0, d1=d1)
 
     def get_laps(self, sid: str) -> dict:
         s = self._get(sid)

@@ -65,6 +65,10 @@ class Engine(Protocol):
 
     def list_channels(self, sid: str) -> list[dict]: ...                   # F4
 
+    def get_series(self, sid: str, channel_ids: list[str], x: str = "time", t0: float | None = None, t1: float | None = None,
+                   lap: int | None = None, max_points: int = 4000, smooth_s: float | None = None,
+                   d0: float | None = None, d1: float | None = None) -> dict: ...   # F5
+
     def get_laps(self, sid: str) -> dict: ...                              # F6
 
     def get_quality(self, sid: str) -> list[dict]: ...                     # F8

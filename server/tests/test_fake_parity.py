@@ -98,3 +98,16 @@ def test_files(fake):
     real_file = next(e["file_id"] for b in real_page["blocks"] for e in b["exports"])
     fake_file = next(e["file_id"] for b in fake_page["blocks"] for e in b["exports"])
     assert fake.open_file(fake_file).keys() == real.open_file(real_file).keys()
+
+
+def test_series(fake):
+    sid = next(r["sid"] for r in rows if r["laps"])
+    lap = real.get_laps(sid)["rows"][0]["lap"]
+    for kw in ({"x": "time"}, {"x": "time", "lap": lap}, {"x": "distance", "lap": lap}):
+        a = real.get_series(sid, ["gps.speed_kmh"], max_points=50, **kw)
+        b = fake.get_series(S4_FAKE, ["gps.speed_kmh"], max_points=50, **{**kw, **({"lap": 1} if "lap" in kw else {})})
+        assert a.keys() == b.keys() and a["x"].keys() == b["x"].keys(), kw
+        assert keys(a["series"]) == keys(b["series"]) and keys(a["laps"]) == keys(b["laps"]) and a["reduced"].keys() == b["reduced"].keys()
+
+
+S4_FAKE = "DEMO-1_2027-05-08_S4"

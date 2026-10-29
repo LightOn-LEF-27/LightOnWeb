@@ -7,6 +7,7 @@ import { fileUrl } from './model'
 export interface Notice {
   title: string
   body: string
+  kind?: 'error' | 'info' // 기본은 error (빨간 테두리)
 }
 
 async function askServer(fileId: string): Promise<Notice | null> {
@@ -58,9 +59,9 @@ export function Toast({ notice, onClose }: { notice: Notice | null; onClose: () 
   }, [notice, onClose])
   if (!notice) return null
   return (
-    <div className="toast" role="alert">
+    <div className={`toast${notice.kind === 'info' ? ' info' : ''}`} role={notice.kind === 'info' ? 'status' : 'alert'}>
       <span className="toast-mark" aria-hidden="true">
-        ✕
+        {notice.kind === 'info' ? '✓' : '✕'}
       </span>
       <div className="toast-text">
         <strong>{notice.title}</strong>

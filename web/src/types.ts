@@ -68,6 +68,7 @@ export interface Block {
   exports: FileRef[]
   code: { key: string; title: string; role: string }[]
   channels: string[]
+  default_views?: { time: string[]; distance: string[]; map: string | null; gg: boolean } // 처음 열 때 그릴 채널 (엔진 제안)
 }
 
 export interface Missing {
@@ -129,6 +130,33 @@ export interface QualityItem {
   block: string
   message: string
   t_ranges: [number, number][] | null
+}
+
+// §6-3 list_channels — 채널 하나
+export interface Channel {
+  channel_id: string
+  block: string
+  label: string
+  unit: string
+  sign: string
+  rate_hz: number
+  samples?: number
+  source: { recording_id: string | null; device: string }
+  derived: boolean
+  derivation: string
+  t_range: [number, number]
+  cautions: string[]
+  digits: number
+  levels?: { value: number; label: string }[] // 정해진 값만 갖는 채널 (주행 상태 추정)
+}
+
+// §6-4 get_series — 모든 계열이 같은 x 를 쓴다. 빈 곳은 null (선을 끊는다)
+export interface SeriesResponse {
+  sid: string
+  x: { kind: 'time' | 'distance' | 'ref_distance'; unit: string; values: number[]; lap: number | null; frame_id: string | null }
+  series: { channel_id: string; unit: string; values: (number | null)[]; y_min: (number | null)[]; y_max: (number | null)[]; samples: number }[]
+  laps: { lap: number; x_start: number; x_end: number }[]
+  reduced: { from_points: number; to_points: number; method: string; smooth_s: number | null }
 }
 
 // §6-10 resolve_session · §8 session_retired 의 detail
