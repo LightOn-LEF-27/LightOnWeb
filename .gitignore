@@ -9,9 +9,11 @@
 *.db
 *.sqlite
 
-# 비밀값
+# 비밀값 · 앱 DB (명단 · 로그인 기록) — server/.local/ 에 쿠키 서명 키와 site.db
 .env
 .env.*
+!.env.example
+.local/
 
 # 파이썬
 .venv/

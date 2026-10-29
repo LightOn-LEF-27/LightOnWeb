@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lefsite"
+version = "0.1.0"
+description = "LightOn 주행 데이터 뷰어 사이트의 서버 — 분석 엔진(lefdata.api)을 불러 화면에 보여 준다"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.162",         # starlette 1.x — httpx2 를 쓰는 판
+    "uvicorn>=0.54",
+    "authlib>=1.9.1",         # httpx2 를 받는 판
+    "httpx2>=2.9",
+    "itsdangerous>=2.1",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+lefsite = "lefsite.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
