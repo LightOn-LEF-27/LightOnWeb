@@ -1,13 +1,16 @@
-// 세션 하나 — 주소는 /sessions/<sid>. 개요 화면(보드 2)은 다음 단계에서 채운다 — 지금은 요약 · 데이터 현황만.
+// 보드 2 · 세션 개요 — 주소는 /sessions/<sid>. 주의 띠 · 요약 · 데이터 현황(펼치면 원본 → 코드 → 결과물) · 랩 표 · 미보유 데이터.
 // 없어진 sid 는 엔진이 알려 준 지금 세션으로 넘긴다 (계약 §3-1 · §6-10): 하나면 넘기고, 여럿이면 고르게, 없으면 알린다
 
 import { useEffect } from 'react'
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { useApi } from '../api'
-import { COMPUTED, MARK } from '../sessions/blocks'
-import { formatDuration, formatLapTime, formatStart, formatWithUnit, lapsCell, sessionName } from '../sessions/format'
-import type { Resolved, SessionPage } from '../types'
+import DataStatus from '../overview/DataStatus'
+import { Toast, useDownload } from '../overview/Download'
+import LapTable from '../overview/LapTable'
+import { bandItems, lapEmptyText, summaryRows } from '../overview/model'
+import { formatStart, sessionName } from '../sessions/format'
+import type { LapTable as Laps, QualityItem, Resolved, SessionPage } from '../types'
 
 // 넘어왔을 때 띠에 붙는 이유 (계약 §6-10 의 why)
 const MOVED_WHY: Record<string, string> = {
@@ -17,7 +20,12 @@ const MOVED_WHY: Record<string, string> = {
 
 export default function SessionView() {
   const { sid = '' } = useParams()
-  const { data, error } = useApi<SessionPage>(`/api/sessions/${encodeURIComponent(sid)}`)
+  const base = `/api/sessions/${encodeURIComponent(sid)}`
+  const { data, error } = useApi<SessionPage>(base)
+  const laps = useApi<Laps>(`${base}/laps`)
+  const quality = useApi<QualityItem[]>(`${base}/quality`)
+  const [params, setParams] = useSearchParams()
+  const { download, notice, dismiss } = useDownload()
   const navigate = useNavigate()
   const location = useLocation()
   const moved = (location.state as { movedFrom?: Resolved } | null)?.movedFrom
@@ -69,9 +77,18 @@ export default function SessionView() {
   if (!data) return <div className="page-msg muted">세션 불러오는 중…</div>
 
   const s = data.summary
-  const name = sessionName(s, { withCar: true })
-  const cautions = data.blocks.flatMap((b) => b.cautions.map((c) => `${b.title}: ${c}`))
-  const warned = data.blocks.filter((b) => b.status === 'warn' && !COMPUTED.some((c) => c.key === b.block)) // 추정 블록은 늘 ▲ 라 띠에서 뺀다
+  const name = sessionName(s)
+  const date = s.start ? s.start.slice(0, 10) : ''
+  const band = bandItems(quality.data ?? [], s.data_status)
+  const missing = data.missing.filter((m) => m.status === 'seek')
+  const openBlock = params.get('block')
+  const toggleBlock = (b: string) => {
+    const next = new URLSearchParams(params)
+    if (openBlock === b) next.delete('block')
+    else next.set('block', b)
+    setParams(next, { replace: true, state: location.state })
+  }
+
   return (
     <>
       {moved && (
@@ -84,88 +101,86 @@ export default function SessionView() {
           </button>
         </div>
       )}
-      {warned.length > 0 && (
-        <div className="banner">
-          <span>주의: {warned.map((b) => b.title).join(' · ')} — 아래 데이터 현황의 ▲ 항목을 확인하세요.</span>
+      {band.length > 0 && (
+        <div className="banner caution" role="note">
+          <strong className="st-warn">▲ 주의 {band.length}</strong>
+          <ul className="plain">
+            {band.map((b) => (
+              <li key={`${b.title}-${b.message}`}>
+                {b.title} — {b.message}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
       <div className="session-head">
+        <nav className="crumbs" aria-label="위치">
+          <Link to="/sessions">세션</Link> / {s.car}
+          {date && ` / ${date}`}
+          {s.day_order ? ` / R${s.day_order}` : ''}
+        </nav>
         <h1>
           {name.main}
           {name.purpose && <span className="muted" style={{ fontWeight: 400 }}> · {name.purpose}</span>}
         </h1>
         <div className="sub">
           <span className="mono-id">{s.sid}</span>
-          <span>{s.event_title} · {s.place}</span>
           {s.split_by === 'time' && <span>시각으로 나눈 세션</span>}
-          <span>세션 개요 · 랩 표 · 그래프는 구현 중입니다</span>
         </div>
       </div>
-      <div className="session-body">
-        <section className="panel">
-          <h2>요약</h2>
-          <dl className="facts">
-            <dt>시작</dt>
-            <dd>{formatStart(s.start)}</dd>
-            <dt>종목</dt>
-            <dd>{s.discipline}</dd>
-            <dt>드라이버</dt>
-            <dd>{s.driver_label || '—'}</dd>
-            <dt>주행 시간</dt>
-            <dd>{formatDuration(s.duration_s)}</dd>
-            <dt>거리</dt>
-            <dd>{formatWithUnit(s.distance_km, 2, 'km')}</dd>
-            <dt>랩</dt>
-            <dd title={lapsCell(s).tip}>{lapsCell(s).text}</dd>
-            <dt>최속 랩</dt>
-            <dd className={s.best_lap_s !== null ? 'best' : undefined}>
-              {formatLapTime(s.best_lap_s)}
-              {data.best_lap !== null && ` (${data.best_lap}랩)`}
-            </dd>
-            <dt>최고 속도</dt>
-            <dd>{formatWithUnit(s.stats.vmax_kmh, 1, 'km/h')}</dd>
-          </dl>
-          {data.notes.length > 0 && (
-            <ul>
-              {data.notes.map((n) => (
-                <li key={n}>{n}</li>
-              ))}
-            </ul>
-          )}
-        </section>
-        <section className="panel">
-          <h2>데이터 현황</h2>
-          <table className="grid">
-            <colgroup>
-              <col style={{ width: 34 }} />
-              <col style={{ width: 220 }} />
-              <col />
-            </colgroup>
-            <tbody>
-              {s.data_status.map((d) => (
-                <tr key={d.block} style={{ cursor: 'default' }}>
-                  <td className={`mark st-${d.status}`} title={MARK[d.status].text}>
-                    {MARK[d.status].mark}
-                  </td>
-                  <td>{d.title}</td>
-                  <td className="muted" title={d.detail}>
-                    {d.detail}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {cautions.length > 0 && (
-            <ul>
-              {cautions.map((c) => (
-                <li key={c} className="st-warn">
-                  {c}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+      <div className="overview">
+        <div className="overview-top">
+          <div className="overview-left">
+            <section className="panel">
+              <h2>요약</h2>
+              <dl className="facts">
+                {summaryRows(data, formatStart(s.start, { seconds: true })).map((r) => (
+                  <div key={r.k} className="fact">
+                    <dt>{r.k}</dt>
+                    <dd className={r.best ? 'best' : undefined}>{r.v}</dd>
+                  </div>
+                ))}
+              </dl>
+              {data.notes.length > 0 && (
+                <ul className="plain notes">
+                  {data.notes.map((n) => (
+                    <li key={n}>{n}</li>
+                  ))}
+                </ul>
+              )}
+              <p className="made muted">
+                세션 정보 {formatStart(data.made.built_at)} · {data.made.commit}
+              </p>
+            </section>
+            {missing.length > 0 && (
+              <section className="panel">
+                <h2>미보유 데이터</h2>
+                <ul className="plain missing">
+                  {missing.map((m) => (
+                    <li key={m.data}>
+                      <span className="st-seek">✕</span> <strong>{m.data}</strong>
+                      <p>{m.reason}</p>
+                      {m.ask && <p className="muted">찾는 분: {m.ask}</p>}
+                    </li>
+                  ))}
+                </ul>
+                <p className="panel-msg muted">가진 분은 DAQ 파트에 알려 주세요.</p>
+              </section>
+            )}
+          </div>
+          <DataStatus statuses={s.data_status} blocks={data.blocks} quality={quality.data ?? []} open={openBlock}
+                      onToggle={toggleBlock} onDownload={download} />
+        </div>
+        {laps.data ? (
+          <LapTable table={laps.data} empty={lapEmptyText(data)} />
+        ) : (
+          <section className="panel">
+            <h2>랩</h2>
+            <p className="panel-msg muted">{laps.error ? `랩 표를 불러오지 못했습니다 — ${laps.error.message}` : '랩 표 불러오는 중…'}</p>
+          </section>
+        )}
       </div>
+      <Toast notice={notice} onClose={dismiss} />
     </>
   )
 }

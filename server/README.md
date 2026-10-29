@@ -39,8 +39,13 @@ cd ../web && npm install && npm run build && cd ../server
 | `GET /api/sessions?car=&event_id=&discipline=&limit=&offset=` | `list_sessions` | 보기 |
 | `GET /api/sessions/{sid}` | `get_session` | 보기 |
 | `GET /api/sessions/{sid}/channels` | `list_channels` | 보기 |
+| `GET /api/sessions/{sid}/laps` | `get_laps` | 보기 |
+| `GET /api/sessions/{sid}/quality` | `get_quality` | 보기 |
 | `GET /api/sessions/{sid}/resolve` | `resolve_session` | 보기 |
+| `GET · HEAD /api/files/{file_id}` | `open_file` (파일을 첨부로 보냅니다) | 내려받기 |
 | `GET /api/admin/users` | 없음 (명단) | 명단 관리 |
+
+내려받기는 팀장과 관리자만 할 수 있고, GET 으로 받을 때마다 누가 언제 무엇을 받았는지 앱 DB 에 남습니다. HEAD 는 받을 수 있는지만 확인하고 기록하지 않습니다. 화면의 내려받기 버튼은 먼저 HEAD 로 물어본 뒤 받습니다.
 
 세션은 세션 ID(`sid`)로만 가리킵니다. 엔진은 한 번 준 `sid` 를 바꾸지 않습니다. 없어진 `sid` 로 부르면 410 과 함께 이어지는 세션(`detail.current`)이 오고, 화면이 그 세션으로 넘겨 줍니다.
 
@@ -62,6 +67,7 @@ cd ../web && npm install && npm run build && cd ../server
 .venv/Scripts/python -m lefsite users                 # 명단
 .venv/Scripts/python -m lefsite users disable someone@example.ac.kr
 .venv/Scripts/python -m lefsite logins                # 최근 로그인 시도와 거절 이유
+.venv/Scripts/python -m lefsite downloads             # 최근 내려받기 기록
 ```
 
 ### Google 로그인 설정

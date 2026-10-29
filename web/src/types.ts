@@ -41,7 +41,17 @@ export interface FileRef {
   name: string
   size_bytes?: number
   note?: string
-  where?: string
+  where?: string // file_id 가 null 이면 "있는 곳" 만 적힌 원본 (내려받을 수 없다)
+  content_type?: string
+  rows?: number // 결과물(세션 구간 CSV)의 행 수
+}
+
+// 변환된 표가 있는 곳 — 내려받기 대상은 아니다 (§6-2 v0.3)
+export interface Output {
+  label: string
+  name: string
+  note: string
+  where: string
 }
 
 // §6-2 get_session 의 블록 하나
@@ -54,6 +64,7 @@ export interface Block {
   checks: string[]
   cautions: string[]
   raw: FileRef[]
+  outputs?: Output[]
   exports: FileRef[]
   code: { key: string; title: string; role: string }[]
   channels: string[]
@@ -74,6 +85,50 @@ export interface SessionPage {
   missing: Missing[]
   best_lap: number | null
   made: { built_at: string; commit: string; command: string }
+}
+
+// §6-5 get_laps — 열은 엔진이 세션마다 정한다 (온도 · 에너지 열은 그 블록이 있을 때만)
+export interface LapColumn {
+  key: string
+  label: string
+  unit: string
+  digits: number
+  block: string
+  chart?: boolean
+  cautions?: string[]
+}
+
+export type SectorKey = 's1_s' | 's2_s' | 's3_s'
+
+export interface LapRow {
+  lap: number
+  t_start_s: number
+  t_end_s: number
+  best: boolean
+  best_sectors: number[] // 이 랩이 세션 최속인 구간 번호 (1 ~ 3)
+  [key: string]: number | boolean | number[] | null
+}
+
+export interface LapTable {
+  columns: LapColumn[]
+  rows: LapRow[]
+  sectors: {
+    best: Record<SectorKey, { value: number; lap: number }>
+    mean: Record<SectorKey, number>
+    n_laps: number
+    theoretical_best_s: number
+  } | null
+  notes: string[]
+  best_lap: number | null
+}
+
+// §6-7 get_quality — 위치(구간)가 있는 품질 경고
+export interface QualityItem {
+  level: 'info' | 'warn' | 'error'
+  code: string
+  block: string
+  message: string
+  t_ranges: [number, number][] | null
 }
 
 // §6-10 resolve_session · §8 session_retired 의 detail

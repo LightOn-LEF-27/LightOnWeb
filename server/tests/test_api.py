@@ -1,5 +1,6 @@
 """HTTP 층 — 엔진 JSON 을 그대로 넘기고, 오류는 계약 §8 모양 + 맞는 HTTP 상태로."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from lefsite.app import create_app
@@ -74,3 +75,42 @@ def test_web_pages_fall_back_to_index(tmp_path):
 def test_without_a_build_the_page_says_how_to_make_one(client):
     r = client.get("/sessions")
     assert r.status_code == 503 and "npm run build" in r.text
+
+
+# ---------------------------------------------------------------- 랩 표 · 품질 · 내려받기
+
+FILE = "DEMO-1_2027-05-08_S1/files/laps.csv"
+
+
+def test_laps_and_quality(client):
+    laps = client.get("/api/sessions/DEMO-1_2027-05-08_S1/laps").json()
+    assert laps["rows"] and laps["columns"][0]["key"] == "lap_time_s"
+    assert client.get("/api/sessions/DEMO-1_2027-05-08_S4/quality").json()[0]["level"] == "warn"
+    sid = next(s for s, r in RETIRED.items() if r["why"] == "replaced")
+    assert client.get(f"/api/sessions/{sid}/laps").status_code == 410
+
+
+def test_member_cannot_download_and_nothing_is_logged(make_client):
+    c = make_client(LEF_SITE_DEV_ROLE="member")
+    for method in ("GET", "HEAD"):
+        r = c.request(method, f"/api/files/{FILE}")
+        assert r.status_code == 403
+    assert c.get(f"/api/files/{FILE}").json()["error"]["message"] == "내려받기 권한 없음 — 팀장만 할 수 있습니다"
+    assert c.app.state.db.recent_downloads() == []
+
+
+def test_lead_downloads_and_it_is_logged(make_client):
+    c = make_client(LEF_SITE_DEV_ROLE="lead")
+    head = c.head(f"/api/files/{FILE}")
+    assert head.status_code == 200 and c.app.state.db.recent_downloads() == []      # HEAD 는 확인만, 기록 안 함
+    r = c.get(f"/api/files/{FILE}")
+    assert r.status_code == 200 and r.content.startswith(b"lap,")
+    assert 'filename="laps.csv"' in r.headers["content-disposition"] and r.headers["content-type"].startswith("text/csv")
+    log = c.app.state.db.recent_downloads()
+    assert [(d["email"], d["file_id"], d["sid"], d["name"]) for d in log] == [("dev@localhost", FILE, "DEMO-1_2027-05-08_S1", "laps.csv")]
+
+
+@pytest.mark.parametrize("file_id", ["DEMO-1_2027-05-08_S1/files/nope.csv", "DEMO-1_2027-05-08_S1/..%2F..%2Fsecret", "x"])
+def test_unknown_or_odd_file_ids(client, file_id):
+    r = client.get(f"/api/files/{file_id}")
+    assert r.status_code == 404 and r.json()["error"]["code"] in ("unknown_file", "not_found")

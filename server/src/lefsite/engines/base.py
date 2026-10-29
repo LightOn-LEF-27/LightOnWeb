@@ -11,6 +11,7 @@ from typing import Protocol
 
 # 계약 §3 의 sid 모양. 엔진도 다시 보지만, 주소에서 받은 값은 엔진에 넘기기 전에 거른다
 SID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+FILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9_./-]{1,256}$")   # <sid>/files/x.csv · <sid>/raw/3
 
 # 계약 §8 의 오류 code → HTTP 상태
 HTTP_STATUS = {
@@ -44,6 +45,12 @@ def check_sid(sid: str) -> str:
     return sid
 
 
+def check_file_id(file_id: str) -> str:
+    if not isinstance(file_id, str) or not FILE_ID.match(file_id) or ".." in file_id or "//" in file_id:
+        raise EngineError("unknown_file", f"파일 ID 가 올바르지 않음: {file_id!r}")
+    return file_id
+
+
 class Engine(Protocol):
     """사이트가 부르는 엔진 함수 (계약 번호). 돌려주는 값은 전부 JSON 으로 바꿀 수 있다."""
 
@@ -57,5 +64,11 @@ class Engine(Protocol):
     def get_session(self, sid: str) -> dict: ...                           # F3
 
     def list_channels(self, sid: str) -> list[dict]: ...                   # F4
+
+    def get_laps(self, sid: str) -> dict: ...                              # F6
+
+    def get_quality(self, sid: str) -> list[dict]: ...                     # F8
+
+    def open_file(self, file_id: str) -> dict: ...                         # F12 — path 는 서버 안에서만 쓴다
 
     def resolve_session(self, sid: str) -> dict: ...                       # F15 (v0.9)

@@ -4,14 +4,18 @@
 차량 이름부터 `DEMO-*` 라 화면에서 진짜와 헷갈리지 않는다. 수치는 그럴듯한 범위에서 손으로 지은 값이다 — 어떤 차의 측정값도 아니다.
 
 진짜 엔진과 모양이 같은지는 `tests/test_fake_parity.py` 가 본다 (엔진 · 세션 저장소가 있는 PC 에서만 돈다).
-그래프 값 · 랩 표(F5 ~ F14)는 그 화면을 만들 때 여기에 더한다.
+지금 있는 것: F1 ~ F4 · F6 랩 표 · F8 품질 · F12 파일 · F15. 그래프 · 코스 · 구간 · 시간 차(F5 · F7 · F13 · F14)는 분석 화면을 만들 때 더한다.
 """
 
 from __future__ import annotations
 
+import random
+import tempfile
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 
-from .base import EngineError, check_sid
+from .base import EngineError, check_file_id, check_sid
 
 CONTRACT = "0.10"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
 
@@ -91,6 +95,7 @@ class FakeSession:
     split_by: str = "gps"
     cautions: dict[str, list[str]] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
+    quality: tuple[tuple, ...] = ()              # (level, code, block, message, t_ranges | None) — 계약 §6-7
 
     @property
     def car(self) -> str:
@@ -119,7 +124,8 @@ SESSIONS: list[FakeSession] = [
                 612.4, 7, 61.84, 5, 6.3, 88.4, 1480, 210, _all()),
     FakeSession("DEMO-1_2027-05-08_S2", E_TEST, "연습", "댐퍼 앞 · 브레이크 바이어스", "A", "2027-05-08T10:46:30.050+09:00",
                 705.9, 8, 60.97, 6, 7.2, 90.1, 1702, 221, _all(bms="warn"),
-                cautions={"bms": ["셀 전압 프레임이 41.2 s 동안 들어오지 않음 (그 구간은 값 없음)"]}),
+                cautions={"bms": ["셀 전압 프레임이 41.2 s 동안 들어오지 않음 (그 구간은 값 없음)"]},
+                quality=(("warn", "logger_not_recording", "bms", "BMS 프레임이 2 s 넘게 들어오지 않은 구간 1곳 · 합계 41.2 s", [[212.4, 253.6]]),)),
     FakeSession("DEMO-1_2027-05-08_S5", E_TEST, "연습", "토크 맵 100 %", "B", "2027-05-08T11:05:44.900+09:00",
                 498.2, 6, 60.42, 4, 5.4, 91.6, 1391, 248, _all(tire="none"),
                 notes=("나중에 들어온 기록으로 만든 세션이라, 시간상 앞이지만 다음 번호를 받았습니다",)),
@@ -127,7 +133,10 @@ SESSIONS: list[FakeSession] = [
                 655.0, 8, 61.12, 3, 7.1, 89.7, 1655, 230, _all()),
     FakeSession("DEMO-1_2027-05-08_S4", E_TEST, "내구", "완주 연습", "B", "2027-05-08T13:10:21.300+09:00",
                 1395.6, 20, 62.03, 12, 17.9, 87.2, 4310, 226, _all(suspension="warn", video="seek"),
-                cautions={"suspension": ["뒤 오른쪽 센서가 14 ~ 15랩에서 끝값(75 mm)에 붙음 — 배선 확인 필요"]}),
+                cautions={"suspension": ["뒤 오른쪽 센서가 14 ~ 15랩에서 끝값(75 mm)에 붙음 — 배선 확인 필요"]},
+                quality=(("warn", "sensor_at_limit", "suspension", "뒤 오른쪽 스트로크가 센서 끝값에 붙은 구간 2곳 · 합계 9.6 s",
+                          [[905.2, 911.0], [968.3, 972.1]]),
+                         ("info", "battery_gap", "battery", "팩 전류 표본이 빠진 곳 4곳 · 합계 0.3 s", [[120.0, 120.1], [480.5, 480.6]]))),
     FakeSession("DEMO-1_2027-04-24_S1", E_CAMPUS, "가속", "가속 1", "A", "2027-04-24T11:18:40.000+09:00",
                 38.6, 0, None, None, 0.31, 97.3, 52, 262,
                 _all(cooling="none", tire="none", steer="warn"), cautions={"steer": ["0점이 1.8° 치우침 — 직진에서 0 이 아님"]}),
@@ -136,14 +145,16 @@ SESSIONS: list[FakeSession] = [
                 _all(cooling="none", tire="none", steer="warn"), cautions={"steer": ["0점이 1.8° 치우침 — 직진에서 0 이 아님"]}),
     FakeSession("DEMO-1_2027-04-24_S3", E_CAMPUS, "연습", "첫 주행", "", "2027-04-24T15:40:03.200+09:00",
                 402.7, 5, 48.66, 4, 3.4, 71.5, 690, 174, _all(cooling="none", tire="none", pedal="warn"),
-                cautions={"pedal": ["가속 페달 센서 둘이 10 % 넘게 어긋난 구간이 있음"]}),
+                cautions={"pedal": ["가속 페달 센서 둘이 10 % 넘게 어긋난 구간이 있음"]},
+                quality=(("warn", "apps_fault", "pedal", "가속 페달 센서 둘이 10 % 넘게 어긋난 구간 1곳 · 합계 0.8 s", [[233.1, 233.9]]),)),
     FakeSession("DEMO-2_2026-11-14_S1", E_TRACKDAY, "연습", "트랙데이 오전", "A", "2026-11-14T10:45:30.000+09:00",
                 540.0, 7, 66.81, 6, 5.9, 84.9, None, None,
                 {"gps": "have", "imu": "have", "motor": "have", "bms": "have", "video": "have", "pedal": "seek", "battery": "none"}),
     FakeSession("DEMO-2_2026-11-14_S2", E_TRACKDAY, "연습", "트랙데이 오후", "B", "2026-11-14T13:20:00.000+09:00",
                 600.0, None, None, None, None, None, 1210, 196,
                 {"battery": "have", "motor": "have", "bms": "have", "gps": "seek", "imu": "none"}, split_by="time",
-                notes=("시각으로 나눈 세션 — 데모 BMS 시계 기준 13:20 ~ 13:30 (GPS 기록 없음)",)),
+                notes=("시각으로 나눈 세션 — 데모 BMS 시계 기준 13:20 ~ 13:30 (GPS 기록 없음)",),
+                quality=(("warn", "clock_mismatch", "battery", "팩 전류와 모터 전류의 파형이 1.6 s 어긋나 보인다 — 장비 시계 차를 다시 볼 것", None),)),
 ]
 
 # 없어진 sid (계약 §3-1 · §6-10) — 화면이 "넘기기" · "고르기" · "없어진 세션" 을 다 보여 볼 수 있게
@@ -210,14 +221,124 @@ def _block(s: FakeSession, b: str) -> dict:
         "facts": [f"합성 데이터 — {s.duration_s:.0f} s 분량 (실제 주행 아님)"],
         "checks": [] if computed else ["가짜 연결부: 시계 맞춤 검사 없음"],
         "cautions": list(s.cautions.get(b, [])) + (["추정 — 가속페달 · 브레이크 압력 신호가 아니다"] if computed else []),
-        "raw": [] if computed else [{"file_id": None, "label": "원본 기록 (합성 예시)", "name": f"{b}.log", "size_bytes": 0, "note": "",
-                                     "where": "가짜 연결부 — 파일 없음"}],
-        "outputs": [], "exports": [],
+        "raw": _raw(s, b),
+        "outputs": [] if computed else [{"label": "변환된 표 (합성)", "name": f"{b}.parquet", "note": "", "where": "가짜 연결부 — 메모리"}],
+        "exports": _exports(s, b),
         "code": [{"key": "fake", "title": "가짜 연결부", "role": "계약 모양을 따르는 합성 세션"}],
         "channels": chans,
         "default_views": {"time": chans[:3], "distance": chans[:2] if s.has_track else [], "map": chans[0] if chans and s.has_track else None,
                           "gg": b == "imu"},
     }
+
+
+# ---------------------------------------------------------------- 랩 표 (계약 §6-5)
+
+# 랩 표 열: (key, 라벨, 단위, 자릿수, 블록, 그래프로 그릴 만한가) — 그 블록이 있는 세션에만 열이 생긴다
+LAP_COLUMNS = [
+    ("lap_time_s", "랩타임", "s", 2, "gps", True), ("s1_s", "S1", "s", 2, "gps", False), ("s2_s", "S2", "s", 2, "gps", False),
+    ("s3_s", "S3", "s", 2, "gps", False), ("vmax_kmh", "최고 속도", "km/h", 1, "gps", True), ("distance_m", "달린 거리", "m", 0, "gps", False),
+    ("long_g_max", "가속 최대", "g", 2, "imu", True), ("long_g_min", "제동 최대", "g", 2, "imu", True),
+    ("lat_left_max", "좌선회 최대", "g", 2, "imu", True), ("lat_right_max", "우선회 최대", "g", 2, "imu", True),
+    ("net_wh", "순 에너지", "Wh", 0, "battery", True), ("i_max_a", "전류 최대", "A", 0, "battery", True),
+    ("cell_t_max_c", "셀 최고 온도", "°C", 0, "bms", True), ("inverter_t_max_c", "인버터 최고 온도", "°C", 1, "motor", True),
+    ("coolant_t_max_c", "냉각수 최고 온도", "°C", 1, "cooling", True), ("full_throttle_pct", "풀스로틀 비율", "%", 0, "pedal", True),
+]
+SECTOR_SPLIT = (0.31, 0.38)   # S1 · S2 가 랩에서 차지하는 몫 (S3 은 나머지)
+SECTOR_KEYS = ("s1_s", "s2_s", "s3_s")
+
+
+def _lap_columns(s: FakeSession) -> list[dict]:
+    have = {b for b, st in s.status.items() if st in ("have", "warn")}
+    return [{"key": k, "label": lab, "unit": u, "digits": d, "block": b, "chart": c} for k, lab, u, d, b, c in LAP_COLUMNS if b in have]
+
+
+def _lap_rows(s: FakeSession) -> list[dict]:
+    """합성 랩 — 세션 ID 로 정한 난수라 늘 같다. 최속 랩 = 요약의 best_lap · best_lap_s, 구간 셋의 합 = 랩타임."""
+    if not s.has_track or not s.laps:
+        return []
+    rng = random.Random(s.sid)
+    keys = {c["key"] for c in _lap_columns(s)}
+    others = [i for i in range(1, s.laps + 1) if i != s.best_lap]
+    peak_lap = rng.choice(others) if others else s.best_lap      # 최고 속도 · 전류 최대가 나온 랩
+    rows, t0 = [], 14.0                                         # 첫 랩은 나가는 랩 뒤에 시작한다
+    for i in range(1, s.laps + 1):
+        lap_t = s.best_lap_s if i == s.best_lap else round(s.best_lap_s + rng.uniform(0.25, 2.8) + (2.0 if i == 1 else 0.0), 2)
+        f1, f2 = (f + rng.uniform(-0.012, 0.012) for f in SECTOR_SPLIT)
+        s1, s2 = round(lap_t * f1, 3), round(lap_t * f2, 3)
+        row = {"lap": i, "t_start_s": round(t0, 3), "t_end_s": round(t0 + lap_t, 3), "lap_time_s": lap_t,
+               "s1_s": s1, "s2_s": s2, "s3_s": round(lap_t - s1 - s2, 3),
+               "vmax_kmh": s.vmax_kmh if i == peak_lap else round(s.vmax_kmh - rng.uniform(0.5, 4.0), 1),
+               "distance_m": round(858 + rng.uniform(-4, 4)),
+               "long_g_max": round(rng.uniform(0.55, 0.75), 2), "long_g_min": round(-rng.uniform(0.9, 1.2), 2),
+               "lat_left_max": round(rng.uniform(1.1, 1.4), 2), "lat_right_max": round(rng.uniform(1.1, 1.4), 2),
+               "net_wh": round((s.net_wh or 0) / (s.laps + 1.5) * rng.uniform(0.92, 1.08)),
+               "i_max_a": s.i_max_a if i == peak_lap else round((s.i_max_a or 0) - rng.uniform(1, 25)),
+               "cell_t_max_c": round(31 + i * 0.7 + rng.uniform(0, 0.5)), "inverter_t_max_c": round(38 + i * 1.1 + rng.uniform(0, 1), 1),
+               "coolant_t_max_c": round(35 + i * 0.9 + rng.uniform(0, 1), 1), "full_throttle_pct": round(rng.uniform(38, 52))}
+        rows.append({k: v for k, v in row.items() if k in keys or k in ("lap", "t_start_s", "t_end_s")})
+        t0 += lap_t
+    best = {k: min(rows, key=lambda r: r[k]) for k in SECTOR_KEYS}
+    for r in rows:
+        r["best"] = r["lap"] == s.best_lap
+        r["best_sectors"] = [n for n, k in enumerate(SECTOR_KEYS, 1) if best[k] is r]
+    return rows
+
+
+def _sectors(rows: list[dict]) -> dict | None:
+    if not rows:
+        return None
+    best = {k: min(rows, key=lambda r: r[k]) for k in SECTOR_KEYS}
+    return {"best": {k: {"value": best[k][k], "lap": best[k]["lap"]} for k in SECTOR_KEYS},
+            "mean": {k: round(sum(r[k] for r in rows) / len(rows), 3) for k in SECTOR_KEYS}, "n_laps": len(rows),
+            "theoretical_best_s": round(sum(best[k][k] for k in SECTOR_KEYS), 3)}
+
+
+# ---------------------------------------------------------------- 파일 (계약 §6-2 raw · exports, F12)
+
+def _raw(s: FakeSession, b: str) -> list[dict]:
+    if b in COMPUTED:
+        return []
+    if b == "video":   # 용량 때문에 "있는 곳" 만 적힌 원본 — 내려받을 수 없다 (file_id 가 null)
+        return [{"file_id": None, "label": "영상 파일 (합성 예시)", "name": "DEMO0001.MP4", "size_bytes": 4_000_000_000, "note": "",
+                 "where": "DAQ 파트 보관 (용량이 커서 페이지에 붙이지 않음)", "content_type": "video/mp4"}]
+    fid = f"{s.sid}/raw/{FULL.index(b)}"
+    return [{"file_id": fid, "label": "원본 기록 (합성 예시)", "name": f"{b}_demo.log", "size_bytes": len(_content(fid)), "note": "",
+             "where": "", "content_type": "application/octet-stream"}]
+
+
+def _exports(s: FakeSession, b: str) -> list[dict]:
+    if b in COMPUTED or b == "video":
+        return []
+    ids = [f"{s.sid}/files/{b}.csv"] + ([f"{s.sid}/files/laps.csv"] if b == "gps" and _lap_rows(s) else [])
+    return [{"file_id": fid, "name": fid.rsplit("/", 1)[1],
+             "label": "이 세션의 랩별 값" if fid.endswith("laps.csv") else f"이 세션의 {BLOCKS[b]['title']}",
+             "note": f"{_rows(fid):,} 행", "rows": _rows(fid), "size_bytes": len(_content(fid))} for fid in ids]
+
+
+def _files(s: FakeSession) -> dict[str, dict]:
+    return {f["file_id"]: f for b in FULL if s.status.get(b) in ("have", "warn") for f in _raw(s, b) + _exports(s, b) if f["file_id"]}
+
+
+@lru_cache(maxsize=256)
+def _content(file_id: str) -> bytes:
+    """합성 파일 내용 — 같은 ID 면 늘 같은 바이트."""
+    sid, kind, name = file_id.split("/", 2)
+    rng = random.Random(file_id)
+    if kind == "raw":
+        return b"DEMO RAW LOG (synthetic, not a real recording)\n" + bytes(rng.randrange(256) for _ in range(2048))
+    if name == "laps.csv":
+        s = next(x for x in SESSIONS if x.sid == sid)
+        cols = ["lap", "t_start_s", "t_end_s"] + [c["key"] for c in _lap_columns(s)]
+        lines = [",".join(cols)] + [",".join(str(r.get(c, "")) for c in cols) for r in _lap_rows(s)]
+        return ("\n".join(lines) + "\n").encode()
+    block = name.removesuffix(".csv")
+    cols = ["t_s"] + [c[0] for c in BLOCKS[block]["channels"]]
+    lines = [",".join(cols)] + [",".join([f"{i * 0.1:.1f}"] + [f"{rng.uniform(0, 100):.2f}" for _ in cols[1:]]) for i in range(200)]
+    return ("\n".join(lines) + "\n").encode()
+
+
+def _rows(file_id: str) -> int:
+    return _content(file_id).count(b"\n") - 1
 
 
 class FakeEngine:
@@ -226,6 +347,7 @@ class FakeEngine:
     def __init__(self):
         self._order = _day_order()
         self._by_sid = {s.sid: s for s in SESSIONS}
+        self._dir = Path(tempfile.mkdtemp(prefix="lefsite-fake-"))   # 내려받기용 합성 파일을 여기 쓴다
 
     def _get(self, sid: str) -> FakeSession:
         check_sid(sid)
@@ -240,9 +362,9 @@ class FakeEngine:
     def engine_info(self) -> dict:
         return {"contract": CONTRACT, "engine": {"name": "lefdata (가짜 연결부 — 합성 세션)", "version": "fake"},
                 "store": {"format": 1, "sessions": len(SESSIONS), "retired_sids": len(RETIRED)},
-                "formats": [], "functions": ["engine_info", "list_sessions", "get_session", "list_channels", "resolve_session"],
-                "not_yet": ["get_series", "get_laps", "get_track", "get_quality", "open_file", "get_sectors", "get_delta",
-                            "detect", "ingest", "get_job"]}
+                "formats": [], "functions": ["engine_info", "list_sessions", "get_session", "list_channels", "get_laps", "get_quality",
+                                             "open_file", "resolve_session"],
+                "not_yet": ["get_series", "get_track", "get_sectors", "get_delta", "detect", "ingest", "get_job"]}
 
     def list_sessions(self, car=None, event_id=None, discipline=None, limit=None, offset=0) -> list[dict]:
         for name, v, low in (("limit", limit, 1), ("offset", offset, 0)):
@@ -279,6 +401,29 @@ class FakeEngine:
                     ch["levels"] = LEVELS[cid]
                 out.append(ch)
         return out
+
+    def get_laps(self, sid: str) -> dict:
+        s = self._get(sid)
+        rows = _lap_rows(s)
+        notes = ["합성 랩 — 실제 주행이 아닙니다", "t_start_s · t_end_s 는 세션 시간"]
+        if rows:
+            notes.append(f"구간 S1 ~ S3 은 기준 거리 위의 경계. 평균은 완주 랩 {len(rows)}개, 이론 최속 = 구간마다 최속의 합")
+        return {"columns": _lap_columns(s), "rows": rows, "sectors": _sectors(rows), "notes": notes, "best_lap": s.best_lap}
+
+    def get_quality(self, sid: str) -> list[dict]:
+        s = self._get(sid)
+        return [{"level": lv, "code": code, "block": b, "message": msg, "t_ranges": tr} for lv, code, b, msg, tr in s.quality]
+
+    def open_file(self, file_id: str) -> dict:
+        sid = check_file_id(file_id).split("/", 1)[0]
+        entry = _files(self._get(sid)).get(file_id)
+        if entry is None:
+            raise EngineError("unknown_file", f"파일 {file_id} 가 없음")
+        path = self._dir / file_id.replace("/", "__")
+        if not path.exists():
+            path.write_bytes(_content(file_id))
+        return {"file_id": file_id, "path": str(path), "name": entry["name"],
+                "content_type": entry.get("content_type", "text/csv"), "size_bytes": path.stat().st_size}
 
     def resolve_session(self, sid: str) -> dict:
         check_sid(sid)

@@ -6,6 +6,7 @@
     python -m lefsite users add <메일> --role member|lead|admin [--name 이름] [--note 메모]
     python -m lefsite users disable <메일> · enable <메일>
     python -m lefsite logins              최근 로그인 시도 (Google 로그인 시험 때 거절 이유 확인)
+    python -m lefsite downloads           최근 내려받기 기록 (누가 · 언제 · 무엇을)
 
 명단 관리 화면은 아직 없다 — 그동안 이 명령으로 넣는다 (관리자 PC 에서).
 """
@@ -52,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("disable", "enable"):
         usub.add_parser(name, help="끄기 (졸업 · 탈퇴)" if name == "disable" else "다시 켜기").add_argument("email")
     sub.add_parser("logins", help="최근 로그인 시도")
+    sub.add_parser("downloads", help="최근 내려받기 기록")
     a = p.parse_args(argv)
 
     if a.cmd in (None, "serve"):
@@ -67,6 +69,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     db = _db()
+    if a.cmd == "downloads":
+        for r in db.recent_downloads():
+            print(f"{r['at']}  {r['email']:<32}  {r['file_id']}  ({r['name']})")
+        return 0
     if a.cmd == "logins":
         for r in db.recent_logins():
             print(f"{r['at']}  {r['result']:<16}  {r['email'] or '-'}")

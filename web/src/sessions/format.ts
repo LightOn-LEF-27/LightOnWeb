@@ -15,9 +15,9 @@ export function driverShort(label: string): string {
 }
 
 // 시각은 엔진이 준 그 자리의 현지 시각 그대로 쓴다 (브라우저 시간대로 바꾸지 않는다)
-function localParts(start: string | null): { date: string; md: string; hm: string } | null {
-  const m = start?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
-  return m ? { date: `${m[1]}-${m[2]}-${m[3]}`, md: `${m[2]}-${m[3]}`, hm: `${m[4]}:${m[5]}` } : null
+function localParts(start: string | null): { date: string; md: string; hm: string; s: string } | null {
+  const m = start?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/)
+  return m ? { date: `${m[1]}-${m[2]}-${m[3]}`, md: `${m[2]}-${m[3]}`, hm: `${m[4]}:${m[5]}`, s: m[6] ?? '00' } : null
 }
 
 export function sessionName(row: SessionRow, opts: { withCar?: boolean } = {}): SessionName {
@@ -29,9 +29,9 @@ export function sessionName(row: SessionRow, opts: { withCar?: boolean } = {}): 
   return { main: parts.filter(Boolean).join(' · '), purpose: t ? row.name : '' }
 }
 
-export function formatStart(start: string | null): string {
+export function formatStart(start: string | null, opts: { seconds?: boolean } = {}): string {
   const t = localParts(start)
-  return t ? `${t.date} ${t.hm}` : '—'
+  return t ? `${t.date} ${t.hm}${opts.seconds ? `:${t.s}` : ''}` : '—'
 }
 
 export function formatDuration(s: number | null): string {

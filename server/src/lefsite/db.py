@@ -107,6 +107,16 @@ class Db:
                 con.execute("UPDATE users SET last_login_at = ?, name = CASE WHEN ? != '' THEN ? ELSE name END WHERE email = ?",
                             (now(), name or "", name or "", email.lower()))
 
+    def record_download(self, email: str, file_id: str, name: str) -> None:
+        """내려받기 기록 — 누가 · 언제 · 무엇을 (원본 · 대량 파일은 기록을 남긴다, 사이트_설계.md §4)."""
+        with self.connect() as con:
+            con.execute("INSERT INTO downloads (at, email, file_id, sid, name) VALUES (?, ?, ?, ?, ?)",
+                        (now(), email.lower(), file_id, file_id.split("/", 1)[0], name))
+
+    def recent_downloads(self, limit: int = 50) -> list[dict]:
+        with self.connect() as con:
+            return [dict(r) for r in con.execute("SELECT * FROM downloads ORDER BY id DESC LIMIT ?", (limit,))]
+
     def recent_logins(self, limit: int = 50) -> list[dict]:
         with self.connect() as con:
             return [dict(r) for r in con.execute("SELECT * FROM logins ORDER BY id DESC LIMIT ?", (limit,))]

@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -53,6 +53,22 @@ def api_router(engine: Engine, settings: config.Settings, db: Db) -> APIRouter:
     @r.get("/sessions/{sid}/channels")
     def channels(sid: str, user: User = Depends(require("view"))) -> list[dict]:
         return engine.list_channels(sid)
+
+    @r.get("/sessions/{sid}/laps")
+    def laps(sid: str, user: User = Depends(require("view"))) -> dict:
+        return engine.get_laps(sid)
+
+    @r.get("/sessions/{sid}/quality")
+    def quality(sid: str, user: User = Depends(require("view"))) -> list[dict]:
+        return engine.get_quality(sid)
+
+    @r.api_route("/files/{file_id:path}", methods=["GET", "HEAD"])
+    def download(file_id: str, request: Request, user: User = Depends(require("download"))) -> Response:
+        """내려받기 — 팀장 · 관리자만 (화면만 막지 않고 서버가 막는다). HEAD 는 받을 수 있는지만 보고 기록하지 않는다."""
+        f = engine.open_file(file_id)
+        if request.method == "GET":
+            db.record_download(user.email, file_id, f["name"])
+        return FileResponse(f["path"], filename=f["name"], media_type=f["content_type"])
 
     @r.get("/sessions/{sid}/resolve")
     def resolve(sid: str, user: User = Depends(require("view"))) -> dict:

@@ -8,7 +8,7 @@ from __future__ import annotations
 from functools import wraps
 from pathlib import Path
 
-from .base import EngineError, check_sid
+from .base import EngineError, check_file_id, check_sid
 
 
 def _translate(fn):
@@ -50,6 +50,18 @@ class RealEngine:
     @_translate
     def list_channels(self, sid: str) -> list[dict]:
         return self._api.list_channels(check_sid(sid))
+
+    @_translate
+    def get_laps(self, sid: str) -> dict:
+        return self._api.get_laps(check_sid(sid))
+
+    @_translate
+    def get_quality(self, sid: str) -> list[dict]:
+        return self._api.get_quality(check_sid(sid))
+
+    @_translate
+    def open_file(self, file_id: str) -> dict:
+        return self._api.open_file(check_file_id(file_id))
 
     @_translate
     def resolve_session(self, sid: str) -> dict:

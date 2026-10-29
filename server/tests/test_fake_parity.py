@@ -67,3 +67,34 @@ def test_channels(fake):
 def test_resolve(fake):
     sid = fake.list_sessions()[0]["sid"]
     assert fake.resolve_session(sid).keys() == real.resolve_session(rows[0]["sid"]).keys()
+
+
+def test_laps(fake):
+    lapped = [r["sid"] for r in rows if r["laps"]][:3]
+    real_laps = [real.get_laps(sid) for sid in lapped]
+    fake_laps = [fake.get_laps(r["sid"]) for r in fake.list_sessions()]
+    assert keys(fake_laps) == keys(real_laps)
+    assert keys(c for L in fake_laps for c in L["columns"]) == keys(c for L in real_laps for c in L["columns"])
+    base = {"lap", "t_start_s", "t_end_s", "best", "best_sectors"}
+    assert base <= keys(r for L in real_laps for r in L["rows"]) and base <= keys(r for L in fake_laps for r in L["rows"])
+    sec = [L["sectors"] for L in real_laps if L["sectors"]]
+    assert keys(L["sectors"] for L in fake_laps if L["sectors"]) == keys(sec)
+
+
+def test_quality(fake):
+    real_q = [q for r in rows for q in real.get_quality(r["sid"])][:50]
+    fake_q = [q for r in fake.list_sessions() for q in fake.get_quality(r["sid"])]
+    assert real_q and keys(fake_q) == keys(real_q)
+
+
+def test_files(fake):
+    real_page = real.get_session(rows[0]["sid"])
+    fake_page = fake.get_session(fake.list_sessions()[0]["sid"])
+    for kind in ("raw", "exports", "outputs"):
+        r = [f for b in real_page["blocks"] for f in b[kind]]
+        f = [f for b in fake_page["blocks"] for f in b[kind]]
+        if r and f:
+            assert keys(f) == keys(r), kind
+    real_file = next(e["file_id"] for b in real_page["blocks"] for e in b["exports"])
+    fake_file = next(e["file_id"] for b in fake_page["blocks"] for e in b["exports"])
+    assert fake.open_file(fake_file).keys() == real.open_file(real_file).keys()

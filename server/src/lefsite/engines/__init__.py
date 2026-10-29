@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 from ..config import Settings
-from .base import Engine, EngineError, check_sid
+from .base import Engine, EngineError, check_file_id, check_sid
 
-__all__ = ["Engine", "EngineError", "check_sid", "make_engine"]
+__all__ = ["Engine", "EngineError", "check_file_id", "check_sid", "make_engine"]
 
 
 def make_engine(settings: Settings) -> Engine:
