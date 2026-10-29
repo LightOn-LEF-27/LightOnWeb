@@ -4,7 +4,7 @@
 차량 이름부터 `DEMO-*` 라 화면에서 진짜와 헷갈리지 않는다. 수치는 그럴듯한 범위에서 손으로 지은 값이다 — 어떤 차의 측정값도 아니다.
 
 진짜 엔진과 모양이 같은지는 `tests/test_fake_parity.py` 가 본다 (엔진 · 세션 저장소가 있는 PC 에서만 돈다).
-지금 있는 것: F1 ~ F6 (그래프 값은 `fake_series`) · F8 품질 · F12 파일 · F15. 코스 · 구간 · 시간 차(F7 · F13 · F14)는 트랙맵을 만들 때 더한다.
+지금 있는 것: 파일 올리기(F9 ~ F11)를 뺀 전부 — 그래프 값은 `fake_series`, 코스 · 구간 · 시간 차는 `fake_track` (랩 시계 하나에서 꺼내 서로 맞는다).
 """
 
 from __future__ import annotations
@@ -15,10 +15,10 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-from . import fake_series
+from . import fake_series, fake_track
 from .base import EngineError, check_file_id, check_sid
 
-CONTRACT = "0.10"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
+CONTRACT = "0.11"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
 
 # 블록마다 화면 이름 · 장비 설명 · 채널 (이름, 라벨, 단위, 부호, 주기 Hz, 자릿수, 계산한 채널인가)
 BLOCKS: dict[str, dict] = {
@@ -245,7 +245,6 @@ LAP_COLUMNS = [
     ("cell_t_max_c", "셀 최고 온도", "°C", 0, "bms", True), ("inverter_t_max_c", "인버터 최고 온도", "°C", 1, "motor", True),
     ("coolant_t_max_c", "냉각수 최고 온도", "°C", 1, "cooling", True), ("full_throttle_pct", "풀스로틀 비율", "%", 0, "pedal", True),
 ]
-SECTOR_SPLIT = (0.31, 0.38)   # S1 · S2 가 랩에서 차지하는 몫 (S3 은 나머지)
 SECTOR_KEYS = ("s1_s", "s2_s", "s3_s")
 
 
@@ -265,10 +264,9 @@ def _lap_rows(s: FakeSession) -> list[dict]:
     rows, t0 = [], 14.0                                         # 첫 랩은 나가는 랩 뒤에 시작한다
     for i in range(1, s.laps + 1):
         lap_t = s.best_lap_s if i == s.best_lap else round(s.best_lap_s + rng.uniform(0.25, 2.8) + (2.0 if i == 1 else 0.0), 2)
-        f1, f2 = (f + rng.uniform(-0.012, 0.012) for f in SECTOR_SPLIT)
-        s1, s2 = round(lap_t * f1, 3), round(lap_t * f2, 3)
+        s1, s2, s3 = fake_track.sector_times(s, {"lap": i, "lap_time_s": lap_t})   # 구간 · 미니 구간 · 시간 차와 같은 랩 시계
         row = {"lap": i, "t_start_s": round(t0, 3), "t_end_s": round(t0 + lap_t, 3), "lap_time_s": lap_t,
-               "s1_s": s1, "s2_s": s2, "s3_s": round(lap_t - s1 - s2, 3),
+               "s1_s": s1, "s2_s": s2, "s3_s": s3,
                "vmax_kmh": s.vmax_kmh if i == peak_lap else round(s.vmax_kmh - rng.uniform(0.5, 4.0), 1),
                "distance_m": round(858 + rng.uniform(-4, 4)),
                "long_g_max": round(rng.uniform(0.55, 0.75), 2), "long_g_min": round(-rng.uniform(0.9, 1.2), 2),
@@ -365,8 +363,8 @@ class FakeEngine:
         return {"contract": CONTRACT, "engine": {"name": "lefdata (가짜 연결부 — 합성 세션)", "version": "fake"},
                 "store": {"format": 1, "sessions": len(SESSIONS), "retired_sids": len(RETIRED)},
                 "formats": [], "functions": ["engine_info", "list_sessions", "get_session", "list_channels", "get_series", "get_laps",
-                                             "get_quality", "open_file", "resolve_session"],
-                "not_yet": ["get_track", "get_sectors", "get_delta", "detect", "ingest", "get_job"]}
+                                             "get_track", "get_quality", "open_file", "get_sectors", "get_delta", "resolve_session"],
+                "not_yet": ["detect", "ingest", "get_job"]}
 
     def list_sessions(self, car=None, event_id=None, discipline=None, limit=None, offset=0) -> list[dict]:
         for name, v, low in (("limit", limit, 1), ("offset", offset, 0)):
@@ -410,6 +408,19 @@ class FakeEngine:
         channels = {c["channel_id"]: c for c in self.list_channels(sid)}
         return fake_series.get_series(s, channels, _lap_rows(s), s.quality, channel_ids, x=x, t0=t0, t1=t1, lap=lap,
                                       max_points=max_points, smooth_s=smooth_s, d0=d0, d1=d1)
+
+    def get_track(self, sid: str, lap=None, color=None, smooth_s=None) -> dict:
+        s = self._get(sid)
+        channels = {c["channel_id"]: c for c in self.list_channels(sid)}
+        return fake_track.get_track(s, _lap_rows(s), channels, lap=lap, color=color, smooth_s=smooth_s)
+
+    def get_sectors(self, sid: str, mini_m=25) -> dict:
+        s = self._get(sid)
+        return fake_track.get_sectors(s, _lap_rows(s), mini_m=mini_m)
+
+    def get_delta(self, sid: str, lap, ref_sid: str, ref_lap, mini_m=25, max_points: int = 4000) -> dict:
+        s, r = self._get(sid), self._get(ref_sid)
+        return fake_track.get_delta(s, _lap_rows(s), lap, r, _lap_rows(r), ref_lap, mini_m=mini_m, max_points=max_points)
 
     def get_laps(self, sid: str) -> dict:
         s = self._get(sid)

@@ -206,3 +206,51 @@ def test_series_bad_calls(fake, kw, code):
     with pytest.raises(EngineError) as e:
         fake.get_series(S4, **kw)
     assert e.value.code == code
+
+
+# ---------------------------------------------------------------- 코스 · 구간 · 시간 차 (F7 · F13 · F14)
+
+def test_track_points_line_up(fake):
+    t = fake.get_track(S4, lap=3, color="gps.speed_kmh")
+    n = len(t["x_m"])
+    assert n > 100 and all(len(t[k]) == n for k in ("y_m", "t_s", "dist_m", "ref_m")) and len(t["color"]["values"]) == n
+    assert t["t_s"] == sorted(t["t_s"]) and t["ref_m"][0] == 0 and t["lap"] == 3
+    row = fake.get_laps(S4)["rows"][2]
+    assert t["t_s"][0] == row["t_start_s"] and abs(t["t_s"][-1] - row["t_end_s"]) < 0.01      # 첫 점 · 끝 점 = 계측선
+    assert fake.get_track(S4)["lap"] == fake.get_session(S4)["best_lap"]                        # 안 주면 최속 랩
+    whole = fake.get_track(S4, lap="all")
+    assert whole["lap"] is None and whole["ref_m"] is None and len(whole["x_m"]) > n
+
+
+def test_track_needs_a_course(fake):
+    with pytest.raises(EngineError) as e:
+        fake.get_track("DEMO-2_2026-11-14_S2")                                                 # 시각 구간 세션
+    assert e.value.code == "bad_argument"
+
+
+def test_sectors_agree_with_the_lap_table(fake):
+    sec = fake.get_sectors(S4, mini_m=25)
+    rows = fake.get_laps(S4)["rows"]
+    for L, r in zip(sec["laps"], rows):
+        assert L["sector_s"] == [r["s1_s"], r["s2_s"], r["s3_s"]]
+        assert abs(sum(L["mini_s"]) - r["lap_time_s"]) < 0.01                                   # 미니 구간 합 = 랩타임
+    assert len(sec["mini"]["edges_ref_m"]) == sec["mini"]["count"] + 1
+    assert sec["best"]["mini_s"] == [min(L["mini_s"][i] for L in sec["laps"]) for i in range(sec["mini"]["count"])]
+    with pytest.raises(EngineError):
+        fake.get_sectors(S4, mini_m=30)
+    assert fake.get_sectors("DEMO-1_2027-04-24_S1")["laps"] == []                               # 랩이 없는 세션
+
+
+def test_delta_rules(fake):
+    rows = {r["lap"]: r for r in fake.get_laps(S4)["rows"]}
+    same = fake.get_delta(S4, 3, S4, 3)
+    assert set(same["delta_s"]) == {0} and same["total_s"] == 0
+    d = fake.get_delta(S4, 3, S4, 12)
+    assert d["delta_s"][0] == 0 and abs(d["delta_s"][-1] - d["total_s"]) < 0.002
+    assert d["total_s"] == round(rows[3]["lap_time_s"] - rows[12]["lap_time_s"], 3)
+    assert len(d["on_track"]["values"]) == len(fake.get_track(S4, lap=3)["x_m"])
+    assert abs(sum(d["mini"]["delta_s"]) - d["total_s"]) < 0.01
+    assert fake.get_delta("DEMO-2_2026-11-14_S1", 2, S4, 12)["frame_id"] == "venue/demo-circuit"   # 같은 경기장이면 다른 차 랩끼리도
+    with pytest.raises(EngineError) as e:
+        fake.get_delta("DEMO-1_2027-04-24_S3", 1, S4, 12)
+    assert e.value.code == "frame_mismatch"

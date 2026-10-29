@@ -14,10 +14,18 @@ export interface ZoomGroup {
   charts: Set<uPlot>
   syncing: boolean
   range: { min: number; max: number } | null // null = 처음 범위
-  onCursorX?: (x: number | null) => void
+  hover: Set<(x: number | null) => void> // 마우스 위치를 받는 곳 (x 읽기 · 트랙맵 · g-g) — 렌더 없이 바로 그린다
+  cursorA: number | null // 클릭 = A, Shift + 클릭 = B (그래프의 x 단위)
+  cursorB: number | null
+  onPick?: (x: number, which: 'a' | 'b') => void
 }
 
-export const newZoomGroup = (): ZoomGroup => ({ charts: new Set(), syncing: false, range: null })
+export const newZoomGroup = (): ZoomGroup => ({ charts: new Set(), syncing: false, range: null, hover: new Set(), cursorA: null, cursorB: null })
+
+// 커서 A · B 가 바뀌면 모든 축을 다시 그린다 (선만 — 값은 그대로)
+export function redrawCursors(group: ZoomGroup): void {
+  group.charts.forEach((u) => u.redraw(false, false))
+}
 
 const SYNC_KEY = 'lefsite-analysis'
 
@@ -68,6 +76,7 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
     const text = cssVar('--text-muted')
     const grid = cssVar('--line-faint')
     const warn = alpha(cssVar('--warn') || '#d4b13c', 0.16)
+    const strong = cssVar('--text-strong') || '#ffffff'
     const series: uPlot.Series[] = [{}]
     const bands: uPlot.Band[] = []
     axis.meta.forEach((m, i) => {
@@ -113,6 +122,30 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
             ctx.restore()
           },
         ],
+        draw: [
+          (u) => {
+            const { ctx, bbox } = u
+            const line = (x: number | null, label: string, dashed: boolean) => {
+              if (x == null) return
+              const px = u.valToPos(x, 'x', true)
+              if (px < bbox.left || px > bbox.left + bbox.width) return
+              ctx.save()
+              ctx.strokeStyle = dashed ? text : strong
+              ctx.lineWidth = 1
+              ctx.setLineDash(dashed ? [4, 3] : [])
+              ctx.beginPath()
+              ctx.moveTo(px, bbox.top)
+              ctx.lineTo(px, bbox.top + bbox.height)
+              ctx.stroke()
+              ctx.fillStyle = dashed ? text : strong
+              ctx.font = `${10 * devicePixelRatio}px sans-serif`
+              ctx.fillText(label, px + 3 * devicePixelRatio, bbox.top + 10 * devicePixelRatio)
+              ctx.restore()
+            }
+            line(group.cursorB, 'B', true)
+            line(group.cursorA, 'A', false)
+          },
+        ],
         setScale: [
           (u, key) => {
             if (key !== 'x' || !ready || group.syncing) return
@@ -128,7 +161,8 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
         setCursor: [
           (u) => {
             const idx = u.cursor.idx
-            group.onCursorX?.(idx == null ? null : (u.data[0][idx] as number))
+            const hx = idx == null || u.cursor.left == null || u.cursor.left < 0 ? null : u.posToVal(u.cursor.left, 'x')
+            group.hover.forEach((f) => f(hx))
             if (!readout) return
             const spans = readout.querySelectorAll<HTMLElement>('[data-s]')
             spans.forEach((el) => {
@@ -146,7 +180,18 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
     group.charts.add(u)
     ready = true
     if (group.range) u.setScale('x', group.range)
+    // 클릭(끌지 않고) = 커서 A, Shift + 클릭 = B. 끌면 확대라 커서를 옮기지 않는다
+    let downX = 0
+    const down = (e: MouseEvent) => (downX = e.clientX)
+    const click = (e: MouseEvent) => {
+      if (Math.abs(e.clientX - downX) > 3 || !group.onPick) return
+      group.onPick(u.posToVal(e.offsetX, 'x'), e.shiftKey ? 'b' : 'a')
+    }
+    u.over.addEventListener('mousedown', down)
+    u.over.addEventListener('click', click)
     return () => {
+      u.over.removeEventListener('mousedown', down)
+      u.over.removeEventListener('click', click)
       group.charts.delete(u)
       u.destroy()
       plot.current = null

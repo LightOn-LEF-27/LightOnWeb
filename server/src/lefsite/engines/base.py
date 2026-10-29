@@ -71,6 +71,14 @@ class Engine(Protocol):
 
     def get_laps(self, sid: str) -> dict: ...                              # F6
 
+    def get_track(self, sid: str, lap: int | str | None = None, color: str | None = None,
+                  smooth_s: float | None = None) -> dict: ...               # F7 (lap="all" = 세션 전체 궤적)
+
+    def get_sectors(self, sid: str, mini_m: int = 25) -> dict: ...         # F13
+
+    def get_delta(self, sid: str, lap: int, ref_sid: str, ref_lap: int, mini_m: int = 25,
+                  max_points: int = 4000) -> dict: ...                      # F14
+
     def get_quality(self, sid: str) -> list[dict]: ...                     # F8
 
     def open_file(self, file_id: str) -> dict: ...                         # F12 — path 는 서버 안에서만 쓴다

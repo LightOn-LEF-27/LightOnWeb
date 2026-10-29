@@ -111,3 +111,16 @@ def test_series(fake):
 
 
 S4_FAKE = "DEMO-1_2027-05-08_S4"
+
+
+def test_track_sectors_delta(fake):
+    sid = next(r["sid"] for r in rows if r["laps"])
+    laps = [r["lap"] for r in real.get_laps(sid)["rows"]]
+    a, b = real.get_track(sid, lap=laps[0], color="gps.speed_kmh"), fake.get_track(S4_FAKE, lap=1, color="gps.speed_kmh")
+    assert a.keys() == b.keys() and a["gate"].keys() == b["gate"].keys() and a["color"].keys() == b["color"].keys()
+    assert real.get_track(sid, lap="all").keys() == fake.get_track(S4_FAKE, lap="all").keys()
+    a, b = real.get_sectors(sid), fake.get_sectors(S4_FAKE)
+    assert a.keys() == b.keys() and a["ref"].keys() == b["ref"].keys() and keys(a["sectors"]) == keys(b["sectors"])
+    assert a["mini"].keys() == b["mini"].keys() and keys(a["laps"]) == keys(b["laps"]) and a["best"].keys() == b["best"].keys()
+    a, b = real.get_delta(sid, laps[0], sid, laps[-1], max_points=100), fake.get_delta(S4_FAKE, 1, S4_FAKE, 2, max_points=100)
+    assert a.keys() == b.keys() and a["x"].keys() == b["x"].keys() and a["mini"].keys() == b["mini"].keys()

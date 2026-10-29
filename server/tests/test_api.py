@@ -124,3 +124,16 @@ def test_series_endpoint(client):
     assert len(body["x"]["values"]) == 300
     assert client.get("/api/sessions/DEMO-1_2027-05-08_S4/series", params={"ch": "gps.speed_kmh", "x": "distance"}).status_code == 400
     assert client.get("/api/sessions/DEMO-1_2027-05-08_S4/series").status_code == 422          # ch 없음
+
+
+def test_track_sectors_delta_endpoints(client):
+    sid = "DEMO-1_2027-05-08_S4"
+    assert client.get(f"/api/sessions/{sid}/track", params={"lap": 3, "color": "gps.speed_kmh"}).json()["lap"] == 3
+    assert client.get(f"/api/sessions/{sid}/track", params={"lap": "all"}).json()["lap"] is None
+    assert client.get(f"/api/sessions/{sid}/track", params={"lap": "x"}).status_code == 400
+    assert client.get(f"/api/sessions/{sid}/sectors").json()["mini"]["mini_m"] == 25
+    d = client.get(f"/api/sessions/{sid}/delta", params={"lap": 3, "ref_lap": 12}).json()
+    assert d["ref"] == {"sid": sid, "lap": 12}
+    cross = client.get("/api/sessions/DEMO-2_2026-11-14_S1/delta", params={"lap": 2, "ref_sid": sid, "ref_lap": 12})
+    assert cross.status_code == 200
+    assert client.get("/api/sessions/DEMO-1_2027-04-24_S3/delta", params={"lap": 1, "ref_sid": sid, "ref_lap": 12}).status_code == 400

@@ -41,6 +41,9 @@ cd ../web && npm install && npm run build && cd ../server
 | `GET /api/sessions/{sid}/channels` | `list_channels` | 보기 |
 | `GET /api/sessions/{sid}/series?ch=…&ch=…&x=time\|distance&lap=&t0=&t1=&d0=&d1=&max_points=` | `get_series` (그래프 값) | 보기 |
 | `GET /api/sessions/{sid}/laps` | `get_laps` | 보기 |
+| `GET /api/sessions/{sid}/track?lap=<번호\|all>&color=<채널>` | `get_track` (코스, 점마다 채널 값) | 보기 |
+| `GET /api/sessions/{sid}/sectors?mini_m=25` | `get_sectors` (구간 · 미니 구간) | 보기 |
+| `GET /api/sessions/{sid}/delta?lap=&ref_lap=&ref_sid=` | `get_delta` (두 랩의 시간 차) | 보기 |
 | `GET /api/sessions/{sid}/quality` | `get_quality` | 보기 |
 | `GET /api/sessions/{sid}/resolve` | `resolve_session` | 보기 |
 | `GET · HEAD /api/files/{file_id}` | `open_file` (파일을 첨부로 보냅니다) | 내려받기 |

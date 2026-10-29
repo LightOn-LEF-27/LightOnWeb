@@ -58,6 +58,18 @@ class RealEngine:
                                     smooth_s=smooth_s, d0=d0, d1=d1)
 
     @_translate
+    def get_track(self, sid: str, lap=None, color=None, smooth_s=None) -> dict:
+        return self._api.get_track(check_sid(sid), lap=lap, color=color, smooth_s=smooth_s)
+
+    @_translate
+    def get_sectors(self, sid: str, mini_m: int = 25) -> dict:
+        return self._api.get_sectors(check_sid(sid), mini_m=mini_m)
+
+    @_translate
+    def get_delta(self, sid: str, lap: int, ref_sid: str, ref_lap: int, mini_m: int = 25, max_points: int = 4000) -> dict:
+        return self._api.get_delta(check_sid(sid), lap, check_sid(ref_sid), ref_lap, mini_m=mini_m, max_points=max_points)
+
+    @_translate
     def get_laps(self, sid: str) -> dict:
         return self._api.get_laps(check_sid(sid))
 

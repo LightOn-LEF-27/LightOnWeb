@@ -1193,3 +1193,75 @@ ul.plain {
 .u-select {
   background: rgba(91, 155, 240, 0.15);
 }
+
+/* 분석 오른쪽 패널 — 트랙맵 · 커서 값 · g-g */
+.side {
+  width: 320px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+}
+.side-block {
+  border-bottom: 1px solid var(--line);
+}
+.side-block h2 {
+  margin: 0;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-label);
+  background: var(--bar);
+  border-bottom: 1px solid var(--line-soft);
+}
+.side-head span:first-child {
+  flex: 1;
+}
+.side-head .field {
+  height: 18px;
+  font-size: 11px;
+  max-width: 130px;
+}
+.track-canvas,
+.gg-canvas {
+  display: block;
+  width: 100%;
+  background: var(--bg);
+}
+.map-legend {
+  margin: 0;
+  padding: 4px 8px 6px;
+  font-size: 10px;
+}
+.pace-good {
+  color: #18b04f;
+}
+.pace-bad {
+  color: #e2261c;
+}
+.cursor-table th,
+.cursor-table td {
+  height: 21px;
+  font-size: 11px;
+  padding: 0 6px;
+}
+.cursor-table td:first-child {
+  max-width: 120px;
+}
+.gg-bar {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  font-size: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+.gg-bar input[type='range'] {
+  flex: 1;
+  accent-color: var(--text-strong);
+}

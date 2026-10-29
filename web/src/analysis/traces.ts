@@ -3,7 +3,7 @@
 
 import uPlot from 'uplot'
 
-import type { QualityItem, SeriesResponse } from '../types'
+import type { DeltaResponse, QualityItem, SeriesResponse } from '../types'
 import type { XMode } from './state'
 
 export interface Trace {
@@ -35,22 +35,31 @@ export interface AxisData {
   meta: SeriesMeta[] // data[1 + i] 의 뜻
 }
 
-// 축 하나의 그래프 표 — 계열마다 [x, (값 · 최소 · 최대) × 채널] 을 만들어 x 로 합친다
-export function axisData(traces: Trace[], responses: Map<string, SeriesResponse>, channels: string[], x: XMode): AxisData {
+export const DELTA = '@delta' // 화면의 "시간 차" 축 — 값은 엔진의 get_delta (비교 랩마다, 기준 거리 위)
+
+// 축 하나의 그래프 표 — 계열마다 [x, (값 · 최소 · 최대) × 채널] 을 만들어 x 로 합친다.
+// 시간 차는 x 칸이 그래프 값과 달라 따로 표를 만든다 (합칠 때 같은 x 축 — 기준 거리 — 위에 놓인다)
+export function axisData(traces: Trace[], responses: Map<string, SeriesResponse>, channels: string[], x: XMode,
+                         deltas: Map<string, DeltaResponse> = new Map()): AxisData {
   const tables: uPlot.AlignedData[] = []
   const meta: SeriesMeta[] = []
+  const add = (t: Trace, ch: string, axis: number, xs: number[], cols: (number | null)[][]) => {
+    tables.push([xs, ...cols] as uPlot.AlignedData)
+    for (const kind of ['v', 'min', 'max'] as const) meta.push({ trace: t, channel: ch, axis: axis as 0 | 1, kind })
+  }
   for (const t of traces) {
     const r = responses.get(t.key)
-    if (!r) continue
-    const shift = xShift(r, x, t.lap)
-    const cols: (number | null)[][] = []
     channels.forEach((ch, axis) => {
-      const s = r.series.find((v) => v.channel_id === ch)
-      if (!s) return // 이 랩의 세션에 없는 채널
-      cols.push(s.values, s.y_min, s.y_max)
-      for (const kind of ['v', 'min', 'max'] as const) meta.push({ trace: t, channel: ch, axis: axis as 0 | 1, kind })
+      if (ch === DELTA) {
+        const d = deltas.get(t.key)
+        if (d && x === 'distance') add(t, ch, axis, d.x.values, [d.delta_s, d.delta_s, d.delta_s])
+        return
+      }
+      const s = r?.series.find((v) => v.channel_id === ch)
+      if (!r || !s) return // 이 랩의 세션에 없는 채널
+      const shift = xShift(r, x, t.lap)
+      add(t, ch, axis, shift ? r.x.values.map((v) => v - shift) : r.x.values, [s.values, s.y_min, s.y_max])
     })
-    if (cols.length) tables.push([shift ? r.x.values.map((v) => v - shift) : r.x.values, ...cols] as uPlot.AlignedData)
   }
   if (tables.length === 0) return { data: [[]], meta: [] }
   return { data: tables.length === 1 ? tables[0] : uPlot.join(tables), meta }

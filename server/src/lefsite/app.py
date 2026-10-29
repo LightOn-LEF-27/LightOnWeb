@@ -63,6 +63,24 @@ def api_router(engine: Engine, settings: config.Settings, db: Db) -> APIRouter:
         """그래프 값 (F5) — ch 를 여러 번 (?ch=gps.speed_kmh&ch=imu.lat_g). 줄이기 · 범위 · 부드럽게는 엔진이 한다."""
         return engine.get_series(sid, ch, x=x, t0=t0, t1=t1, lap=lap, max_points=max_points, smooth_s=smooth_s, d0=d0, d1=d1)
 
+    @r.get("/sessions/{sid}/track")
+    def track(sid: str, lap: str | None = None, color: str | None = None, smooth_s: float | None = None,
+              user: User = Depends(require("view"))) -> dict:
+        """코스 (F7) — lap 은 랩 번호 · all(세션 전체) · 없으면 최속 랩. color = 주행선 점마다 그 채널 값 (엔진이 맞춰 준다)."""
+        if lap is not None and lap != "all" and not lap.isdigit():
+            raise EngineError("bad_argument", f"lap 은 랩 번호 또는 all: {lap!r}")
+        return engine.get_track(sid, lap=int(lap) if lap and lap.isdigit() else lap, color=color, smooth_s=smooth_s)
+
+    @r.get("/sessions/{sid}/sectors")
+    def sectors(sid: str, mini_m: int = 25, user: User = Depends(require("view"))) -> dict:
+        return engine.get_sectors(sid, mini_m=mini_m)
+
+    @r.get("/sessions/{sid}/delta")
+    def delta(sid: str, lap: int, ref_lap: int, ref_sid: str | None = None, mini_m: int = 25, max_points: int = 4000,
+              user: User = Depends(require("view"))) -> dict:
+        """두 랩의 시간 차 (F14) — + 면 lap 이 ref_lap 보다 그만큼 늦다. 같은 frame 이면 다른 세션 랩끼리도."""
+        return engine.get_delta(sid, lap, ref_sid or sid, ref_lap, mini_m=mini_m, max_points=max_points)
+
     @r.get("/sessions/{sid}/laps")
     def laps(sid: str, user: User = Depends(require("view"))) -> dict:
         return engine.get_laps(sid)

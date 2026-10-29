@@ -159,6 +159,46 @@ export interface SeriesResponse {
   reduced: { from_points: number; to_points: number; method: string; smooth_s: number | null }
 }
 
+// §6-6 get_track — 랩의 주행선 (첫 점 · 끝 점 = 계측선). lap="all" 이면 세션 전체 궤적 (ref_m 없음)
+export interface TrackResponse {
+  sid: string
+  lap: number | null
+  t_s: number[]
+  x_m: number[]
+  y_m: number[]
+  dist_m: number[]
+  ref_m: number[] | null
+  gate: { x_m: number; y_m: number; heading_deg: number; half_width_m: number }
+  frame_id: string | null
+  direction: string
+  frame: string
+  color?: { channel_id: string; unit: string; values: (number | null)[]; smooth_s: number | null; levels?: { value: number; label: string }[] }
+}
+
+// §6-8 get_sectors — 구간 · 미니 구간 (경계는 기준 거리 위, frame 마다 고정)
+export interface SectorsResponse {
+  sid: string
+  frame_id: string | null
+  sectors: { sector: number; ref_m0: number; ref_m1: number; x_m: number; y_m: number; heading_deg: number }[]
+  mini: { mini_m: number; edges_ref_m: number[]; count: number }
+  laps: { lap: number; sector_s: number[]; mini_s: number[] }[]
+  best: { sector_s: number[]; sector_lap: number[]; mini_s: number[]; mini_lap: number[] } | null
+  mean: { sector_s: number[]; mini_s: number[]; n_laps: number } | null
+}
+
+// §6-9 get_delta — + 면 lap 이 ref 보다 그만큼 늦다
+export interface DeltaResponse {
+  lap: { sid: string; lap: number }
+  ref: { sid: string; lap: number }
+  frame_id: string
+  x: { kind: 'ref_distance'; unit: string; values: number[] }
+  delta_s: number[]
+  mini: { mini_m: number; edges_ref_m: number[]; delta_s: number[] }
+  on_track: { values: number[] }
+  total_s: number
+  lap_time_s: { lap: number; ref: number }
+}
+
 // §6-10 resolve_session · §8 session_retired 의 detail
 export interface Resolved {
   sid: string

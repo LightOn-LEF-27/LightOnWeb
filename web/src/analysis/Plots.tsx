@@ -2,16 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import type { Channel, QualityItem, SeriesResponse } from '../types'
+import type { Channel, DeltaResponse, QualityItem, SeriesResponse } from '../types'
 import Chart, { type ZoomGroup } from './Chart'
 import type { XMode } from './state'
-import { axisData, shadeRanges, type Trace } from './traces'
+import { axisData, DELTA, shadeRanges, type Trace } from './traces'
 
 interface Props {
   axes: string[][]
   channels: Map<string, Channel>
   traces: Trace[]
   responses: Map<string, SeriesResponse>
+  deltas: Map<string, DeltaResponse>
   x: XMode
   quality: QualityItem[]
   colors: string[]
@@ -38,16 +39,18 @@ export default function Plots(p: Props) {
     return () => ro.disconnect()
   }, [])
   useEffect(() => {
-    p.group.onCursorX = (v) => {
-      if (xRead.current) xRead.current.textContent = v == null ? '' : `커서 ${v.toFixed(p.x === 'time' ? 2 : 1)} ${p.x === 'time' ? 's' : 'm'}`
+    const show = (v: number | null) => {
+      if (xRead.current) xRead.current.textContent = v == null ? '' : `마우스 ${v.toFixed(p.x === 'time' ? 2 : 1)} ${p.x === 'time' ? 's' : 'm'}`
     }
+    p.group.hover.add(show)
+    return () => void p.group.hover.delete(show)
   }, [p.group, p.x])
 
   const refResp = p.responses.get('ref')
   const refLap = p.traces[0]?.lap ?? null
   const n = Math.max(p.axes.length, 1)
   const h = Math.max(MIN_H, Math.floor((size.h - X_AXIS_H - 1) / n))
-  const xLabel = p.x === 'distance' ? '거리 (계측선부터) m' : refLap === null ? '세션 시간 s' : '랩 시작부터 시간 s'
+  const xLabel = p.x === 'distance' ? '기준 거리 (계측선부터, 기준 랩 주행선 위) m' : refLap === null ? '세션 시간 s' : '랩 시작부터 시간 s'
 
   return (
     <div className="plots">
@@ -62,7 +65,7 @@ export default function Plots(p: Props) {
         <span>{xLabel}</span>
         <span ref={xRead} />
         <span style={{ flex: 1 }} />
-        <span className="muted">끌기 = 확대 · 두 번 클릭 = 처음 범위 · 옅은 띠 = 줄인 칸의 최소 ~ 최대 · 빈 곳은 선을 끊음</span>
+        <span className="muted">클릭 = 커서 A · Shift + 클릭 = B · 끌기 = 확대 · 두 번 클릭 = 처음 범위 · 옅은 띠 = 줄인 칸의 최소 ~ 최대 · 빈 곳은 선을 끊음</span>
       </div>
     </div>
   )
@@ -71,7 +74,7 @@ export default function Plots(p: Props) {
 function AxisRow(p: Props & { index: number; ids: string[]; width: number; height: number; showX: boolean; refResp?: SeriesResponse; refLap: number | null }) {
   const [readout, setReadout] = useState<HTMLDivElement | null>(null)
   const chs = useMemo(() => p.ids.map((id) => p.channels.get(id)).filter((c): c is Channel => !!c), [p.ids, p.channels])
-  const data = useMemo(() => axisData(p.traces, p.responses, p.ids, p.x), [p.traces, p.responses, p.ids, p.x])
+  const data = useMemo(() => axisData(p.traces, p.responses, p.ids, p.x, p.deltas), [p.traces, p.responses, p.ids, p.x, p.deltas])
   const shade = useMemo(() => shadeRanges(p.quality, p.ids, p.x, p.refResp, p.refLap), [p.quality, p.ids, p.x, p.refResp, p.refLap])
   const others = [...p.channels.values()].filter((c) => !p.ids.includes(c.channel_id))
 
@@ -120,7 +123,7 @@ function AxisRow(p: Props & { index: number; ids: string[]; width: number; heigh
         <Chart channels={chs} axis={data} colors={p.colors} width={p.width} height={p.height} showX={p.showX} shade={shade} group={p.group}
                theme={p.theme} readout={readout} />
       ) : (
-        <p className="panel-msg muted">이 랩에는 이 채널의 값이 없습니다.</p>
+        <p className="panel-msg muted">{p.ids.includes(DELTA) ? '시간 차는 거리축에서 비교 랩을 고르면 나옵니다.' : '이 랩에는 이 채널의 값이 없습니다.'}</p>
       )}
     </div>
   )
