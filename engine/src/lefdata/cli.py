@@ -18,6 +18,8 @@
     lefdata report              하루치 시험 주행 보고서 (HTML + 그림, --pdf) → derived/report_<날짜>/
     lefdata catalog             주행 데이터 카탈로그: 세션마다 한 페이지 (원본 → 코드 → 결과물 · 그림) → derived/catalog/ · 07_데이터/_catalog/
     lefdata sessions            분석 엔진(lefdata.api)이 읽는 세션 저장소를 만든다 → 07_데이터/_sessions/
+    lefdata detect FILE…        올릴 파일이 무엇인지 (형식 · 시작 시각 · 길이) — 읽기만
+    lefdata ingest FILE… --car  파일을 이벤트에 넣고 변환 → 세션 (사이트의 파일 올리기와 같은 길, _uploads/<작업>/job.json)
 """
 
 from __future__ import annotations
@@ -108,6 +110,21 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--event", type=Path, action="append", help="이벤트 폴더 (여러 번 지정 가능). 없으면 catalog_notes.toml 이 있는 이벤트 전부")
     p.add_argument("--root", type=Path, help="저장소 위치 (기본: LEF_SESSION_ROOT 또는 07_데이터/_sessions)")
     p.add_argument("--reframe", action="store_true", help="그 이벤트들의 frame(기준선 · 구간 경계)을 다시 정한다 — 구간 시간 · 시간 차가 바뀐다")
+
+    p = sub.add_parser("detect", help="올릴 파일이 무엇인지 — 형식 · 차량 짐작 · 시작 시각 · 길이 (파일은 읽기만)")
+    p.add_argument("files", type=Path, nargs="+")
+
+    p = sub.add_parser("ingest", help="파일을 이벤트 폴더에 넣고 그 차의 명령 순서대로 변환 → 세션 (사이트의 파일 올리기와 같은 길)")
+    p.add_argument("files", type=Path, nargs="+")
+    p.add_argument("--car", help="LEF-26 · LEF-25evo (파일이 차를 말해 주면 없어도 된다)")
+    p.add_argument("--event-id", help="있는 이벤트에 더할 때: <car>/<YYYY-MM-DD>_<장소>")
+    p.add_argument("--place-id", help="새 이벤트의 장소 이름 (ASCII 소문자, 예: yeonggwang)")
+    p.add_argument("--date", help="YYYY-MM-DD — 날짜가 없는 파일(LEF-26 로거 · STM32)만 올릴 때")
+    p.add_argument("--title", help="새 이벤트 제목 (catalog_notes.toml)")
+    p.add_argument("--kind", help="새 이벤트 종류 (예: 트랙데이)")
+    p.add_argument("--place", help="새 이벤트 장소 표시 이름 (예: 전남 영광)")
+    p.add_argument("--venue", help="경기장 계측선 이름 (_venues/<이름>.json, 예: yeonggwang)")
+    p.add_argument("--root", type=Path, help="세션 저장소 위치 (기본: LEF_SESSION_ROOT 또는 07_데이터/_sessions)")
 
     args = ap.parse_args(argv)
     t0 = time.perf_counter()
@@ -344,7 +361,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"[catalog] {time.perf_counter()-t0:.1f}s")
 
     elif args.cmd == "sessions":
-        from . import catalog_build, session_store
+        from . import catalog_build, session_ids, session_store
         import json
         events = args.event or sorted(p.parent for p in paths.DATA_ROOT.glob(f"*/*/{catalog_build.NOTES_NAME}"))
         root = args.root or session_store.DEFAULT_ROOT
@@ -354,11 +371,49 @@ def main(argv: list[str] | None = None) -> None:
                 have = [d["block"] for d in row["data_status"] if d["status"] in ("have", "warn")]
                 laps = f"{row['laps']}랩" if row["laps"] is not None else "랩 없음 (시각 구간)"
                 print(f"  {row['sid']}  {row['title']} · {row['duration_s'] / 60:.1f} 분 · {laps} · 데이터 {' · '.join(have)}")
+            ev_id = f"{Path(ev).resolve().parent.name}/{Path(ev).resolve().name}"
+            for sid, e in session_ids.read(root)["sessions"].items():
+                if e["event_id"] == ev_id and e["status"] == session_ids.RETIRED and e.get("retired_at") == time.strftime("%Y-%m-%d"):
+                    print(f"  없어진 세션 {sid} ({e['why']}) → {' · '.join(e.get('replaced_by', [])) or '이어지는 세션 없음'}")
         for f in sorted((root / session_store.FRAMES).glob("*.json")):
             fr = json.loads(f.read_text(encoding="utf-8"))
             ref = fr["reference"]
             print(f"  frame {fr['frame_key']}: 기준 랩 {ref['sid']} {ref['lap']}랩 · 기준 길이 {fr['ref_len_m']} m · 정한 때 {fr['fixed_at']}")
         print(f"[sessions] → {root}  {time.perf_counter()-t0:.1f}s")
+
+    elif args.cmd == "detect":
+        from . import ingest
+        for f in args.files:
+            try:
+                r = ingest.detect(f)
+            except (ValueError, FileNotFoundError) as e:
+                print(f"  {f.name}: {e}")
+                continue
+            dur = f"{r['duration_s']:.0f} s" if r["duration_s"] is not None else "길이 모름"
+            print(f"  {f.name}: {r['kind']} · 시작 {r['start'] or '모름'} · {dur} · 레코딩 {r['recording_id'] or '-'}"
+                  + ("" if r["ok"] else "  [넣을 수 없음]"))
+            for n in r["notes"]:
+                print(f"      {n}")
+
+    elif args.cmd == "ingest":
+        from . import ingest, session_store
+        hints = {k: getattr(args, k) for k in ingest.HINT_KEYS if getattr(args, k, None)}
+        job_id = ingest.ingest(args.files, hints, paths.DATA_ROOT, args.root or session_store.DEFAULT_ROOT)
+        job = ingest.get_job(job_id, paths.DATA_ROOT)
+        print(f"[ingest] {job_id} · {job['state']} · 이벤트 {job['event_id']}")
+        for f in job["files"]:
+            print(f"  {f['name']}: {f['kind'] or '?'} → {f['status']}" + (f" ({f['placed']})" if f.get("placed") else "")
+                  + (f" · 세션 {', '.join(f['sessions'])}" if f.get("sessions") else ""))
+            for n in f["notes"] if f["status"] not in ("placed", "duplicate") else []:
+                print(f"      {n}")
+        for s in job["steps"]:
+            print(f"  단계 {s['step']:<24} {s['state']:<8} {s.get('seconds', 0):>6.1f} s" + (f"  {s['error']}" if s.get("error") else ""))
+        for w in job["warnings"]:
+            print(f"  주의: {w}")
+        for e in job["errors"]:
+            print(f"  오류: {e}")
+        print(f"[ingest] 레코딩 {len(job['recordings'])}개 · 세션 {len(job['sessions'])}개 · 기록 _uploads/{job_id}/ (job.json · log.txt), "
+              f"{time.perf_counter()-t0:.1f}s")
 
     elif args.cmd == "em-laps":
         print(f"[em-laps] {args.event}")

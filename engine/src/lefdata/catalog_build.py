@@ -90,7 +90,11 @@ SESSION_COLS = ["sid", "title", "car", "day", "start", "event_kind", "discipline
 
 
 def _read(path: Path) -> pd.DataFrame | None:
-    return pd.read_csv(path, encoding="utf-8-sig") if path.exists() else None
+    """CSV → 표. 없거나 비었으면(열도 없이 쓴 빈 표 — 스키드패드를 안 한 날의 skidpad_laps.csv 등) None."""
+    try:
+        return pd.read_csv(path, encoding="utf-8-sig") if path.exists() else None
+    except pd.errors.EmptyDataError:
+        return None
 
 
 def _epoch_s(t_abs: pd.Series) -> np.ndarray:

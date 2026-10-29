@@ -6,8 +6,9 @@
                             track.parquet      궤적 (t_s · x_m · y_m · dist_m)
                             series/*.parquet   채널 값 — 원래 주기 그대로 (t_s + 채널 열)
                             files/*.csv        세션 구간만 자른 표 (내려받기용)
-        → <저장소>/index.json                  세션 목록
+        → <저장소>/index.json                  세션 목록 (지금 있는 세션만, 그날의 순서 `day_order` 를 붙여)
         → <저장소>/_frames/<frame>.json         기준선 · 구간 경계 (frame_id 마다 하나, 한 번 정하면 고정 — --reframe 로만 다시)
+        → <저장소>/_ids.json                    세션 ID 등록부 (한 번 준 sid 는 같은 주행이면 그대로 · 없어진 sid 의 뒤를 이은 세션, `session_ids`)
 
 부를 때마다 원본 표를 다시 읽고 장비 시계를 다시 맞추면 느리다 (세션 하나에 수 초). 그래서 한 번 만들어 두고 API 는 이 폴더만 읽는다.
 사이트에 필요한 데이터는 이 폴더와, 내려받기용 원본 파일(데이터 폴더 기준 상대 경로로 적어 둔다)뿐이다.
@@ -27,12 +28,13 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from . import catalog_build, drive, paths, sectors, series as ser
+from . import catalog_build, drive, paths, sectors, series as ser, session_ids as ids
 from .catalog import HAVE, NONE, SEEK, WARN, Channel, DataBlock, FileRef, Session
 
 STORE_FORMAT = 1
@@ -214,10 +216,21 @@ def write_session(s: Session, root: Path, data_root: Path | None = None) -> dict
 
 
 def write_index(root: Path) -> list[dict]:
-    """저장소의 세션 전부 → index.json (시작 시각 순)."""
+    """저장소의 세션 전부 → index.json (시작 시각 순). 등록부가 있으면 지금 있는(active) 세션만.
+
+    `day_order` = 그 차 · 그날 세션 중 몇 번째인가 (시작 시각 순, 1 부터). 화면용 — 세션이 더 들어오면 바뀐다 (sid 는 안 바뀐다).
+    """
     root = Path(root)
+    reg = ids.read(root)
     rows = [json.loads(p.read_text(encoding="utf-8"))["summary"] for p in sorted(root.glob("*/session.json"))]
+    if reg is not None:
+        rows = [r for r in rows if reg["sessions"].get(r["sid"], {}).get("status") == ids.ACTIVE]
     rows.sort(key=lambda r: r["start"])
+    count: dict[tuple, int] = {}
+    for r in rows:
+        key = (r["car"], r["start"][:10])
+        count[key] = count.get(key, 0) + 1
+        r["day_order"] = count[key]
     (root / "index.json").write_text(json.dumps({"store_format": STORE_FORMAT, "sessions": rows}, ensure_ascii=False, indent=1,
                                                 allow_nan=False), encoding="utf-8", newline="\n")
     return rows
@@ -291,9 +304,32 @@ def write_frames(root: Path, reframe: bool = False, keys: set[str] | None = None
 
 
 def build_event(event_dir: Path, root: Path | None = None, data_root: Path | None = None, reframe: bool = False) -> list[dict]:
-    """이벤트의 세션을 전부 만들어 저장소에 쓴다 → 세션 목록의 줄들. index.json · frame 도 쓴다 (있는 frame 은 그대로)."""
+    """이벤트의 세션을 전부 만들어 저장소에 쓴다 → 세션 목록의 줄들. index.json · frame 도 쓴다 (있는 frame 은 그대로).
+
+    sid 는 등록부(`_ids.json`)가 정한다 — 같은 주행이면 전에 준 sid, 새 주행이면 그날의 새 번호. 이번에 없어진 세션의 폴더는 지우고
+    등록부에 뒤를 이은 세션을 적는다 (`session_ids`).
+    """
+    event_dir = Path(event_dir).resolve()
+    return write_event(catalog_build.build_event(event_dir), f"{event_dir.parent.name}/{event_dir.name}", root, data_root, reframe)
+
+
+def write_event(sessions: list[Session], event_id: str, root: Path | None = None, data_root: Path | None = None,
+                reframe: bool = False) -> list[dict]:
+    """한 이벤트를 새로 만든 세션 전부 → 등록부로 sid 를 정해 저장소에 쓴다 (build_event 의 뒷부분 — 차량 코드 없이 시험할 수 있게)."""
     root = Path(root or DEFAULT_ROOT)
-    rows = [write_session(s, root, data_root) for s in catalog_build.build_event(event_dir)]
+    reg = ids.load(root)
+    if any(s.event_id != event_id for s in sessions):
+        raise ValueError(f"세션의 event_id 가 이벤트 폴더와 다르다 — {event_id}: {sorted({s.event_id for s in sessions})}")
+    sids, retired = ids.assign(reg, event_id, [{"car": s.car, "day": s.day, "start": s.start, "duration_s": s.duration_s, "title": s.title}
+                                               for s in sessions])
+    for s, sid in zip(sessions, sids):
+        s.sid = sid
+    rows = [write_session(s, root, data_root) for s in sessions]
+    for sid in retired:
+        old = root / sid
+        if (old / "session.json").exists() and old.resolve().parent == root.resolve():
+            shutil.rmtree(old)
+    ids.save(root, reg)
     write_index(root)
     write_frames(root, reframe, {frame_key(r) for r in rows})
     return rows

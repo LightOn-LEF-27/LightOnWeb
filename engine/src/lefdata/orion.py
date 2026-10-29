@@ -137,3 +137,19 @@ def convert_event(event_dir: Path, src_dir: Path, first_day: str, last_day: str)
         rows.append(convert_file(src, out_root))
     write_index(rows, out_root / "recordings_orion.csv")
     return rows
+
+
+# ---------------------------------------------------------------- 올린 파일 판별 (E4)
+
+def detect(path: Path) -> dict | None:
+    """올린 파일이 Orion BMS 2 Utility 로 바꾼 CSV 인가 (계약 §7 `detect`). 아니면 None. 올리기(ingest)는 아직 (판별만)."""
+    path = Path(path)
+    with open(path, encoding="utf-8", errors="replace") as f:
+        header = f.readline()
+    if sum(c in header for c in COLUMNS) < 5:
+        return None
+    t = name_time_utc(path)
+    return {"kind": "orion_csv", "car_guess": None, "start": t.astimezone(KST).isoformat(timespec="milliseconds") if t else None,
+            "duration_s": None, "ok": True, "recording_id": None,
+            "notes": ["Orion BMS Connect 로그를 Utility 로 바꾼 CSV — 올리기(ingest)는 아직 판별만 한다 (lefdata orion 으로 넣는다)"]
+            + ([] if t else ["파일 이름에 시작 시각이 없다 (<UTC 시각>_bmsdata.csv)"])}

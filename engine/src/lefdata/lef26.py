@@ -945,3 +945,26 @@ def convert_event(event_dir: Path, sessions: list[str] | None = None) -> list[di
     if not sessions:
         write_index(rows, out_root / "recordings.csv")
     return rows
+
+
+# ---------------------------------------------------------------- 올린 파일 판별 (E4)
+
+LINE_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}\.\d{3},(?:[0-9A-Fa-f]{1,8}|IMU|MAG|LIN|PED|GPS|SYSTEM)(?:,|$)")
+
+
+def detect(path: Path) -> dict | None:
+    """올린 파일이 LEF-26 로거의 통합본 CSV(SD 의 data.csv)인가 (계약 §7 `detect`). 아니면 None.
+
+    줄마다 `HH:MM:SS.mmm,<소스>,…` — 날짜가 없는 형식이라 시작 시각은 모른다 (날짜는 올릴 때 hints 의 date).
+    """
+    path = Path(path)
+    with open(path, "rb") as f:
+        head = f.read(256 * 1024)
+    lines = [ln for ln in head.decode("utf-8", errors="replace").splitlines()[:-1] if ln.strip()]
+    if len(lines) < 20 or sum(bool(LINE_RE.match(ln)) for ln in lines) < 0.9 * len(lines):
+        return None
+    first = next(ln for ln in lines if LINE_RE.match(ln)).split(",", 1)[0]
+    boots = sum("CONFIG ON" in ln for ln in lines)
+    return {"kind": "lef26_logger_csv", "car_guess": "LEF-26", "start": None, "duration_s": None, "ok": True, "recording_id": None,
+            "notes": ["날짜가 없는 형식 (줄마다 시각만) — 날짜는 올릴 때 hints 의 date 로", f"첫 줄 시각 {first} (로거 RTC — 틀릴 수 있다)",
+                      f"크기 {path.stat().st_size / 1e6:,.0f} MB" + (f" · 앞부분에 로거 부팅 {boots}번" if boots else "")]}

@@ -280,3 +280,41 @@ def convert_event(event_dir: Path) -> list[dict]:
               f"{row['input_bytes']/1e6:6.1f}MB → {row['output_bytes']/1e6:5.1f}MB  {row['convert_sec']:.2f}s")
     write_index(rows, out_root / "recordings.csv")
     return rows
+
+
+# ---------------------------------------------------------------- 올린 파일 판별 (E4)
+
+def detect(path: Path) -> dict | None:
+    """올린 파일이 Monolith V2 `.log` 인가 (계약 §7 `detect`). 아니면 None, 형식은 맞는데 읽을 수 없으면 ValueError.
+
+    앞 64 레코드의 머리(0xAE)와 체크섬으로 가리고, 맞으면 파일 전체에서 BOOT 레코드(시작 시각)와 마지막 시각을 읽는다.
+    """
+    path = Path(path)
+    with open(path, "rb") as f:
+        head = f.read(REC_SIZE * 64)
+    n = len(head) // REC_SIZE
+    if n == 0:
+        return None
+    raw = np.frombuffer(head, dtype="u1", count=n * REC_SIZE).reshape(n, REC_SIZE)
+    hdr = raw[:, :8].copy().view(HEADER).ravel()
+    if ((hdr["magic"] == MAGIC) & checksum_ok(raw)).mean() < 0.9:
+        return None
+    data = path.read_bytes()
+    n = len(data) // REC_SIZE
+    raw = np.frombuffer(data, dtype="u1", count=n * REC_SIZE).reshape(n, REC_SIZE)
+    hdr = raw[:, :8].copy().view(HEADER).ravel()
+    rtype, ts = hdr["type"], hdr["ts"].astype(np.int64)
+    valid = (hdr["magic"] == MAGIC) & (rtype >= 1) & (rtype < len(LOG_TYPE)) & checksum_ok(raw)
+    is_boot = valid & (rtype == T_BOOT)
+    if is_boot.sum() != 1:
+        raise ValueError(f"{path.name}: BOOT 레코드가 {int(is_boot.sum())}개 (1개여야 함) — 시작 시각을 모른다")
+    boot = _payload(raw, is_boot, BOOT_PL)[0]
+    start = dt.datetime.fromtimestamp(int(boot["boot_time"]), KST)
+    boot_ts = int(ts[is_boot][0])
+    n_can = int((valid & (rtype == T_CAN)).sum())
+    n_gps = int((valid & (rtype == T_GPS)).sum())
+    return {"kind": "monolith_log", "car_guess": None, "start": start.isoformat(timespec="milliseconds"),
+            "duration_s": round((int(ts[valid].max()) - boot_ts) / 1000, 3), "ok": True,
+            "recording_id": start.strftime("%Y-%m-%d_%H%M%S"),
+            "notes": [f"레코드 {n:,}개 · 체크섬이 맞지 않는 레코드 {int((~valid).sum()):,}개",
+                      f"GPS {n_gps:,} · CAN {n_can:,}" + ("" if n_can else " (차량 CAN 을 받지 않았다)")]}

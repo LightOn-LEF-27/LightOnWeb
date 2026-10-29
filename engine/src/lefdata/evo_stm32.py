@@ -695,3 +695,24 @@ def _apply(rec: Path, t_start: dt.datetime | None, f: float, row: dict) -> None:
         m["time"]["alignment"] = {"method": method, "clock_of": "에너지미터" if row["clock"] == "em" else "Monolith",
                                   "precision": "±0.5 s", **{k: row[k] for k in keys}}
     write_json(m, meta_path)
+
+
+# ---------------------------------------------------------------- 올린 파일 판별 (E4)
+
+def detect(path: Path) -> dict | None:
+    """올린 파일이 25Evo STM32 백업 로거 CSV 인가 (계약 §7 `detect`). 아니면 None.
+
+    날짜가 없는 형식 (TIME = 로거 시계의 시:분:초, 1.9 % 느리다) — 시각은 변환 뒤 에너지미터 · GPS 에 맞춰 정한다.
+    """
+    path = Path(path)
+    with open(path, encoding="utf-8", errors="replace") as f:
+        lines = [f.readline().strip() for _ in range(3)]
+    header = next((ln for ln in lines if ln and not ln.startswith("#")), "")
+    if not (header.startswith("TIME,") and "BT_LCV" in header):
+        return None
+    m = NAME_RE.search(path.name)
+    notes = ["날짜가 없는 형식 (TIME = 로거 시계) — 시각은 변환 뒤 에너지미터 · GPS 로 맞춘다"]
+    if not m:
+        notes.append("파일 이름이 DATA_LogNNN.csv 가 아니다 — 레코딩 번호를 모르니 원래 이름으로 올릴 것")
+    return {"kind": "evo_stm32_csv", "car_guess": "LEF-25evo", "start": None, "duration_s": None, "ok": bool(m),
+            "recording_id": None, "notes": notes}

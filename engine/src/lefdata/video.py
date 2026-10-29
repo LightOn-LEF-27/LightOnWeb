@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -186,3 +187,37 @@ def _write(path: Path, df: pd.DataFrame, schema: pa.Schema) -> None:
         else:
             cols[f.name] = pa.array(df[f.name].to_numpy(), f.type)
     pq.write_table(pa.table(cols, schema=schema), path, compression="zstd")
+
+
+# ---------------------------------------------------------------- 올린 파일 판별 (E4)
+
+def detect(path: Path) -> dict | None:
+    """올린 파일이 GoPro 영상(GPMF 텔레메트리)인가 (계약 §7 `detect`). 확장자가 아니면 None.
+
+    시작 시각 · 길이는 영상 안의 GPS 시각에서 (ffmpeg 로 텔레메트리 트랙만 뽑는다 — 영상 크기만큼 읽어 수 초 걸린다).
+    파일 이름이 GoPro 원래 이름(GOPRnnnn · GPxxnnnn)이 아니면 조각을 잇지 못하므로 ok = False.
+    """
+    path = Path(path)
+    if path.suffix.upper() not in VIDEO_EXT:
+        return None
+    out = {"kind": "gopro_mp4", "car_guess": None, "start": None, "duration_s": None, "ok": False, "recording_id": None, "notes": []}
+    m = CHUNK_RE.match(path.stem)
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            bins = [gopro.extract_stream(path, Path(tmp) / "t.bin")]
+        except RuntimeError:
+            return {**out, "notes": ["텔레메트리(gpmd) 트랙이 없다 — GoPro 영상이 아니거나 GPS 를 끈 영상"]}
+        except (OSError, subprocess.CalledProcessError) as e:      # ffmpeg 이 없거나 파일이 깨짐
+            raise ValueError(f"{path.name}: 텔레메트리를 읽지 못함 — {e}") from e
+        gps, _, _ = gopro.read_recording(bins)
+    if not m:
+        out["notes"].append("파일 이름이 GoPro 원래 이름(GOPRnnnn · GPxxnnnn)이 아니다 — 조각을 잇지 못하니 원래 이름으로 올릴 것")
+    if gps.empty:
+        out["notes"].append("GPS fix 없음 (실내 등) — 변환에서 빠진다")
+        return out
+    t0, t1 = gps["t_utc"].iloc[0], gps["t_utc"].iloc[-1]
+    num = (m.group("a") or m.group("b")) if m else None
+    chapter = 0 if (m and m.group("a")) else (int(m.group("seq")) if m else None)
+    out["notes"].append(f"녹화 번호 {num} · 조각 {chapter} (같은 번호의 조각은 하나로 잇는다)" if m else "녹화 번호 모름")
+    return {**out, "start": t0.tz_convert(TZ).isoformat(timespec="milliseconds"), "duration_s": round((t1 - t0).total_seconds(), 3),
+            "ok": bool(m), "recording_id": recording_id(num, t0) if m and chapter == 0 else None}

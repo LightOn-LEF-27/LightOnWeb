@@ -216,8 +216,8 @@ def test_arguments_are_checked(circle):
     assert error_code(lambda: api.get_track(sid, color="gps.nope")) == "unknown_channel"
     assert error_code(lambda: api.list_sessions(limit=0)) == "bad_argument"
     assert error_code(lambda: api.open_file(f"{sid}/files/../../secret.txt")) == "unknown_file"         # 표에 있는 ID 만
-    for fn in (lambda: api.detect("a.log"), lambda: api.ingest(["a.log"]), lambda: api.get_job("j")):
-        assert error_code(fn) == "not_implemented"
+    assert error_code(lambda: api.detect("없는 파일.log")) == "bad_argument"                             # 올리기 (v0.10) — 자세히는 test_ingest
+    assert error_code(lambda: api.get_job("j")) == "unknown_job"
     assert error_code(lambda: api.get_sectors(sid, mini_m=20)) == "bad_argument"                       # 10 · 25 · 50 만
     assert error_code(lambda: api.get_sectors(sid, mini_m=True)) == "bad_argument"
     assert error_code(lambda: api.get_series(sid, ["gps.speed_kmh"], x="ref_distance")) == "bad_argument"   # 랩이 있어야

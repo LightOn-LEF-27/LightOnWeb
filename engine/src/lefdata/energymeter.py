@@ -254,3 +254,30 @@ def convert_event(event_dir: Path) -> list[dict]:
                   f"방전 {row['discharge_wh']:7.1f} Wh  회생 {row['charge_wh']:5.1f} Wh")
     write_index(rows, out_root / "recordings_energymeter.csv")
     return rows
+
+
+# ---------------------------------------------------------------- 올린 파일 판별 (E4)
+
+def detect(path: Path) -> dict | None:
+    """올린 파일이 FSK 에너지미터 `.log` 인가 (계약 §7 `detect`). 아니면 None, 머리가 깨졌으면 ValueError."""
+    path = Path(path)
+    size = path.stat().st_size
+    with open(path, "rb") as f:
+        head = f.read(HEADER_SIZE)
+        if len(head) < HEADER_SIZE or head[0] != MAGIC or head[1] != T_HEADER:
+            return None
+        h = parse_header(head)
+        n = (size - HEADER_SIZE) // REC_SIZE
+        first = last = None
+        if n:
+            first = np.frombuffer(f.read(REC_SIZE), RECORD)[0]
+            f.seek(HEADER_SIZE + (n - 1) * REC_SIZE)
+            last = np.frombuffer(f.read(REC_SIZE), RECORD)[0]
+    notes = [f"장치 {h['device_id']}", f"레코드 {n:,}개 (10 ms 마다)"]
+    if not h["checksum_ok"]:
+        notes.append("머리 체크섬이 맞지 않는다")
+    if not n:
+        notes.append("빈 파일 (머리만) — 변환하지 않는다")
+    return {"kind": "fsk_energymeter_log", "car_guess": None, "start": h["start"].isoformat(timespec="milliseconds"),
+            "duration_s": round((int(last["t_ms"]) - int(first["t_ms"])) / 1000, 3) if n else 0.0, "ok": bool(n),
+            "recording_id": recording_id(h["start"]), "notes": notes}

@@ -11,10 +11,12 @@
     get_laps(sid)                               F6  랩 표
     get_track(sid, lap, color)                  F7  코스 (color = 주행선 점마다 그 채널 값)
     get_quality(sid)                            F8  위치가 있는 품질 경고
-    detect · ingest · get_job                   F9 ~ F11  파일 올리기 (아직 — E4)
+    detect(path) · ingest(paths, hints)         F9 · F10  올린 파일 판별 · 넣기 → 변환 → 세션 (E4)
+    get_job(job_id)                             F11 올리기 작업의 상태 · 결과
     open_file(file_id)                          F12 내려받을 파일
     get_sectors(sid, mini_m)                    F13 구간 · 미니 구간 시간 (기준 거리 위의 경계, frame_id 마다 고정)
     get_delta(sid, lap, ref_sid, ref_lap, ...)  F14 두 랩의 시간 차 (같은 frame 이면 다른 세션 랩끼리도)
+    resolve_session(sid)                        F15 sid 풀기 — 지금 있는 세션인가, 없어졌으면 이어지는 세션 (sid 는 같은 주행이면 안 바뀐다)
 
 - 돌려주는 값은 전부 JSON 으로 바꿀 수 있다 (dict · list · 숫자 · 문자열 · None). NaN 은 None 이다 — 화면은 거기서 선을 끊는다
 - 잘못 부르면 `EngineError` 를 던진다. `.to_json()` 이 계약 §8 의 오류 모양이다
@@ -33,22 +35,22 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import __version__, paths, sectors, series as ser, session_store as store
+from . import __version__, ingest as ing, paths, sectors, series as ser, session_ids as ids, session_store as store
 
-CONTRACT_VERSION = "0.8"
+CONTRACT_VERSION = "0.10"
 MAX_POINTS = 20_000
 MAX_CHANNELS = 16
 MAX_SMOOTH_S = 10.0
 SID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 GAP_FACTOR = 2.0            # 기록 간격 중앙값의 이 배보다 벌어진 곳은 잇지 않는다 (에너지미터의 '빠진 표본' 과 같은 기준)
 MINI_SIZES = (10, 25, 50)   # 미니 구간 크기 (m) — 사이트가 고른다
-FORMATS = [  # 계약 §7 — E4 에서 판별 · 변환을 붙인다
-    {"kind": "monolith_log", "label": "Monolith V2 .log (25Evo)", "status": "planned"},
-    {"kind": "fsk_energymeter_log", "label": "주최측 에너지미터 .log", "status": "planned"},
-    {"kind": "lef26_logger_csv", "label": "LEF-26 로거 CSV", "status": "planned"},
-    {"kind": "evo_stm32_csv", "label": "25Evo STM32 백업 로거 CSV", "status": "planned"},
-    {"kind": "orion_csv", "label": "Orion BMS Utility CSV", "status": "planned"},
-    {"kind": "gopro_mp4", "label": "GoPro 영상 (.MP4 · .LRV)", "status": "planned"},
+FORMATS = [  # 계약 §7 — status: ingest = 판별 · 올리기 둘 다, detect = 판별만, not_started = 아직 (v0.10, E4)
+    {"kind": "monolith_log", "label": "Monolith V2 .log (25Evo)", "status": "ingest"},
+    {"kind": "fsk_energymeter_log", "label": "주최측 에너지미터 .log", "status": "ingest"},
+    {"kind": "lef26_logger_csv", "label": "LEF-26 로거 통합본 CSV (SD 의 data.csv)", "status": "ingest"},
+    {"kind": "evo_stm32_csv", "label": "25Evo STM32 백업 로거 CSV", "status": "ingest"},
+    {"kind": "orion_csv", "label": "Orion BMS Utility CSV", "status": "detect"},
+    {"kind": "gopro_mp4", "label": "GoPro 영상 (.MP4 · .LRV)", "status": "ingest"},
     {"kind": "mf4", "label": "CANedge .MF4 + DBC (LEF-27)", "status": "not_started"},
 ]
 
@@ -105,12 +107,29 @@ def _frame(path: Path) -> pd.DataFrame:
     return _load_frame(str(path), path.stat().st_mtime)
 
 
+def _registry() -> dict | None:
+    path = _root() / ids.FILE
+    return _json(path) if path.exists() else None
+
+
+def _retired(sid: str) -> EngineError | None:
+    """등록부에 없어진 세션으로 적힌 sid → session_retired 오류 (뒤를 이은 지금 세션들을 detail 에)."""
+    reg = _registry()
+    e = (reg or {}).get("sessions", {}).get(sid)
+    if not e or e.get("status") != ids.RETIRED:
+        return None
+    now = ids.resolve(reg, sid)
+    return EngineError("session_retired", f"세션 {sid} 는 없어졌다 ({e.get('why')}) — 이어지는 세션: {', '.join(now) or '없음'}",
+                       {"sid": sid, "why": e.get("why"), "retired_at": e.get("retired_at"), "replaced_by": list(e.get("replaced_by", [])),
+                        "current": now})
+
+
 def _session(sid) -> dict:
     if not isinstance(sid, str) or not SID.match(sid) or ".." in sid:
         raise EngineError("unknown_session", f"세션 ID 가 올바르지 않음: {sid!r}")
     path = _root() / sid / "session.json"
     if not path.exists():
-        raise EngineError("unknown_session", f"세션 {sid} 가 없음")
+        raise _retired(sid) or EngineError("unknown_session", f"세션 {sid} 가 없음")
     doc = _json(path)
     if doc.get("store_format") != store.STORE_FORMAT:
         raise EngineError("internal", f"세션 {sid} 는 다른 형식의 저장소다 — lefdata sessions 로 다시 만들 것",
@@ -147,11 +166,13 @@ def engine_info() -> dict:
     """F1. 계약 · 엔진 버전, 저장소 상태, 읽을 수 있는 파일 형식."""
     index = _root() / "index.json"
     rows = _json(index)["sessions"] if index.exists() else []
+    reg = _registry()
+    retired = sum(e.get("status") == ids.RETIRED for e in reg["sessions"].values()) if reg else 0
     return {"contract": CONTRACT_VERSION, "engine": {"name": "lefdata", "version": __version__},
-            "store": {"format": store.STORE_FORMAT, "sessions": len(rows)},
+            "store": {"format": store.STORE_FORMAT, "sessions": len(rows), "retired_sids": retired},
             "formats": [dict(f) for f in FORMATS],
             "functions": ["engine_info", "list_sessions", "get_session", "list_channels", "get_series", "get_laps", "get_track",
-                          "get_quality", "open_file", "get_sectors", "get_delta"], "not_yet": ["detect", "ingest", "get_job"]}
+                          "get_quality", "open_file", "get_sectors", "get_delta", "resolve_session", "detect", "ingest", "get_job"], "not_yet": []}
 
 
 def list_sessions(car: str | None = None, event_id: str | None = None, discipline: str | None = None, limit: int | None = None,
@@ -170,8 +191,25 @@ def list_sessions(car: str | None = None, event_id: str | None = None, disciplin
 def get_session(sid: str) -> dict:
     """F3. 세션 화면에 필요한 것 — 요약 · 메모 · 블록(사실 · 확인 · 주의 · 원본 · 결과물 · 코드 · 채널) · 없는 데이터."""
     s = _session(sid)
-    return {"summary": s["summary"], "notes": s["notes"], "blocks": s["blocks"], "missing": s["missing"], "best_lap": s["best_lap"],
-            "made": s["made"]}
+    return {"summary": {**s["summary"], "day_order": _index_row(sid).get("day_order")}, "notes": s["notes"], "blocks": s["blocks"],
+            "missing": s["missing"], "best_lap": s["best_lap"], "made": s["made"]}
+
+
+def _index_row(sid: str) -> dict:
+    index = _root() / "index.json"
+    return next((r for r in (_json(index)["sessions"] if index.exists() else []) if r["sid"] == sid), {})
+
+
+def resolve_session(sid: str) -> dict:
+    """F15. sid 풀기 — 지금 있는 세션이면 그대로, 없어진 세션이면 이유 · 뒤를 이은 세션 · 지금 있는 세션 (링크 · 북마크 넘기기용)."""
+    if not isinstance(sid, str) or not SID.match(sid) or ".." in sid:
+        raise EngineError("unknown_session", f"세션 ID 가 올바르지 않음: {sid!r}")
+    if (_root() / sid / "session.json").exists():
+        return {"sid": sid, "status": ids.ACTIVE, "why": None, "retired_at": None, "replaced_by": [], "current": [sid]}
+    err = _retired(sid)
+    if err is None:
+        raise EngineError("unknown_session", f"세션 {sid} 가 없음")
+    return {"status": ids.RETIRED, **err.detail}
 
 
 def list_channels(sid: str) -> list[dict]:
@@ -536,19 +574,45 @@ def get_delta(sid: str, lap: int, ref_sid: str, ref_lap: int, mini_m: int = 25, 
 
 # ---------------------------------------------------------------- F9 ~ F12
 
-def detect(path):
-    """F9. (E4 에서 만든다)"""
-    raise EngineError("not_implemented", "파일 판별은 아직 없음 (엔진 E4 단계)")
+def detect(path) -> dict:
+    """F9. 올린 파일이 무엇인가 — 형식 · 차량 짐작 · 시작 시각 · 길이 · 메모 (변환 전 미리보기, 파일은 읽기만)."""
+    if not isinstance(path, (str, Path)):
+        raise EngineError("bad_argument", f"path 는 파일 경로: {path!r}")
+    try:
+        return ing.detect(path)
+    except FileNotFoundError as e:
+        raise EngineError("bad_argument", str(e))
+    except ing.UnsupportedFormat as e:
+        raise EngineError("unsupported_format", str(e))
+    except ing.CorruptFile as e:
+        raise EngineError("corrupt_file", str(e))
 
 
-def ingest(paths, hints=None):       # 인자 이름은 계약(§5)을 따른다
-    """F10. (E4 에서 만든다)"""
-    raise EngineError("not_implemented", "파일 올리기는 아직 없음 (엔진 E4 단계)")
+def ingest(paths, hints=None) -> str:       # 인자 이름은 계약(§5)을 따른다
+    """F10. 올린 파일들 → 이벤트에 넣고 변환 → 세션 → job_id. 끝날 때까지 기다린다 (서버는 다른 스레드에서 부르고 get_job 으로 진행을 본다).
+
+    파일 · hints 의 모양이 틀리면 bad_argument, 다른 올리기가 돌고 있으면 busy. 그 밖의 결과(거절된 파일 · 실패한 단계)는 get_job 에.
+    """
+    if isinstance(paths, (str, Path)):
+        paths = [paths]
+    if not isinstance(paths, (list, tuple)) or not all(isinstance(p, (str, Path)) for p in paths):
+        raise EngineError("bad_argument", "paths 는 파일 경로의 목록")
+    try:
+        job_id = ing.ingest(paths, hints, _data_root(), _root())
+    except (FileNotFoundError, ValueError) as e:
+        raise EngineError("bad_argument", str(e))
+    except ing.Busy as e:
+        raise EngineError("busy", str(e))
+    _load_json.cache_clear()                    # 저장소가 바뀌었다 (파일 시각으로도 알지만 같은 초 안이면 놓칠 수 있다)
+    return job_id
 
 
-def get_job(job_id):
-    """F11. (E4 에서 만든다)"""
-    raise EngineError("not_implemented", "파일 올리기는 아직 없음 (엔진 E4 단계)")
+def get_job(job_id: str) -> dict:
+    """F11. 올리기 작업의 상태 · 결과 — state · progress · recordings · sessions · warnings · errors + files · steps · event_id."""
+    try:
+        return ing.get_job(job_id, _data_root())
+    except KeyError as e:
+        raise EngineError("unknown_job", str(e.args[0]))
 
 
 def open_file(file_id: str) -> dict:

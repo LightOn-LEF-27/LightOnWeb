@@ -380,7 +380,10 @@ def run_event(event_dir: Path, kinds=tuple(SEGMENTS)) -> dict[str, pd.DataFrame]
         src, dst, keep, bounds = SEGMENTS[kind]
         if not (out / src).exists():
             continue
-        seg = pd.read_csv(out / src, encoding="utf-8-sig")
+        try:
+            seg = pd.read_csv(out / src, encoding="utf-8-sig")
+        except pd.errors.EmptyDataError:                # 그 종목을 안 한 이벤트 (열도 없는 빈 표)
+            continue
         t0s, t1s = bounds(seg)
         rows = []
         for i, s in seg.iterrows():

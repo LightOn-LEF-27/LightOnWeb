@@ -42,6 +42,8 @@ lefdata clocks                        # 장비끼리 시계 차 · 전원 주기
 lefdata check --event <이벤트>         # 데이터 품질 검사
 lefdata report --day <날짜> --pdf      # 하루치 시험 주행 보고서 (HTML · PDF)
 lefdata sessions                      # 분석 엔진(lefdata.api)이 읽는 세션 저장소
+lefdata detect <파일…>                # 올릴 파일이 무엇인지 (형식 · 시작 시각 · 길이) — 읽기만
+lefdata ingest <파일…> --car C --place-id P   # 파일을 이벤트에 넣고 명령 순서대로 변환 → 세션 (사이트의 올리기와 같은 길)
 pytest                                # 테스트 (아래 §테스트)
 ```
 
@@ -149,12 +151,14 @@ api.get_series(sid, ["gps.speed_kmh"], x="ref_distance", lap=7)              # �
 api.get_laps(sid) · api.get_track(sid, color="battery.power_kw") · api.get_quality(sid) · api.open_file(file_id)
 api.get_sectors(sid, mini_m=25)                       # 구간 S1 ~ S3 · 미니 구간 시간, 세션의 구간 최속 · 평균
 api.get_delta(sid, 3, ref_sid, 7)                     # 두 랩의 시간 차 — 거리마다 누적 · 미니 구간마다 · 지도 점마다
+api.resolve_session(old_sid)                          # 없어진 sid → 이유 · 이어지는 세션 (링크 · 북마크 넘기기)
 ```
 
 | 모듈 | 하는 일 |
 |---|---|
 | `api` | 사이트가 부르는 함수. 돌려주는 값은 전부 JSON 으로 바꿀 수 있고, 없는 값은 `None`. 잘못 부르면 `EngineError` (`.to_json()`) |
 | `session_store` | 세션을 저장소로 미리 만든다 (요약 · 원래 주기 채널 값 · 랩 · 궤적 · 품질 경고 · 내려받을 파일 표). 부를 때마다 원본을 다시 읽지 않게 |
+| `session_ids` | **안 바뀌는 세션 ID** — 등록부(`_ids.json`)가 한 번 준 `sid` 를 같은 주행이면 그대로 둔다 (아래) |
 | `series` | 그래프 값 줄이기 — 칸마다 평균 · 최소 · 최대를 같이 줘서 줄여도 순간 피크가 남는다. 빈 칸은 양옆이 끊기지 않았을 때만 직선으로 잇는다 (기록 간격의 2 배 넘게 빈 곳은 비운다) |
 | `sectors` | 구간 · 시간 차의 바탕인 **기준 거리**. 같은 코스(frame)의 랩 중 기준 랩을 하나 골라, 다른 랩의 점마다 기준 랩 주행선의 가장 가까운 곳을 찾아 그곳까지의 거리를 쓴다 (아래) |
 | `drive` | 주행 상태 추정 — 가속 · 타력 · 제동. 가속페달 · 브레이크 압력 신호가 없을 때 배터리 전력과 GPS 속도 변화율로 가른다 (`drive.state_est`, 추정이라는 주의 글이 같이 간다) |
@@ -165,6 +169,12 @@ api.get_delta(sid, 3, ref_sid, 7)                     # 두 랩의 시간 차 �
 엉뚱한 쪽에 내리지 않게 랩 길이로 늘이고 줄인 거리 ± 30 m 안에서만 찾고, GPS 흔들림으로 뒤로 간 값은 단조 회귀로 편다.
 기준선과 구간 경계(기본 3 등분)는 frame 마다 한 번 정해 저장소(`_frames/`)에 두고 바꾸지 않는다 — 세션이 더 들어와도 구간 시간이
 날마다 달라지지 않게. 다시 정할 때만 `lefdata sessions --reframe`.
+
+**세션 ID (`sid`)** — 사이트의 링크 · 북마크 · 저장 기록이 `sid` 로 세션을 가리키므로, 저장소를 다시 만들어도 같은 주행이면 같은 `sid` 다.
+같은 이벤트 · 같은 차에서 시간 구간이 겹치고 겹친 길이가 짧은 쪽의 50 % 이상이면 같은 주행으로 본다 (겹친 길이가 긴 짝부터).
+새 세션은 그날의 다음 번호(시간상 앞이어도), 쪼개지면 옛 구간을 가장 많이 가진 조각이 `sid` 를 갖는다. 짝이 없는 옛 `sid` 는 없어진 세션으로
+등록부에 남고(이유 · 이어지는 세션), 그 `sid` 로 부르면 `session_retired` 오류가 이어지는 세션을 알려 준다. 그날의 순번은 목록의 `day_order`.
+등록부는 `_frames/` 처럼 저장소 안에서 고정이다 — 저장소를 지우지 않는다. 등록부가 없던 저장소는 이미 있던 `sid` 를 첫 목록으로 삼는다.
 
 - 세션을 채우는 것은 `catalog_build.build_event` (차량 · 폴더를 아는 코드는 거기 한 곳). LEF-27 은 `Session` 을 채우는 함수만 새로 쓰면 된다
 - 드라이버는 `드라이버 A` 같은 표시만 저장소에 들어간다 (그 밖의 글자는 거절한다)
@@ -193,6 +203,12 @@ api.get_delta(sid, 3, ref_sid, 7)                     # 두 랩의 시간 차 �
     메모를 잘못 적으면(시계 차가 없는 장비가 근처에 있다 · 구간이 겹친다 · 기록이 하나도 없다 — 정말 없으면 `allow_empty = true`) 말없이 넘어가지 않고 멈춘다.
     **구간을 GPS 기록(GoPro · Monolith)이 거의 다 덮으면 GPS 세션과 같은 랩 · 코스 · 블록이 나온다** — 구간을 GPS 시간으로 옮겨 GPS 세션처럼 만들고(구간은 GPS 가 있는 동안으로),
     그 주행은 자동 GPS 세션에서 뺀다. 그래서 Run Sheet 시각 하나로 영상이 있는 세션 · 없는 세션을 같이 적을 수 있다 (`has_track` 으로 코스가 있는지 가른다)
+- **파일 올리기 (`detect` · `ingest` · `get_job`, `lefdata.ingest`)** — 변환기마다 `detect(path)` 가 있어 바이트 머리 · 첫 줄로 형식을 가리고
+  시작 시각 · 길이 · 레코딩 이름을 미리 낸다 (Monolith · 에너지미터 · GoPro · LEF-26 로거 통합본 · 25Evo STM32 · Orion CSV — Orion 은 판별만).
+  `ingest` 는 받은 파일을 `_uploads/<작업>/` 에 복사(ASCII 이름)하고 이벤트의 `raw_*/` 에 하드 링크한 뒤, 그 차의 명령 순서를 이번에 들어온 종류에 맞춰 돌고
+  세션을 다시 만든다. 같은 파일(sha256)은 다시 넣지 않고, 이벤트에 있던 원본은 덮어쓰지 않는다. 한 번에 하나만 돌고(`_uploads/.lock`), 끝날 때까지 기다린다 —
+  서버는 다른 스레드에서 부르고 `get_job` 으로 단계마다 진행을 본다. 새 이벤트면 hints 로 `catalog_notes.toml` 기본값(`sessions = "auto"`)을 만든다.
+  세션 이름 · 드라이버 · Run Sheet 시각은 아직 hints 로 받지 않는다 — notes 에 손으로
 - 함수 이름 · 인자 · 돌려주는 모양은 사이트와의 계약이다. 바꿀 때는 계약 문서를 먼저 고치고 `api.CONTRACT_VERSION` 을 같이 올린다
 
 ## 시험 주행 보고서 (`lefdata report`)
