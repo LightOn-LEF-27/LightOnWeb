@@ -374,6 +374,10 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"  {row['sid']}  {row['title']} · {row['duration_s'] / 60:.1f} 분 · {laps} · 데이터 {' · '.join(have)}")
             for d in report.get("dropped_runs", []):
                 print(f"  뺀 주행 {d['recording']} {d['run']} — {d['why']}")
+            if report.get("runsheet"):
+                from . import runsheet
+                for line in runsheet.check_text(report["runsheet"]):
+                    print(f"  일정표: {line}")
             ev_id = f"{Path(ev).resolve().parent.name}/{Path(ev).resolve().name}"
             for sid, e in session_ids.read(root)["sessions"].items():
                 if e["event_id"] == ev_id and e["status"] == session_ids.RETIRED and e.get("retired_at") == time.strftime("%Y-%m-%d"):

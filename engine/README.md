@@ -184,6 +184,10 @@ api.resolve_session(old_sid)                          # 없어진 sid → 이유
     10 m 칸으로 나눠 그 주행이 20 m 안으로 지난 칸의 비율이 0.4 이상이거나 최고 60 km/h 이상이면 **미분류** 세션(경고 `unclassified_run`, 확인 필요),
     아니면 피트 이동으로 보고 뺀다 (`lefdata sessions` · `ingest` 가 뺀 주행을 알린다). 피트 레인은 코스 옆이라 '코스 위에 있었나' 로는 갈리지 않는다.
     사람은 `[[session]]` 에 `recording` · `run` 과 `discipline` 을 적어 종목을 정하거나 `skip = true` 로 버린다
+  - **일정표** (`runsheet_<YYYY-MM-DD>.csv`, `lefdata.runsheet`) — 그날 주행마다 사람이 적은 R번호 · 전원 켬 · 출발 · 도착 · 종목 · 드라이버 · 목적 · 세팅 바뀜 · 메모 (폰 시각).
+    출발 ↔ 세션 시작으로 폰과 세션의 시계 차를 재고, 그만큼 옮긴 구간이 세션과 절반 넘게 겹치면 같은 주행 — 세션에 R번호 · 종목 · 드라이버 · 목적을 붙인다 (미분류도 풀린다).
+    손으로 적은 `[[session]]` · `[[timed_session]]` 이 먼저. 확인 보고(`derived/runsheet_check.csv`)에 일정표에만 있는 줄 · 일정표에 없는 주행 · 전원 켬 ↔ 로거 켜짐으로 잰 장비 시계 차.
+    드라이버 칸은 A · B 만 받는다 (실명이 저장소에 들어가지 않게)
   - **시각 구간** (`[[timed_session]]`, `split_by = "time"`) — GPS 가 없는 주행 · Run Sheet 의 시각으로 나눌 때. 그 시각에 기록이 있는 장비(에너지미터 · 25Evo STM32 · Orion BMS · LEF-26 로거)를
     **기준 시계**로 옮겨 자른다. 랩 · 코스가 없다. LEF-26 로거는 영상이 없을 때 로거 보드의 가속도계 · 자이로로 `imu` 블록을 낸다
 

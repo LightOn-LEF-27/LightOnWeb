@@ -462,6 +462,10 @@ def _run(job: dict, paths: list[Path], hints, data_root: Path, store_root: Path,
     entry["seconds"] = round(time.perf_counter() - t0, 1)
 
     job["dropped_runs"] = report.get("dropped_runs", [])
+    if report.get("runsheet"):                          # 일정표가 있는 이벤트 — 계획 ↔ 실제 (lefdata.runsheet)
+        from . import runsheet
+        job["runsheet"] = report["runsheet"]
+        job["warnings"] += [f"일정표: {line}" for line in runsheet.check_text(report["runsheet"])]
     if job["dropped_runs"]:
         job["warnings"].append(f"이 이벤트의 주행 {len(job['dropped_runs'])}개는 세션으로 넣지 않았다 — "
                                + " · ".join(f"{d['recording']} 주행 {d['run']}: {d['why']}" for d in job["dropped_runs"][:5])

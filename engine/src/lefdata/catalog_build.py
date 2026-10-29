@@ -50,7 +50,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from . import em_laps, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, sectors
+from . import em_laps, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
 from .catalog import (HAVE, NONE, SEEK, WARN, Channel, CodeRef, DataBlock, Export, FileRef, LapColumn, Missing, Session, code_html,
                       size_text, to_markdown, to_notion, write_session)
 
@@ -1595,6 +1595,13 @@ def build_event(event_dir: Path, report: dict | None = None) -> list[Session]:
             raise FileNotFoundError("runs.csv · laps.csv · gate.json 이 없다 — 먼저 랩 분할(lefdata laps 또는 gopro --laps)을 돌릴 것")
         sessions = _gps_sessions(ctx, covered, report) + sessions
     sessions.sort(key=lambda s: s.start)
+    rows, problems = runsheet.read(event_dir, ev.get("car") or (sessions[0].car if sessions else ""))
+    if rows or problems:                                        # 일정표(runsheet_<날짜>.csv) — R번호 · 종목 · 드라이버 · 목적을 붙이고 계획 ↔ 실제를 대 본다
+        explicit = {id(s) for s in sessions if s.split_by == "time" or getattr(s, "_explicit", False)}
+        check = runsheet.apply(sessions, rows, problems, _recordings(event_dir), explicit)
+        runsheet.write_check(event_dir, check)
+        if report is not None:
+            report["runsheet"] = check
     auto: dict[tuple, int] = {}
     for s in sessions:                                          # 자동 이름: 그날 종목별 순서 ("트랙 2")
         if not s.name:
@@ -1673,6 +1680,7 @@ def _gps_sessions(ctx: _GpsCtx, skip: set[tuple[str, int]] = frozenset(), report
         e = e.iloc[0] if len(e) and (e.iloc[0]["em_recording"], key[0]) in ctx.aligned and e.iloc[0]["cover_share"] >= em_laps.MIN_COVER else None
         lap_e = ctx.lap_e[(ctx.lap_e["recording_id"] == key[0]) & (ctx.lap_e["run"] == key[1])] if e is not None else None
         sessions.append(_gps_session(ctx, key[0], run, mine, named[key], e, lap_e))
+        sessions[-1]._explicit = not named[key].get("auto")          # catalog_notes.toml 에 손으로 적은 세션 — 일정표보다 먼저
     if report is not None:
         report["dropped_runs"] = sorted(dropped, key=lambda d: (d["recording"], d["run"]))
     return sessions

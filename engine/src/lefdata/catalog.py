@@ -166,6 +166,8 @@ class Session:
     notes: list[str] = field(default_factory=list)
     made: dict = field(default_factory=dict)        # generated, commit, command
     split_by: str = "gps"                           # 세션을 나눈 방법 — "gps" (GPS 주행 구간) · "time" (시각 구간: Run Sheet 시각 · 장비 전원 주기)
+    run_no: str = ""                                # 일정표(Run Sheet)의 R번호 — 짝이 맞았을 때만 (runsheet)
+    purpose: str = ""                               # 일정표의 목적
 
     @property
     def title(self) -> str:
