@@ -4,6 +4,7 @@
 
 열 (머리줄 이름 — 한국어 또는 영어, 순서는 상관없다):
     차 car · R번호 run · 전원 켬 power_on · 출발 out · 도착 in · 종목 discipline · 드라이버 driver · 목적 purpose · 세팅 바뀜 setup · 메모 notes
+    (있으면) 전원 끔 power_off · 장비 확인 devices · 사건 events · 직후 측정 after — 인쇄 양식의 칸. 세션 메모로 붙인다
 시각은 폰 시계(통신망 시각), "HH:MM:SS" 또는 "HH:MM" — 날짜는 파일 이름에서.
     전원 켬 = LV(또는 HV) 를 켠 순간 · 출발 = 피트에서 바퀴가 구르기 시작한 순간 · 도착 = 피트로 돌아와 완전히 멈춘 순간 (결승선 통과는 적지 않는다)
 드라이버는 A · B (driver_1 · driver_2 · 1 · 2 도 받는다). 그 밖의 글자(실명)는 넣지 않고 알린다.
@@ -28,7 +29,10 @@ TZ = "Asia/Seoul"
 FILE_RE = re.compile(r"^runsheet_(\d{4}-\d{2}-\d{2})\.csv$")
 COLUMNS = {"차": "car", "car": "car", "r번호": "run_no", "run": "run_no", "run_no": "run_no", "전원켬": "power_on", "power_on": "power_on",
            "출발": "out", "out": "out", "도착": "in", "in": "in", "종목": "discipline", "discipline": "discipline", "드라이버": "driver",
-           "driver": "driver", "목적": "purpose", "purpose": "purpose", "세팅바뀜": "setup", "setup": "setup", "메모": "notes", "notes": "notes"}
+           "driver": "driver", "목적": "purpose", "purpose": "purpose", "세팅바뀜": "setup", "setup": "setup", "메모": "notes", "notes": "notes",
+           "전원끔": "power_off", "power_off": "power_off", "장비확인": "devices", "devices": "devices", "사건": "events", "events": "events",
+           "직후측정": "after", "after": "after"}
+NOTE_FIELDS = (("purpose", "목적"), ("setup", "세팅 바뀜"), ("devices", "장비 확인"), ("events", "사건"), ("after", "직후 측정"), ("notes", "메모"))
 MATCH_SLACK_S = 300.0       # 일정표 출발 ↔ 세션 시작이 이 안인 쌍으로 시계 차를 잰다 (폰과 장비 시계가 몇 분 다를 수 있다)
 MATCH_SHARE = 0.5           # 옮긴 일정표 구간과 세션 구간이 짧은 쪽의 이 비율 넘게 겹치면 같은 주행
 START_ONLY_S = 60.0         # 도착을 안 적은 줄은 출발이 세션 시작과 이 안이면 같은 주행
@@ -118,7 +122,7 @@ def read(event_dir: Path, car: str) -> tuple[list[dict], list[str]]:
             if who != car:
                 continue
             try:
-                t = {k: _time(day, vals[k]) for k in ("power_on", "out", "in")}
+                t = {k: _time(day, vals[k]) for k in ("power_on", "out", "in", "power_off")}
             except ValueError as e:
                 problems.append(f"{path.name} {line}행: {e}")
                 continue
@@ -132,7 +136,7 @@ def read(event_dir: Path, car: str) -> tuple[list[dict], list[str]]:
                 problems.append(f"{path.name} {line}행: 드라이버 칸은 A · B 로만 (실명은 넣지 않는다) — 비워 둠")
                 driver = ""
             rows.append({"day": day, "file": path.name, "line": line, "run_no": vals["run_no"], **t, "discipline": vals["discipline"],
-                         "driver": driver, "purpose": vals["purpose"], "setup": vals["setup"], "notes": vals["notes"]})
+                         "driver": driver, **{k: vals[k] for k, _ in NOTE_FIELDS}})
     return rows, problems
 
 
@@ -222,8 +226,10 @@ def _annotate(s, r: dict, explicit: bool) -> None:
     if not explicit:
         s.name = f"R{r['run_no']} {s.discipline}".strip() if r["run_no"] else ""
     head = f"일정표 R{r['run_no'] or '?'} — 출발 {_clock(r['out'])} · 도착 {_clock(r['in'])} (폰 시각"
-    head += f", 전원 켬 {_clock(r['power_on'])})" if r["power_on"] is not None else ")"
-    s.notes = [head] + [f"{label}: {r[k]}" for k, label in (("purpose", "목적"), ("setup", "세팅 바뀜"), ("notes", "메모")) if r[k]] + list(s.notes)
+    on_off = [f"전원 켬 {_clock(r['power_on'])}"] if r["power_on"] is not None else []
+    on_off += [f"전원 끔 {_clock(r['power_off'])}"] if r.get("power_off") is not None else []
+    head += (", " + " · ".join(on_off) + ")") if on_off else ")"
+    s.notes = [head] + [f"{label}: {r[k]}" for k, label in NOTE_FIELDS if r.get(k)] + list(s.notes)
 
 
 def power_on(rows: list[dict], recordings) -> list[dict]:

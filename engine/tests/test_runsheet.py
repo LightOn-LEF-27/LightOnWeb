@@ -66,6 +66,16 @@ def test_a_contradicting_discipline_warns_and_a_missing_row_is_flagged(tmp_path)
     assert s2.discipline == cb.UNCLASSIFIED and "runsheet_unplanned" in _codes(s2) and len(report["runsheet"]["unplanned_sessions"]) == 1
 
 
+def test_print_form_columns_become_notes(tmp_path):
+    """인쇄 양식의 칸(전원 끔 · 장비 확인 · 사건 · 직후 측정)도 세션 메모로 — 종이에 적은 것이 시트로 옮기며 사라지지 않게."""
+    csv = ("차,R번호,전원 켬,출발,도착,전원 끔,종목,드라이버,목적,세팅 바뀜,장비 확인,사건,직후 측정,메모\n"
+           "LEF-27,1,09:58:00,10:00:26,10:02:42,10:05:10,연습,A,,,Monolith ✓ · GoPro ✓,2랩 스핀,디스크 FL 310,\n")
+    report = {}
+    s1, _ = cb.build_event(event(tmp_path, csv), report)
+    assert "전원 끔 10:05:10" in s1.notes[0] and {"장비 확인: Monolith ✓ · GoPro ✓", "사건: 2랩 스핀", "직후 측정: 디스크 FL 310"} <= set(s1.notes)
+    assert report["runsheet"]["problems"] == []
+
+
 def test_hand_written_sessions_come_first(tmp_path):
     notes = '[[session]]\nrecording = "2027-06-05_gps"\nrun = 1\nname = "내구 연습"\ndiscipline = "내구"\ndriver = "드라이버 B"\n'
     s1, _ = cb.build_event(event(tmp_path, notes=notes))
