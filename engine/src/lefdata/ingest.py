@@ -326,7 +326,7 @@ def ingest(paths, hints: dict | None, data_root: Path, store_root: Path) -> str:
     root = uploads_root(data_root)
     job_id = f"j{dt.datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
     job = {"job_id": job_id, "state": "queued", "progress": 0.0, "created": _now(), "updated": _now(), "hints": dict(hints or {}),
-           "event_id": None, "files": [], "steps": [], "recordings": [], "sessions": [], "warnings": [], "errors": []}
+           "event_id": None, "files": [], "steps": [], "recordings": [], "sessions": [], "dropped_runs": [], "warnings": [], "errors": []}
     jdir = root / job_id
 
     def save():
@@ -447,10 +447,10 @@ def _run(job: dict, paths: list[Path], hints, data_root: Path, store_root: Path,
     job["steps"].append(entry)
     save()
     t0 = time.perf_counter()
-    rows = []
+    rows, report = [], {}
     try:
         with contextlib.redirect_stdout(log):
-            rows = session_store.build_event(event_dir, store_root, data_root)
+            rows = session_store.build_event(event_dir, store_root, data_root, report=report)
         entry["state"] = "done"
     except FileNotFoundError as e:
         entry.update(state="skipped", error=str(e))
@@ -461,6 +461,11 @@ def _run(job: dict, paths: list[Path], hints, data_root: Path, store_root: Path,
         log.write(traceback.format_exc())
     entry["seconds"] = round(time.perf_counter() - t0, 1)
 
+    job["dropped_runs"] = report.get("dropped_runs", [])
+    if job["dropped_runs"]:
+        job["warnings"].append(f"이 이벤트의 주행 {len(job['dropped_runs'])}개는 세션으로 넣지 않았다 — "
+                               + " · ".join(f"{d['recording']} 주행 {d['run']}: {d['why']}" for d in job["dropped_runs"][:5])
+                               + (" …" if len(job["dropped_runs"]) > 5 else "") + f" (틀렸으면 {NOTES_NAME} 의 [[session]] 으로 넣는다)")
     recs, uses = _results(event_dir, data_root, [t for _, t in placed], store_root, rows)
     job["recordings"] = sorted({r for v in recs.values() for r in v})
     job["sessions"] = sorted({s for v in uses.values() for s in v})
@@ -481,10 +486,11 @@ def _results(event_dir: Path, data_root: Path, placed: list[Path], store_root: P
             if src.get("file") == t.relative_to(event_dir).as_posix() or (t.parent.name == "raw_video" and t.name in src.get("files", [])):
                 recs[t].append(rid)
     uses: dict[Path, list[str]] = {t: [] for t in placed}
-    for row in rows:
+    for row in rows:                                    # 세션의 원본 파일 표에 있거나, 그 파일에서 나온 레코딩의 채널을 쓰면 (STM32 처럼 원본을 묶어 적는 장비)
         doc = json.loads((Path(store_root) / row["sid"] / "session.json").read_text(encoding="utf-8"))
         used = {e.get("_rel") for e in doc["files"].values() if e.get("_base") == "data"}
+        sources = {(c.get("source") or {}).get("recording_id") for c in doc["channels"]}
         for t in placed:
-            if t.relative_to(data_root).as_posix() in used:
+            if t.relative_to(data_root).as_posix() in used or sources & set(recs[t]):
                 uses[t].append(row["sid"])
     return recs, uses

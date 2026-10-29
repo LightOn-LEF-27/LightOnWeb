@@ -179,7 +179,11 @@ api.resolve_session(old_sid)                          # 없어진 sid → 이유
 - 세션을 채우는 것은 `catalog_build.build_event` (차량 · 폴더를 아는 코드는 거기 한 곳). LEF-27 은 `Session` 을 채우는 함수만 새로 쓰면 된다
 - 드라이버는 `드라이버 A` 같은 표시만 저장소에 들어간다 (그 밖의 글자는 거절한다)
 - **세션을 나누는 두 길** — 이벤트 폴더의 `catalog_notes.toml` 에 적는다
-  - **GPS 주행 구간** (`[[session]]` · `[event] sessions = "auto"`) — 랩 · 코스 · frame 이 있다 (`split_by = "gps"`)
+  - **GPS 주행 구간** (`[[session]]` · `[event] sessions = "auto"`) — 랩 · 코스 · frame 이 있다 (`split_by = "gps"`).
+    `auto` 는 완주 랩이 있으면 트랙, 가속 · 스키드패드 표에 있으면 그 종목, 셋 다 아니면 **코스를 얼마나 지났나**로 가른다 — 이벤트의 기준 랩 주행선을
+    10 m 칸으로 나눠 그 주행이 20 m 안으로 지난 칸의 비율이 0.4 이상이거나 최고 60 km/h 이상이면 **미분류** 세션(경고 `unclassified_run`, 확인 필요),
+    아니면 피트 이동으로 보고 뺀다 (`lefdata sessions` · `ingest` 가 뺀 주행을 알린다). 피트 레인은 코스 옆이라 '코스 위에 있었나' 로는 갈리지 않는다.
+    사람은 `[[session]]` 에 `recording` · `run` 과 `discipline` 을 적어 종목을 정하거나 `skip = true` 로 버린다
   - **시각 구간** (`[[timed_session]]`, `split_by = "time"`) — GPS 가 없는 주행 · Run Sheet 의 시각으로 나눌 때. 그 시각에 기록이 있는 장비(에너지미터 · 25Evo STM32 · Orion BMS · LEF-26 로거)를
     **기준 시계**로 옮겨 자른다. 랩 · 코스가 없다. LEF-26 로거는 영상이 없을 때 로거 보드의 가속도계 · 자이로로 `imu` 블록을 낸다
 

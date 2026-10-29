@@ -367,10 +367,13 @@ def main(argv: list[str] | None = None) -> None:
         root = args.root or session_store.DEFAULT_ROOT
         for ev in events:
             print(f"[sessions] {ev}")
-            for row in session_store.build_event(ev, root, reframe=args.reframe):
+            report = {}
+            for row in session_store.build_event(ev, root, reframe=args.reframe, report=report):
                 have = [d["block"] for d in row["data_status"] if d["status"] in ("have", "warn")]
                 laps = f"{row['laps']}랩" if row["laps"] is not None else "랩 없음 (시각 구간)"
                 print(f"  {row['sid']}  {row['title']} · {row['duration_s'] / 60:.1f} 분 · {laps} · 데이터 {' · '.join(have)}")
+            for d in report.get("dropped_runs", []):
+                print(f"  뺀 주행 {d['recording']} {d['run']} — {d['why']}")
             ev_id = f"{Path(ev).resolve().parent.name}/{Path(ev).resolve().name}"
             for sid, e in session_ids.read(root)["sessions"].items():
                 if e["event_id"] == ev_id and e["status"] == session_ids.RETIRED and e.get("retired_at") == time.strftime("%Y-%m-%d"):

@@ -50,7 +50,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from . import em_laps, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths
+from . import em_laps, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, sectors
 from .catalog import (HAVE, NONE, SEEK, WARN, Channel, CodeRef, DataBlock, Export, FileRef, LapColumn, Missing, Session, code_html,
                       size_text, to_markdown, to_notion, write_session)
 
@@ -72,6 +72,11 @@ FULL_THROTTLE_PCT = 95.0    # 풀스로틀로 보는 값
 EM_REFINE_MIN_S = 1.0       # 에너지미터 전력에 다시 맞출 때는 이보다 크게 어긋난 것만 옮긴다 — 백업 로거 시각이 1 s 단위이고,
                             #   에너지미터 쪽도 긴 레코딩에서는 구간마다 조금 벗어난다 (그보다 작은 차이를 쫓지 않는다)
 ACCEL_LEAD_S = 10.0         # 가속 출발(정지)은 주행 구간 시작(10 km/h 를 넘는 순간)보다 앞이다 — 그만큼 앞까지 본다
+UNCLASSIFIED = "미분류"      # 랩 · 종목을 알아보지 못했지만 달린 주행 — 세션으로 넣고 '확인 필요' 경고 (사람이 [[session]] 으로 정하거나 skip)
+UNCLASSIFIED_COVER = 0.4    # 이벤트 코스(기준 랩의 주행선)의 이 비율 이상을 지났거나 — 피트 이동은 코스의 일부만 지난다
+UNCLASSIFIED_KMH = 60.0     #   최고 속도가 이 값 이상이면 미분류로 넣는다 (짧아도 빨리 달린 것 — 놓친 가속 시도 등)
+UNCLASSIFIED_M = 500.0      # 완주 랩이 하나도 없어 코스를 모르는 이벤트는 덮은 비율 대신 달린 거리
+COURSE_BIN_M = 10.0         # 덮은 비율을 셀 때 주행선을 이 길이로 나눈 칸
 AGREE_SMOOTH_S = 1.0        # 두 장비가 같은 물리량을 잰 것을 대 볼 때 이만큼 평균한 뒤 (1 초 간격 장비에 맞춘다)
 AGREE_TOL_S = {"stm32": 1.0, "orion": 2.0, "lef26_logger": 1.0}   # 이보다 더 어긋나 보이면 경고 — 그 장비 시각의 해상도 · 평균 길이
 AGREE_MIN_CORR = {"stm32": 0.8, "orion": 0.6, "lef26_logger": 0.8}   # 파형이 이보다 덜 닮았으면 어긋남을 말하지 않는다 (Orion 은 1 초 단위 평균이라 덜 닮는다)
@@ -438,7 +443,10 @@ def _video_block(r: _Run) -> DataBlock | None:
     if "files" not in r.meta["source"] or not folder.exists():
         return None
     where = r.notes.get("event", {}).get("raw_where", "DAQ 파트 보관")
-    files = sorted(folder.iterdir())
+    stems = {Path(n).stem.upper() for n in r.meta["source"]["files"]}           # 이 녹화의 조각만 (같은 이름의 저해상도 사본 포함) — 폴더의 다른 녹화는 아니다
+    files = sorted(p for p in folder.iterdir() if p.stem.upper() in stems)
+    if not files:
+        return None
     extra = r.extra("video")
     return DataBlock("video", "온보드 영상", HAVE, extra.get("device", r.meta["source"]["logger"]),
                      [f"파일 {len(files)}개 · 합계 {size_text(sum(p.stat().st_size for p in files))} (레코딩 전체. 이 세션은 그 일부)",
@@ -1019,14 +1027,20 @@ def _can_battery_block(r: _Run, stream: pd.DataFrame, oc: pd.DataFrame | None) -
     return block, {"net_wh": round(net), "i_max_a": round(float(np.nanmax(i)))}, {"t": t, "kw": kw}
 
 
-def _auto_sessions(runs: pd.DataFrame, derived: Path) -> dict[tuple, dict]:
-    """이름을 적지 않은 주행 구간 → 자동 이름 (랩이 있으면 트랙, 가속 · 스키드패드 표에 있으면 그 종목). 나머지는 넣지 않는다."""
+def _auto_sessions(ctx: "_GpsCtx") -> tuple[dict[tuple, dict], list[dict]]:
+    """이름을 적지 않은 주행 구간 → (자동 이름, 뺀 주행).
+
+    랩이 있으면 트랙, 가속 · 스키드패드 표에 있으면 그 종목. 셋 다 아니면 코스를 얼마나 지났나(`_course_cover`)와 최고 속도로 가른다 —
+    UNCLASSIFIED_COVER 이상 지났거나 UNCLASSIFIED_KMH 이상이면 미분류(확인 필요), 아니면 피트 이동 등으로 보고 뺀다 (뺀 것은 돌려줘 알린다).
+    """
+    runs, derived = ctx.runs, ctx.derived
     accel, skid = _read(derived / "accel_runs.csv"), _read(derived / "skidpad_laps.csv")
     if accel is not None and "direction" in accel:
         accel = accel[accel["direction"] == "forward"]                  # 반대 방향(돌아오는 길)은 가속 시도가 아니다
-    found = {}
+    found, dropped = {}, []
     for _, run in runs.iterrows():
         rec, n, a, b = run["recording_id"], int(run["run"]), float(run["t_start_s"]), float(run["t_end_s"])
+        info = {"recording": rec, "run": n, "auto": True}
         if int(run.get("full_laps", 0) or 0) > 0:
             kind = "트랙"
         elif accel is not None and ((accel["recording_id"] == rec) & (accel["t_start_s"] >= a - ACCEL_LEAD_S) & (accel["t_start_s"] <= b)).any():
@@ -1034,9 +1048,60 @@ def _auto_sessions(runs: pd.DataFrame, derived: Path) -> dict[tuple, dict]:
         elif skid is not None and ((skid["recording_id"] == rec) & (skid["run"] == n)).any():
             kind = "스키드패드"
         else:
-            continue
-        found[(rec, n)] = {"recording": rec, "run": n, "discipline": kind, "auto": True}
-    return found
+            cover = _course_cover(ctx, rec, a, b)
+            vmax, dist = float(run["vmax_kmh"]), float(run["distance_m"])
+            facts = {"cover": None if cover is None else round(cover, 2), "vmax_kmh": round(vmax, 1), "distance_m": round(dist), "duration_s": round(b - a, 1)}
+            far = dist >= UNCLASSIFIED_M if cover is None else cover >= UNCLASSIFIED_COVER
+            if not (far or vmax >= UNCLASSIFIED_KMH):
+                dropped.append({"recording": rec, "run": n, "why": "피트 이동 등으로 봄 (" + _run_facts(facts) + ")", **facts})
+                continue
+            kind, info["unclassified"] = UNCLASSIFIED, facts
+        found[(rec, n)] = {**info, "discipline": kind}
+    return found, dropped
+
+
+def _run_facts(f: dict) -> str:
+    cover = "코스를 몰라 덮은 비율 없음" if f["cover"] is None else f"코스의 {f['cover']:.0%}"
+    return f"{cover} · 최고 {f['vmax_kmh']:.0f} km/h · {f['distance_m']:,} m · {f['duration_s']:.0f} s"
+
+
+def _course_line(ctx: "_GpsCtx") -> tuple[np.ndarray, np.ndarray] | None:
+    """이 이벤트의 코스 = 기준 랩의 주행선 (길이가 중앙값의 sectors.LENGTH_TOL 안인 랩 중 가장 빠른 것 — 구간의 기준 랩과 같은 규칙). 완주 랩이 없으면 None."""
+    if not hasattr(ctx, "_course"):
+        laps, ctx._course = ctx.laps, None
+        if len(laps):
+            med = float(laps["distance_m"].median())
+            near = laps[(laps["distance_m"] - med).abs() <= sectors.LENGTH_TOL * med]
+            best = (near if len(near) else laps).sort_values("lap_time_s").iloc[0]
+            x, y = _run_xy(ctx, best["recording_id"], float(best["t_start_s"]), float(best["t_end_s"]))
+            ctx._course = (x, y) if len(x) > 1 else None
+    return ctx._course
+
+
+def _run_xy(ctx: "_GpsCtx", rec: str, a: float, b: float) -> tuple[np.ndarray, np.ndarray]:
+    g = pq.read_table(ctx.event_dir / "normalized" / rec / "gps.parquet", columns=["t_rel_ms", "fix", "lat", "lon"]).to_pandas()
+    g = g[g["fix"]]
+    t = g["t_rel_ms"].to_numpy() / 1000.0
+    m = (t >= a) & (t <= b)
+    return lapmod.to_local_m(g["lat"].to_numpy()[m], g["lon"].to_numpy()[m], ctx.origin["lat0"], ctx.origin["lon0"])
+
+
+def _course_cover(ctx: "_GpsCtx", rec: str, a: float, b: float) -> float | None:
+    """주행 구간이 코스(기준 랩 주행선)의 몇 할을 지났나 — 주행선을 COURSE_BIN_M 칸으로 나눠, 그 주행이 lapmod.COURSE_TOL_M 안으로 지난 칸의 비율.
+    피트 레인은 코스 옆이라 '코스 위에 있었나' 만으로는 피트 이동과 주행이 갈리지 않는다 — 얼마나 덮었나로 가른다. 코스를 모르면 None."""
+    line = _course_line(ctx)
+    if line is None:
+        return None
+    lx, ly = line
+    s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(lx), np.diff(ly)))])
+    x, y = _run_xy(ctx, rec, a, b)
+    hit = set()
+    for i in range(0, len(x), 1000):
+        d2 = (x[i:i + 1000, None] - lx[None, :]) ** 2 + (y[i:i + 1000, None] - ly[None, :]) ** 2
+        j = d2.argmin(axis=1)
+        near = d2[np.arange(len(j)), j] <= lapmod.COURSE_TOL_M ** 2
+        hit.update((s[j[near]] // COURSE_BIN_M).astype(int).tolist())
+    return min(1.0, len(hit) * COURSE_BIN_M / s[-1]) if s[-1] > 0 else None
 
 
 def _segment_notes(info: dict, derived: Path, r: _Run) -> list[str]:
@@ -1506,8 +1571,10 @@ def _timed(event_dir: Path, notes: dict, made: dict, ctx: "_GpsCtx | None") -> t
 
 # ---------------------------------------------------------------- 이벤트 → 세션들
 
-def build_event(event_dir: Path) -> list[Session]:
+def build_event(event_dir: Path, report: dict | None = None) -> list[Session]:
     """이벤트 폴더 → 세션들 (시작 시각 순). `catalog_notes.toml` 이 있어야 한다.
+
+    report 를 주면 세션으로 넣지 않은 GPS 주행 구간을 report["dropped_runs"] 에 적는다 (피트 이동으로 본 것 · 사람이 skip 한 것 · 이름을 적지 않은 것).
 
     GPS 주행 구간 세션(`[[session]]` · `sessions = "auto"`)은 랩 분할(runs.csv · laps.csv · gate.json)이, 시각 구간 세션(`[[timed_session]]`)은
     기준 시계와 장비 시계 차(`[event] clock` · `[clocks]`)가 있어야 한다.
@@ -1520,11 +1587,13 @@ def build_event(event_dir: Path) -> list[Session]:
     made = {"generated": dt.date.today().isoformat(), "commit": code_version(),
             "command": f"lefdata catalog --event {event_dir.parent.name}/{event_dir.name}"}
     ctx = _GpsCtx(event_dir, notes, made) if _GpsCtx.available(event_dir) else None
+    if report is not None:
+        report["dropped_runs"] = []
     sessions, covered = _timed(event_dir, notes, made, ctx)
     if notes.get("session") or ev.get("sessions") == "auto":
         if ctx is None:
             raise FileNotFoundError("runs.csv · laps.csv · gate.json 이 없다 — 먼저 랩 분할(lefdata laps 또는 gopro --laps)을 돌릴 것")
-        sessions = _gps_sessions(ctx, covered) + sessions
+        sessions = _gps_sessions(ctx, covered, report) + sessions
     sessions.sort(key=lambda s: s.start)
     auto: dict[tuple, int] = {}
     for s in sessions:                                          # 자동 이름: 그날 종목별 순서 ("트랙 2")
@@ -1572,27 +1641,40 @@ class _GpsCtx:
         return all((Path(event_dir) / "derived" / n).exists() for n in ("runs.csv", "laps.csv", "gate.json"))
 
 
-def _gps_sessions(ctx: _GpsCtx, skip: set[tuple[str, int]] = frozenset()) -> list[Session]:
-    """GPS 주행 구간(runs.csv) 하나 = 세션 하나. 이름을 적은 것(`[[session]]`)과, `sessions = "auto"` 면 종목을 알아본 것.
+def _gps_sessions(ctx: _GpsCtx, skip: set[tuple[str, int]] = frozenset(), report: dict | None = None) -> list[Session]:
+    """GPS 주행 구간(runs.csv) 하나 = 세션 하나. 이름을 적은 것(`[[session]]`)과, `sessions = "auto"` 면 종목을 알아본 것 (미분류 포함).
 
     skip = 시각 구간 세션이 가져간 주행 구간 (자동으로는 만들지 않고, `[[session]]` 에도 적었으면 멈춘다).
+    `[[session]]` 에 `skip = true` 를 적으면 그 주행은 넣지 않는다 (사람이 버린 것 — 미분류를 정리할 때).
     """
     named = {(s["recording"], int(s["run"])): s for s in ctx.notes.get("session", [])}
-    twice = sorted(k for k in named if k in skip)
+    twice = sorted(k for k, s in named.items() if k in skip and not s.get("skip"))
     if twice:
         raise ValueError(f"{NOTES_NAME}: 같은 주행을 [[session]] 과 [[timed_session]] 에 두 번 적었다 — {twice}")
+    dropped = []
     if ctx.ev.get("sessions") == "auto":
-        named = {**_auto_sessions(ctx.runs, ctx.derived), **named}
+        auto, dropped = _auto_sessions(ctx)
+        dropped = [d for d in dropped if (d["recording"], d["run"]) not in named and (d["recording"], d["run"]) not in skip]
+        named = {**auto, **named}
     sessions = []
     for _, run in ctx.runs.iterrows():
         key = (run["recording_id"], int(run["run"]))
-        if key not in named or key in skip:                     # 이름을 붙이지 않은 주행 구간은 넣지 않는다
+        if key in skip:
+            continue
+        if key in named and named[key].get("skip"):
+            dropped.append({"recording": key[0], "run": key[1], "why": f"{NOTES_NAME} 의 [[session]] skip"})
+            continue
+        if key not in named:                                    # 이름을 붙이지 않은 주행 구간은 넣지 않는다
+            if ctx.ev.get("sessions") != "auto":
+                dropped.append({"recording": key[0], "run": key[1], "why": f"이름을 적지 않음 ({NOTES_NAME} 에 sessions = \"auto\" 가 없다)"})
             continue
         mine = ctx.laps[(ctx.laps["recording_id"] == key[0]) & (ctx.laps["run"] == key[1])]
         e = ctx.run_e[(ctx.run_e["recording_id"] == key[0]) & (ctx.run_e["run"] == key[1])] if ctx.run_e is not None else pd.DataFrame()
         e = e.iloc[0] if len(e) and (e.iloc[0]["em_recording"], key[0]) in ctx.aligned and e.iloc[0]["cover_share"] >= em_laps.MIN_COVER else None
         lap_e = ctx.lap_e[(ctx.lap_e["recording_id"] == key[0]) & (ctx.lap_e["run"] == key[1])] if e is not None else None
         sessions.append(_gps_session(ctx, key[0], run, mine, named[key], e, lap_e))
+    if report is not None:
+        report["dropped_runs"] = sorted(dropped, key=lambda d: (d["recording"], d["run"]))
     return sessions
 
 
@@ -1628,6 +1710,11 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
     if can["apps"] is not None:
         blocks.append(_pedal_block(r, can["apps"], ref))
     blocks.append(_video_block(r))
+    if info.get("unclassified"):                                # 랩 · 종목을 알아보지 못한 주행 — 사람이 정하게
+        blocks[0].findings.append({"level": "warn", "code": "unclassified_run",
+                                   "message": f"랩 · 종목을 알아보지 못한 주행 — 확인 필요 ({_run_facts(info['unclassified'])}). "
+                                              f"{NOTES_NAME} 의 [[session]] 에 종목을 적거나 skip = true 로 뺀다",
+                                   "t_ranges": [[0.0, round(r.t1 - r.t0, 3)]]})
     start = pd.Timestamp(r.t0_abs, unit="s", tz="UTC").tz_convert(TZ)
     shown = []
     x = ctx.gps_recs.get(r.rec)

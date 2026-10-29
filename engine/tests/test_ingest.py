@@ -179,3 +179,16 @@ def test_two_real_files_become_a_session(roots):
     blocks = {b["block"]: b for b in s["blocks"]}
     assert {"gps", "battery", "pedal", "bms"} <= set(blocks) and "Orion 팩 전류(CAN 0x447" in blocks["battery"]["checks"][0]
     assert all(f["sessions"] == job["sessions"][:1] for f in job["files"])
+
+
+def test_a_session_lists_only_its_own_video_chunks(tmp_path):
+    """세션의 영상 블록 원본은 그 녹화의 조각(같은 이름의 저해상도 사본 포함)뿐 — 폴더의 다른 녹화가 섞이면 올린 파일이 엉뚱한 세션에 '쓰임' 으로 잡힌다."""
+    from types import SimpleNamespace
+    from lefdata import catalog_build as cb
+    raw = tmp_path / "raw_video"
+    raw.mkdir()
+    for n in ("GOPR0001.MP4", "GOPR0001.LRV", "GP010001.MP4", "GOPR0002.MP4"):
+        (raw / n).write_bytes(b"x")
+    r = SimpleNamespace(event_dir=tmp_path, notes={}, extra=lambda key: {},
+                        meta={"source": {"logger": "GoPro 온보드 영상 (GPMF)", "files": ["GOPR0001.MP4", "GP010001.MP4"]}})
+    assert [f.name for f in cb._video_block(r).raw] == ["GOPR0001.LRV", "GOPR0001.MP4", "GP010001.MP4"]

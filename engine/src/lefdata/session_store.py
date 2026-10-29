@@ -303,14 +303,15 @@ def write_frames(root: Path, reframe: bool = False, keys: set[str] | None = None
     return written
 
 
-def build_event(event_dir: Path, root: Path | None = None, data_root: Path | None = None, reframe: bool = False) -> list[dict]:
+def build_event(event_dir: Path, root: Path | None = None, data_root: Path | None = None, reframe: bool = False,
+                report: dict | None = None) -> list[dict]:
     """이벤트의 세션을 전부 만들어 저장소에 쓴다 → 세션 목록의 줄들. index.json · frame 도 쓴다 (있는 frame 은 그대로).
 
     sid 는 등록부(`_ids.json`)가 정한다 — 같은 주행이면 전에 준 sid, 새 주행이면 그날의 새 번호. 이번에 없어진 세션의 폴더는 지우고
     등록부에 뒤를 이은 세션을 적는다 (`session_ids`).
     """
     event_dir = Path(event_dir).resolve()
-    return write_event(catalog_build.build_event(event_dir), f"{event_dir.parent.name}/{event_dir.name}", root, data_root, reframe)
+    return write_event(catalog_build.build_event(event_dir, report), f"{event_dir.parent.name}/{event_dir.name}", root, data_root, reframe)
 
 
 def write_event(sessions: list[Session], event_id: str, root: Path | None = None, data_root: Path | None = None,

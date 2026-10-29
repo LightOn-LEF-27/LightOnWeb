@@ -16,7 +16,7 @@ need26 = pytest.mark.skipif(not (L26 / cb.NOTES_NAME).exists() or not (L26 / "de
                             reason="LEF-26 테스트위크 catalog_notes.toml · lef26-clock 결과 없음")
 need_evo = pytest.mark.skipif(not (EVO / cb.NOTES_NAME).exists() or not (EVO / "derived" / "stm32_alignment.csv").exists(),
                               reason="25Evo 테스트위크 catalog_notes.toml · evo-stm32 결과 없음")
-DISCIPLINES = {"트랙", "가속", "스키드패드"}
+DISCIPLINES = {"트랙", "가속", "스키드패드", "미분류"}
 
 
 @pytest.fixture(scope="module")
