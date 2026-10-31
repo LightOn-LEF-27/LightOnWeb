@@ -156,14 +156,14 @@ def drive_block(s: Session, dt_s: float = 0.1) -> DataBlock | None:
         derivation = f"배터리 전력 > {drive.POWER_ON_KW:g} kW 이면 가속, {brake} (전력 {drive.POWER_SMOOTH_S:g} s · 속도 {drive.SPEED_SMOOTH_S:g} s 이동평균)"
         cautions = ["추정 — 가속페달 · 브레이크 압력 신호가 아니다",
                     "가속페달 · 브레이크를 같이 밟은 순간은 가속으로, 아주 가벼운 제동은 타력으로 나온다",
-                    "상태가 바뀌는 순간은 0.1 ~ 0.2 s 흐리다 (전력 · 속도를 잰 장비의 시각 차)", stop, avg]
+                    "제동으로 바뀌는 순간은 GPS 속도 값이 늦은 만큼 늦게 나온다", stop, avg]
         note = "가속페달 · 브레이크 압력이 기록되지 않아 전력 · 속도로 추정한 값이다. 센서가 붙으면 페달 신호로 바꾼다"
     else:
         source = f"가속페달({pedal.label})"
         derivation = f"가속페달 블록의 {pedal.label} > {on_at:g} {pedal.unit} 이면 가속, {brake} (속도 {drive.SPEED_SMOOTH_S:g} s 이동평균)"
         cautions = ["제동은 추정 — 브레이크 압력 신호가 아니다 (가속은 가속페달 신호로 가른다)",
                     "가속페달 · 브레이크를 같이 밟은 순간은 가속으로, 아주 가벼운 제동은 타력으로 나온다",
-                    "상태가 바뀌는 순간은 0.1 ~ 0.2 s 흐리다 (가속페달 · 속도를 잰 장비의 시각 차)", stop, avg]
+                    "제동으로 바뀌는 순간은 GPS 속도 값이 늦은 만큼 늦게 나온다 (가속은 페달 신호라 제때 나온다)", stop, avg]
         note = "브레이크 압력이 기록되지 않아 제동은 GPS 속도로 추정한 값이다"
         if power is not None:                           # 가속페달이 없는 세션에서 쓰는 전력판이 이 세션에서 얼마나 맞나
             tp, sp = drive.estimate(power.t_s, power.v, speed.t_s, speed.v, dt_s)

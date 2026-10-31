@@ -374,9 +374,13 @@ def test_evo_race_sessions_keep_their_promises(sevo):
         assert s.stats["net_wh"] == pytest.approx(np.trapezoid(p.v[ok], p.t_s[ok]) / 3.6, abs=max(2.0, 0.01 * abs(s.stats["net_wh"])))
         assert "clock_mismatch" not in _codes(s), s.sid
     for s in (s for s in sevo if s.split_by == "gps"):
-        assert "에너지미터" in _blocks(s)["battery"].device and "에너지미터 전력(같은 물리량)" in _blocks(s)["motor"].checks[0], s.sid
-        if (EVO / "normalized" / s.blocks[0].series[0].source / "apps.parquet").exists():          # 차량 CAN (lefdata evo-can) — 가속페달 · Orion
-            assert {"pedal", "bms"} <= set(_blocks(s)) and "Orion" in _blocks(s)["bms"].device, s.sid
+        assert "에너지미터" in _blocks(s)["battery"].device, s.sid
+        if (EVO / "normalized" / s.blocks[0].series[0].source / "apps.parquet").exists():          # 차량 CAN (lefdata evo-can) — 가속페달 · Orion · 모터 컨트롤러
+            assert {"pedal", "bms", "motor"} <= set(_blocks(s)) and "Orion" in _blocks(s)["bms"].device and "0x181" in _blocks(s)["motor"].device, s.sid
+            assert {c.key for c in _blocks(s)["motor"].channels} == {"t_igbt_c", "t_motor_c", "vdc_v", "rpm", "enabled", "ready"}, s.sid
+            assert "inverter_t_max_c" in s.laps.columns and "motor_t_max_c" in s.laps.columns, s.sid
+        else:
+            assert "에너지미터 전력(같은 물리량)" in _blocks(s)["motor"].checks[0], s.sid
 
 
 @need_evo
@@ -405,3 +409,17 @@ def test_evo_race_drive_state_comes_from_the_pedal(sevo):
         got.append(int(re.search(r"같은 상태 (\d+) %", b.checks[0]).group(1)))
     assert got == E["evo_race.pedal_power_agree"]
     assert store.drive_block(by[E["evo_race.pedal_drive_sids"][0]]).facts[0].endswith(E["evo_race.pedal_drive_fact"])
+
+
+@need_evo
+@E.need
+def test_evo_race_motor_comes_from_can(sevo):
+    """모터 컨트롤러 값이 CAN 에 있는 세션 — 온도 · DC 버스 · 회전수를 BAMOCAR 응답에서, 오류가 없으면 경고도 없다."""
+    by = {s.sid: s for s in sevo}
+    facts = {}
+    for sid in E["evo_race.pedal_drive_sids"]:
+        b = _blocks(by[sid])["motor"]
+        assert "inverter_fault" not in _codes(by[sid]) and not b.findings, sid
+        facts[sid] = [c for c in b.facts if c.startswith("컨트롤러 오류")][0]
+        assert any(c.startswith("회전수 ↔ GPS 속도") for c in b.checks) and any(c.startswith("DC 버스 − Orion") for c in b.checks), sid
+    assert facts[E["evo_race.pedal_drive_sids"][0]] == E["evo_race.motor_error_fact"]

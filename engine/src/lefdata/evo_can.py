@@ -4,6 +4,7 @@
         → normalized/<레코딩>/apps.parquet          가속페달 (APPS 보드 진단 0x7A0 · 0x7A1 · 0x7A2, 20 Hz)
                               orion_can.parquet     Orion 요약 · 팩 V/I (0x446 · 0x447, 96 ms)
                               orion_stream.parquet  Orion Connect 스트림 (0x6D0, 평균 80 Hz 대 — 팩 V/I + 슬롯 하나씩)
+                              bamocar.parquet       모터 컨트롤러 응답 (0x181, 레지스터마다 10 Hz) — 시각 · 레지스터 · 원시값, 한 줄에 하나
 
 정의의 출처 (팀 문서):
     0x7A0 ~ 0x7A2   25Evo APPS 보드 저장소의 진단 DBC (리틀 엔디언, 세 프레임이 같은 순번)
@@ -11,6 +12,8 @@
                     실제로는 부호 있는 16비트다 (회생 때 0x8000 이상) — 여기서는 부호 있는 값으로 읽는다
     0x6D0           Orion 의 Connect 모듈용 스트림 — 공식 정의가 없어 Orion 로그와 맞대 푼 것. [0] 슬롯 번호 · [1..2] 팩 전류
                     (방전 −) · [3..4] 팩 전압 · [5..6] 슬롯 값. 슬롯 표는 STREAM_SLOTS (맞댄 확신이 높은 것만)
+    0x181           BAMOCAR 주기 응답 (Unitek CAN 매뉴얼). [0] 레지스터 번호 · 리틀 엔디언 값 — DLC 4 = 부호 있는 16비트, DLC 6 = 부호 없는 32비트.
+                    상태 · 오류 비트는 Unitek N-Drive 매뉴얼. 환산은 LEF-26 과 같은 제조사 표 (lef26) · 모터 온도는 evo_stm32 의 KTY81 표
 
 체크섬: 0x446 · 0x447 = 바이트 0 ~ 6 의 합, 0x6D0 = (ID + 8 + 바이트 0 ~ 6 의 합) 의 하위 8비트. 틀린 프레임은 버리지 않고 checksum_ok 에 표시한다.
 시각은 Monolith 시계 그대로 (같은 레코딩의 GPS 와 같은 축) — 다른 장비에 맞추는 것은 세션을 만드는 쪽이 한다.
@@ -25,6 +28,8 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
+from .evo_stm32 import RPM_FULL_SCALE, motor_temp_c
+from .lef26 import BAMOCAR_VDC_V_PER_NUM, igbt_temp_c
 from .writer import write_json
 
 APPS_RAW, APPS_SCALED, APPS_STATUS = 0x7A0, 0x7A1, 0x7A2
@@ -40,7 +45,20 @@ STREAM_SLOTS = {10: ("ccl_a", 1.0, False), 15: ("soc_pct", 0.5, False), 16: ("pa
                 18: ("dod_pct", 0.5, False), 27: ("dcl_kw", 0.1, False), 40: ("temp_max_c", 1.0, True), 41: ("temp_min_c", 1.0, True),
                 42: ("temp_avg_c", 1.0, True), 45: ("bms_heatsink_c", 1.0, True), 46: ("temp_max_id", 1.0, False), 47: ("temp_min_id", 1.0, False),
                 56: ("cell_r_min_mohm", 0.01, False), 57: ("cell_r_max_mohm", 0.01, False), 58: ("cell_r_avg_mohm", 0.01, False)}
-TABLES = ("apps", "orion_can", "orion_stream")
+BAMOCAR = 0x181
+REG_SPEED, REG_STATUS, REG_ERROR, REG_VDC, REG_T_IGBT, REG_T_MOTOR = 0x30, 0x40, 0x8F, 0xEB, 0x4A, 0x49
+LOGGER_N100_RPM = 6500.0     # STM32 백업 로거가 회전수를 바꿀 때 쓰는 상수 — 같은 차의 다른 세션과 겹쳐 보려고 같은 기준으로 바꾼다. 컨트롤러의 실제 N-100 % 설정값은 아니다
+STATUS_ENABLED, STATUS_READY = 0, 14                    # 0x40 비트: Ena (구동 허용) · Rdy (BTB 닫힘 — 오류가 나면 꺼진다)
+ERROR_VOLTAGE_MIN, ERROR_VOLTAGE_MAX = 5, 8             # 0x8F 비트. 5 = 전원 전압 없음 — HV 를 꺼 두면 늘 켜져 있어 고장으로 세지 않는다
+BAMOCAR_ERRORS = {0: "Eprom Read Error", 1: "HW Fault detected", 2: "RFE input not present", 3: "CAN TimeOut Error", 4: "Feedback Signal Error",
+                  5: "Mains Voltage Min. Limit", 6: "Motor-Temp. Max. Limit", 7: "IGBT-Temp. Max. Limit", 8: "Mains Voltage Max. Limit",
+                  9: "Critical AC Current", 10: "Race Away detected", 11: "ECode TimeOut Error", 12: "Watchdog Reset", 13: "I Offset problem",
+                  14: "Internal HW voltage problem", 15: "Bleed resistor overload"}
+BAMOCAR_WARNINGS = {16: "Parameter conflict detected", 17: "Special CPU Fault", 18: "RFE input not present", 19: "Auxiliary Voltage Min. Limit",
+                    20: "Feedback Signal problem", 22: "Motor-Temperature (>87%)", 23: "IGBT Temperature (>87%)", 24: "Vout Saturation Max. Limit",
+                    26: "SpeedActual resolution Limit", 27: "Check ECode ID: 0x94", 28: "Tripzone Glitch detected", 29: "ADC Sequencer problem",
+                    30: "ADC Measurement problem", 31: "Bleeder resistor load (>87%)"}
+TABLES = ("apps", "orion_can", "orion_stream", "bamocar")
 
 
 # ---------------------------------------------------------------- 프레임 → 값 (데이터 8 바이트 배열 [n × 8])
@@ -114,6 +132,43 @@ def fault_names(mask: int) -> list[str]:
     return [name for bit, name in APPS_FAULTS.items() if int(mask) & bit]
 
 
+def decode_bamocar(d: np.ndarray, dlc: np.ndarray) -> pd.DataFrame:
+    """0x181 — 레지스터 번호 · 원시값. DLC 4 = 부호 있는 16비트, DLC 6 = 부호 없는 32비트 (상태 · 오류). 다른 길이는 raw 가 빈 값."""
+    u16, u32 = _u16le(d, 1), _u16le(d, 1) | (_u16le(d, 3) << 16)
+    raw = pd.array(np.where(dlc == 6, u32, _s16(u16)), dtype="Int64")
+    raw[~np.isin(dlc, (4, 6))] = pd.NA
+    return pd.DataFrame({"reg": d[:, 0].astype(np.int64), "raw": raw})
+
+
+def bamocar_error_bits(raw: np.ndarray) -> np.ndarray:
+    """0x8F 원시값 → 고장으로 볼 오류 비트만 (하위 16비트에서 '전원 전압 없음' 을 뺀 것)."""
+    return np.asarray(raw, np.int64) & 0xFFFF & ~(1 << ERROR_VOLTAGE_MIN)
+
+
+def bamocar_error_names(mask: int) -> list[str]:
+    return [name for bit, name in BAMOCAR_ERRORS.items() if int(mask) >> bit & 1]
+
+
+def bamocar_warning_names(mask: int) -> list[str]:
+    return [name for bit, name in BAMOCAR_WARNINGS.items() if int(mask) >> bit & 1]
+
+
+def bamocar_signals(table: pd.DataFrame, t_col: str = "t_s") -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """bamocar 표 → 신호마다 (시각, 값). 있는 레지스터만. error_raw 는 0x8F 원시값 그대로."""
+    def reg(r: int) -> tuple[np.ndarray, np.ndarray]:
+        s = table[(table["reg"] == r) & table["raw"].notna()]
+        return s[t_col].to_numpy(float), s["raw"].to_numpy(np.int64)
+    out = {}
+    for name, r, conv in (("rpm", REG_SPEED, lambda v: v / RPM_FULL_SCALE * LOGGER_N100_RPM), ("vdc_v", REG_VDC, lambda v: v * BAMOCAR_VDC_V_PER_NUM),
+                          ("t_igbt_c", REG_T_IGBT, igbt_temp_c), ("t_motor_c", REG_T_MOTOR, motor_temp_c),
+                          ("enabled", REG_STATUS, lambda v: (v >> STATUS_ENABLED & 1).astype(float)),
+                          ("ready", REG_STATUS, lambda v: (v >> STATUS_READY & 1).astype(float)), ("error_raw", REG_ERROR, lambda v: v)):
+        t, v = reg(r)
+        if len(t):
+            out[name] = (t, conv(v))
+    return out
+
+
 # ---------------------------------------------------------------- 레코딩 하나
 
 def _frames(rec_dir: Path) -> pd.DataFrame:
@@ -130,7 +185,7 @@ def _data(f: pd.DataFrame, can_id: int) -> tuple[pd.DataFrame, np.ndarray]:
 
 
 def decode_recording(rec_dir: Path) -> dict[str, pd.DataFrame]:
-    """frames.parquet → {apps, orion_can, orion_stream} (있는 것만)."""
+    """frames.parquet → {apps, orion_can, orion_stream, bamocar} (있는 것만)."""
     f = _frames(rec_dir)
     out = {}
     t, d = _data(f, APPS_RAW)
@@ -154,6 +209,10 @@ def decode_recording(rec_dir: Path) -> dict[str, pd.DataFrame]:
     t, d = _data(f, ORION_STREAM)
     if len(d):
         out["orion_stream"] = pd.concat([t, decode_orion_stream(d)], axis=1)
+    s = f[f["can_id"] == BAMOCAR]
+    if len(s):
+        p = np.frombuffer(b"".join(s["payload"]), dtype=np.uint8).reshape(-1, 16)      # 이 ID 는 길이가 섞여 있다 — 오프셋 6 = 길이, 8 ~ = 데이터
+        out["bamocar"] = pd.concat([s[["t_rel_ms", "t_abs"]].reset_index(drop=True), decode_bamocar(p[:, 8:16], p[:, 6])], axis=1)
     return out
 
 
@@ -170,6 +229,15 @@ def summarize(tables: dict[str, pd.DataFrame]) -> dict:
         if name in tables:
             t = tables[name]
             s[name] = {"rows": int(len(t)), "checksum_fail": int((~t["checksum_ok"]).sum())}
+    if "bamocar" in tables:
+        b = tables["bamocar"]
+        sig = bamocar_signals(b, "t_rel_ms")
+        err = sig["error_raw"][1] if "error_raw" in sig else np.zeros(0, np.int64)
+        any_err = int(np.bitwise_or.reduce(err)) if len(err) else 0
+        s["bamocar"] = {"rows": int(len(b)), "regs": {f"0x{int(r):02X}": int(n) for r, n in b["reg"].value_counts().sort_index().items()},
+                        "vdc_max_v": round(float(sig["vdc_v"][1].max()), 1) if "vdc_v" in sig else None,
+                        "overvoltage_frames": int((err >> ERROR_VOLTAGE_MAX & 1).sum()),
+                        "errors_any": bamocar_error_names(int(bamocar_error_bits(np.array([any_err]))[0])), "warnings_any": bamocar_warning_names(any_err)}
     return s
 
 
@@ -190,4 +258,9 @@ def convert_event(event_dir: Path) -> list[dict]:
         write_json(meta, meta_path)
         if tables:
             rows.append({"recording_id": rec_dir.name, **{k: v.get("rows", 0) for k, v in meta["can_decoded"].items()}})
+            if "bamocar" in meta["can_decoded"]:                # 요청한 레지스터가 다 오는지 · 과전압이 있었는지를 변환할 때 바로 본다
+                bam = meta["can_decoded"]["bamocar"]
+                rows[-1]["레지스터"] = " · ".join(f"{k} {n:,}" for k, n in bam["regs"].items())
+                if bam["errors_any"]:
+                    rows[-1]["오류"] = ", ".join(bam["errors_any"])
     return rows

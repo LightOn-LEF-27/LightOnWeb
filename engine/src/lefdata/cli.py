@@ -9,7 +9,7 @@
     lefdata check               데이터 품질 검사 (시간축·물리범위·공백·중복)
     lefdata energymeter         FSK 에너지미터(FSK-EEM) .log → normalized/
     lefdata evo-stm32           25Evo STM32 백업 로거 CSV → normalized/ + 시계 속도·시작 시각 맞추기 (--clock em|gps)
-    lefdata evo-can             25Evo Monolith 가 받은 CAN → 가속페달 · Orion 표 (normalized/<레코딩>/apps · orion_can · orion_stream)
+    lefdata evo-can             25Evo Monolith 가 받은 CAN → 가속페달 · Orion · 모터 컨트롤러 표 (normalized/<레코딩>/apps · orion_can · orion_stream · bamocar)
     lefdata orion               Orion BMS Connect CSV(Utility 변환본) → normalized/
     lefdata clocks              이벤트 안 장비 시계 차이 측정 → derived/clock_offsets.csv · power_cycles.csv
     lefdata lef26-clock         LEF-26 로거 시계를 로그 자체와 영상 GPS 로 검증 → derived/logger_clock.csv
@@ -257,7 +257,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "evo-can":
         print(f"[evo-can] {args.event}")
         for r in evo_can.convert_event(args.event):
-            print("  " + r["recording_id"] + "  " + " · ".join(f"{k} {v:,}" for k, v in r.items() if k != "recording_id"))
+            print("  " + r["recording_id"] + "  " + " · ".join(f"{k} {v:,}" if isinstance(v, int) else f"{k} {v}" for k, v in r.items() if k != "recording_id"))
 
     elif args.cmd == "orion":
         print(f"[orion] {args.event}  ({args.first} ~ {args.last})")

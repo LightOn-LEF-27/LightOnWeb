@@ -992,6 +992,59 @@ def _orion_can_block(r: _Run, oc: pd.DataFrame, stream: pd.DataFrame | None) -> 
                      cautions=list(r.extra("bms").get("cautions", [])), series=series)
 
 
+def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> DataBlock | None:
+    """BAMOCAR 가 차량 CAN 에 낸 응답(0x181, 레지스터마다 10 Hz) → motor 블록. 온도 · DC 버스 · 회전수가 하나도 없으면 None."""
+    sig = evo_can.bamocar_signals(bam)
+    src, every = r.rec, "모터 컨트롤러가 CAN 으로 보낸 값 (레지스터마다 10 Hz)"
+    on_off = [{"value": 0, "label": "꺼짐"}, {"value": 1, "label": "켜짐"}]
+    series = [Channel(k, label, unit, *sig[k], sign=sign, derived=bool(how), derivation=how, cautions=[every] + extra, source=src, digits=dg, levels=levels)
+              for k, label, unit, sign, how, extra, dg, levels in (
+                  ("t_igbt_c", "인버터(IGBT) 온도", "°C", "", "", ["NTC 값을 컨트롤러 제조사 표로 바꾼 값"], 1, []),
+                  ("t_motor_c", "모터 온도", "°C", "", "", ["KTY81 값을 컨트롤러 제조사 표로 바꾼 값"], 1, []),
+                  ("vdc_v", "DC 버스 전압", "V", "", "", ["컨트롤러 안쪽(DC 링크) 값 — 전원 차단 때는 배터리와 다를 수 있다. 짧은 순간의 최고값은 표본 사이에 있을 수 있다"], 1, []),
+                  ("rpm", "회전수 (로거 환산)", "rpm", "전진할 때 −", f"컨트롤러 값 ÷ {evo_can.RPM_FULL_SCALE} × {evo_can.LOGGER_N100_RPM:.0f} (STM32 백업 로거와 같은 기준)",
+                   ["로거와 같은 상수로 환산한 값 — 실제 모터 rpm · 감속비를 말하지 못한다"], 0, []),
+                  ("enabled", "구동 허용 (Ena)", "", "", "", ["상태 레지스터의 Ena 비트"], 0, on_off),
+                  ("ready", "운전 준비 (Rdy)", "", "", "", ["상태 레지스터의 Rdy 비트 — 오류가 나면 꺼진다"], 0, on_off))
+              if k in sig]
+    keys = {c.key for c in series}
+    if not keys & {"t_igbt_c", "t_motor_c", "vdc_v", "rpm"}:
+        return None
+    cols = []
+    if "t_igbt_c" in keys:
+        _lap_stat(r, "inverter_t_max_c", *sig["t_igbt_c"], np.nanmax)
+        cols.append(LapColumn("inverter_t_max_c", "인버터 최고 온도", "°C", 1, chart=True))
+    if "t_motor_c" in keys:
+        _lap_stat(r, "motor_t_max_c", *sig["t_motor_c"], np.nanmax)
+        cols.append(LapColumn("motor_t_max_c", "모터 최고 온도", "°C", 1))
+    te, raw = sig.get("error_raw", (np.zeros(0), np.zeros(0, np.int64)))
+    bad = evo_can.bamocar_error_bits(raw)
+    errors = evo_can.bamocar_error_names(int(np.bitwise_or.reduce(bad))) if len(bad) else []
+    warnings = evo_can.bamocar_warning_names(int(np.bitwise_or.reduce(raw))) if len(raw) else []
+    facts = [f"{c.label} {np.nanmin(c.v):.0f} ~ {np.nanmax(c.v):.0f} {c.unit}" for c in series if c.key in ("t_igbt_c", "t_motor_c", "vdc_v")]
+    facts.append(f"컨트롤러 오류: {', '.join(errors) if errors else '없음'} · 경고: {', '.join(warnings) if warnings else '없음'}")
+    checks = []
+    if "rpm" in keys:
+        lag, _, c = best_lag(sig["rpm"][0], np.abs(sig["rpm"][1]), r.ts, r.gps["speed_kmh"].to_numpy(float))
+        if np.isfinite(c):
+            checks.append(f"회전수 ↔ GPS 속도 — GPS 를 {lag:+.1f} s 옮길 때 가장 잘 맞는다 (+ = GPS 가 늦다, 상관 {c:.2f}). "
+                          "같은 로거 시계다 — 출발 때 바퀴 헛돎 · GPS 속도 값의 지연 · GPS 빈 구간이 섞인 값이라 시계 차로 읽지 않는다")
+    if "vdc_v" in keys and oc is not None and len(oc):
+        okc = oc[oc["checksum_ok"]]
+        t, v = sig["vdc_v"]
+        pack, cur = (np.interp(t, okc["t_s"], okc[k]) if len(okc) else np.full(len(t), np.nan) for k in ("pack_v", "current_a"))
+        calm = (np.abs(cur) < 3) & (v > 50)                                       # 전류가 거의 없을 때 — 배선 전압 강하를 빼고 본다
+        if calm.sum() >= 30:
+            checks.append(f"DC 버스 − Orion 팩 전압 {np.median(v[calm] - pack[calm]):+.1f} V (전류 3 A 미만인 순간의 가운데값)")
+    findings = [{"level": "warn", "code": "inverter_fault", "t_ranges": _runs(te, bad != 0, min_s=0.0),
+                 "message": f"모터 컨트롤러가 오류를 냈다: {', '.join(errors)}"}] if errors else []
+    return DataBlock("motor", "모터 · 인버터 (BAMOCAR)", WARN if errors else HAVE, "25Evo 모터 컨트롤러 — CAN 0x181 (Monolith 가 받은 것) · 레지스터마다 10 Hz", facts,
+                     code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "CAN 프레임 → 모터 컨트롤러 값, 세션 구간만")],
+                     outputs=[FileRef("변환된 표 (레코딩 전체)", "bamocar.parquet", note="t_rel_ms · t_abs · reg (레지스터 번호) · raw (원시값)", where=r.where(f"normalized/{r.rec}/"))],
+                     channels=series, time_keys=[k for k in ("rpm", "vdc_v", "t_igbt_c") if k in keys], lap_columns=cols,
+                     checks=checks, cautions=list(r.extra("motor").get("cautions", [])), series=series, findings=findings)
+
+
 def _can_battery_block(r: _Run, stream: pd.DataFrame, oc: pd.DataFrame | None) -> tuple[DataBlock | None, dict, dict | None]:
     """Orion Connect 스트림(0x6D0)의 팩 전압 · 전류 (평균 80 Hz 대) → battery 블록 · 세션 요약 값 · 다른 장비와 대 볼 파형. 에너지미터가 없을 때."""
     s = stream[stream["checksum_ok"]]
@@ -1785,9 +1838,10 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
     can = {name: _can_frame(r, name) for name in evo_can.TABLES}                 # 차량 CAN (Monolith 가 받은 것 — lefdata evo-can)
     can_bat, can_st, can_ref = _can_battery_block(r, can["orion_stream"], can["orion_can"]) if al is None and can["orion_stream"] is not None else (None, {}, None)
     can_bms = _orion_can_block(r, can["orion_can"], can["orion_stream"]) if can["orion_can"] is not None else None
+    can_motor = _can_motor_block(r, can["bamocar"], can["orion_can"]) if can["bamocar"] is not None else None
     ref = _em_ref(r, al, e) if al else can_ref
     blocks = [_gps_block(r), _imu_block(r)] + _logger_blocks(r, ctx.loggers.for_video(r.rec)) + _stm32_blocks(
-        r, ctx.stm, ref, al, skip=("bms",) if can_bms is not None else (), ref_name="에너지미터" if al else "Orion CAN")
+        r, ctx.stm, ref, al, skip=tuple(k for k, b in (("bms", can_bms), ("motor", can_motor)) if b is not None), ref_name="에너지미터" if al else "Orion CAN")
     if can_bat is not None:
         blocks.append(can_bat)
         stats.update(can_st)
@@ -1802,6 +1856,8 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
                              f"{float(fit['em_minus_gps_s']) - x:+.2f} s 차이")
         blocks.append(em)
         stats.update(net_wh=round(float(e["net_wh"])), wh_per_km=round(float(e["wh_per_km"])), i_max_a=round(float(e["i_max_a"])))
+    if can_motor is not None:
+        blocks.append(can_motor)
     if can_bms is not None:
         blocks.append(can_bms)
     if can["apps"] is not None:

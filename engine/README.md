@@ -35,7 +35,7 @@ lefdata laps --event <이벤트>          # GPS 로 주행 구간 · 랩 → der
 lefdata venue --name <경기장> --from-event <이벤트>   # 경기장 정하기 — 그 이벤트의 계측선 · 원점 · 최속 랩 주행선
 lefdata events --event <이벤트>        # 가속(75 m) · 스키드패드
 lefdata motor-runs                    # GPS 없는 로거: 모터 속도로 주행 구간
-lefdata evo-can --event <이벤트>       # 25Evo: Monolith 가 받은 차량 CAN → 가속페달(APPS) · Orion 표 (em-laps 전에)
+lefdata evo-can --event <이벤트>       # 25Evo: Monolith 가 받은 차량 CAN → 가속페달(APPS) · Orion · 모터 컨트롤러(BAMOCAR) 표 (em-laps 전에). 레지스터별 수 · 오류가 찍힌다
 lefdata em-laps --event <이벤트>       # 에너지미터를 GPS 랩에 붙이기 (CAN 팩 전류 · 전력 ↔ 위치 · 전원 주기 순으로 시계를 맞춘다)
 lefdata lef26-clock | lef26-laps      # LEF-26: 로거 시계 검증 · 랩마다 로거 값
 lefdata clocks                        # 장비끼리 시계 차 · 전원 주기로 짝짓기
