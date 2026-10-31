@@ -8,6 +8,7 @@ API 가 랩 · 코스 없는 세션을 다루는지 본다.
 """
 
 import json
+import re
 
 import numpy as np
 import pandas as pd
@@ -390,3 +391,17 @@ def test_evo_race_golden(sevo):
     facts = _blocks(s)["bms"].facts
     assert E["evo_race.endurance_soc_fact"] in facts and E["evo_race.endurance_hot_fact"] in facts
     assert any(E["evo_race.stm32_lag_text"] in c for c in _blocks(s)["motor"].checks if "에너지미터 전력과 대 봄" in c)
+
+
+@need_evo
+@E.need
+def test_evo_race_drive_state_comes_from_the_pedal(sevo):
+    """가속페달(APPS)이 있는 세션은 주행 상태의 가속을 페달로 가르고, 전력으로만 가른 추정과 맞대 본 값을 남긴다."""
+    by = {s.sid: s for s in sevo}
+    got = []
+    for sid in E["evo_race.pedal_drive_sids"]:
+        b = store.drive_block(by[sid])
+        assert "가속페달(토크 명령)" in b.device and "토크 명령 > 0.5 %" in b.channels[0].derivation, sid
+        got.append(int(re.search(r"같은 상태 (\d+) %", b.checks[0]).group(1)))
+    assert got == E["evo_race.pedal_power_agree"]
+    assert store.drive_block(by[E["evo_race.pedal_drive_sids"][0]]).facts[0].endswith(E["evo_race.pedal_drive_fact"])
