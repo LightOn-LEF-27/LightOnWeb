@@ -314,6 +314,33 @@ select {
   letter-spacing: 0.04em;
   color: var(--text-label);
 }
+.filters fieldset:has(.legend-actions) legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.legend-actions {
+  display: flex;
+  gap: 8px;
+}
+.legend-actions button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.legend-actions button:hover:not(:disabled) {
+  color: var(--text-strong);
+  text-decoration: underline;
+}
+.legend-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .filters .items {
   display: flex;
   flex-direction: column;

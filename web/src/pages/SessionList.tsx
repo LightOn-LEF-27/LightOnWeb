@@ -79,7 +79,13 @@ export default function SessionList({ total }: { total: number | null }) {
             const values = items.map((i) => i.value)
             return (
               <fieldset key={key}>
-                <legend>{title}</legend>
+                <legend>
+                  <span>{title}</span>
+                  <span className="legend-actions">
+                    <button type="button" disabled={f[key] === null} aria-label={`${title} 전체 선택`} onClick={() => set({ [key]: null })}>전체 선택</button>
+                    <button type="button" disabled={f[key]?.length === 0} aria-label={`${title} 전체 해제`} onClick={() => set({ [key]: [] })}>전체 해제</button>
+                  </span>
+                </legend>
                 <div className="items">
                   {items.map((it) => (
                     <label key={it.value} title={it.value}>

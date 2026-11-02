@@ -102,6 +102,12 @@ describe('거르기', () => {
     expect(toggle(null, all, 'DEMO-1')).toEqual(['DEMO-2'])
     expect(toggle(['DEMO-2'], all, 'DEMO-1')).toBeNull()
   })
+  it('전체 해제 — 주소에 빈 값으로 남고 아무 세션도 안 고른다. 해제 뒤 하나만 켤 수 있다', () => {
+    const none = readFilters(writeFilters({ ...readFilters(new URLSearchParams()), car: [] }))
+    expect(none.car).toEqual([])
+    expect(applyFilters(rows, none)).toEqual([])
+    expect(toggle([], ['DEMO-1', 'DEMO-2'], 'DEMO-1')).toEqual(['DEMO-1'])
+  })
   it('거르기 항목과 세션 수', () => {
     expect(facet(rows, 'car')).toEqual([{ value: 'DEMO-1', n: 1 }, { value: 'DEMO-2', n: 2 }])
   })
