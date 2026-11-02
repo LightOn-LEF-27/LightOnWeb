@@ -404,7 +404,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
         <div className="analysis-center">
           {series.error && <div className="banner">그래프 값 불러오기 실패 — {series.error}</div>}
           <Plots axes={axes} channels={channelMap} traces={traces} responses={series.data} deltas={deltas} x={x} quality={quality.data ?? []} colors={colors}
-                 theme={theme} group={group} onRemove={(i) => set({ axes: axes.filter((_, k) => k !== i) })} onAdd={(i, c) => set({ axes: addToAxis(axes, i, c) })} />
+                 theme={theme} group={group} onRemove={(i) => set({ axes: axes.filter((_, k) => k !== i) })} onRemoveChannel={(c) => set({ axes: toggleChannel(axes, c) })} onAdd={(i, c) => set({ axes: addToAxis(axes, i, c) })} />
         </div>
         <aside className={`side${wide ? ' wide' : ''}`} aria-label="트랙맵 · 커서 값 · g-g">
           {hasTrack && (

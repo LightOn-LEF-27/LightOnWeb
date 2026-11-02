@@ -1088,7 +1088,6 @@ ul.plain {
 }
 .axis-title {
   position: relative;
-  padding-right: 18px;
 }
 .axis-ch {
   display: flex;
@@ -1098,6 +1097,7 @@ ul.plain {
   white-space: nowrap;
 }
 .axis-name {
+  min-width: 0;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1111,9 +1111,8 @@ ul.plain {
   border-top-style: dashed;
 }
 .axis-x {
-  position: absolute;
-  top: -2px;
-  right: -2px;
+  margin-left: auto;
+  flex-shrink: 0;
   width: 18px;
   height: 18px;
   padding: 0;

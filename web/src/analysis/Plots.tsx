@@ -19,7 +19,8 @@ interface Props {
   colors: string[]
   theme: string
   group: ZoomGroup
-  onRemove: (axis: number) => void
+  onRemove: (axis: number) => void // 이 세션에 없는 채널만 남은 축
+  onRemoveChannel: (channel: string) => void
   onAdd: (axis: number, channel: string) => void
 }
 
@@ -144,11 +145,17 @@ function AxisRow(p: Props & { index: number; ids: string[]; width: number; heigh
               <span className="axis-name">{c.label}</span>
               <span className="muted">{c.unit}</span>
               {c.cautions.length > 0 && <span className="st-warn">▲</span>}
+              <button type="button" className="axis-x" aria-label={`${c.label} 빼기`} title={`${c.label} 빼기`}
+                      onClick={(e) => (e.stopPropagation(), p.onRemoveChannel(c.channel_id))}>
+                ×
+              </button>
             </div>
           ))}
-          <button type="button" className="axis-x" aria-label="이 축 빼기" title="이 축 빼기" onClick={() => p.onRemove(p.index)}>
-            ×
-          </button>
+          {chs.length === 0 && (
+            <button type="button" className="axis-x" aria-label="이 축 빼기" title="이 축 빼기" onClick={() => p.onRemove(p.index)}>
+              ×
+            </button>
+          )}
         </div>
         <div className="axis-read" ref={setReadout}>
           {chs.map((c, k) => (
