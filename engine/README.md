@@ -222,6 +222,37 @@ api.resolve_session(old_sid)                          # 없어진 sid → 이유
   세션 이름 · 드라이버 · Run Sheet 시각은 아직 hints 로 받지 않는다 — notes 에 손으로
 - 함수 이름 · 인자 · 돌려주는 모양은 사이트와의 계약이다. 바꿀 때는 계약 문서를 먼저 고치고 `api.CONTRACT_VERSION` 을 같이 올린다
 
+## 실시간 화면 (`lefdata.live`, 계약 §12)
+
+수신기가 받은 그대로 남긴 MQTT 메시지(한 줄 = `{"t_ns", "topic", "retain", "b64"}`)를 화면 상태로 바꾼다. 사이트 서버가 오늘 파일을 따라 읽으며 부른다.
+
+```python
+from lefdata import live
+L = live.Live(car="LEF-25evo", venue="yeonggwang", rules="<문턱 파일>.toml", data_root=...)
+L.feed(row)                     # 줄마다, 받은 순서대로
+L.state(now, since=None)        # 계약 §12-4 — 수신 상태 · 타일 · 인버터 · 위치 · 랩 · 경고 · 사건 · 그래프
+L.track()                       # 경기장 기준선 · 계측선
+```
+
+- 풀이는 `evo_can` 과 같은 식을 프레임 하나씩 한다 (`decode_frame`). 같은 값이 나오는지는 `tests/test_live.py` 가 무작위 프레임으로 맞대 본다
+- 장치 시각은 `/d` 의 "받은 시각 − 보낸 순간" 의 최솟값(최근 10분)으로 서버 시계에 옮긴다. `boot_epoch` 는 쓰지 않는다
+- 채널마다 낡음 기준이 다르다 (`CHANNELS`) — 25Evo 는 CAN 을 ID 마다 0.5 s 에 하나만 보내서, 한 ID 에 돌아가며 실리는 모터 컨트롤러 값은 15 s, Orion 스트림 슬롯은 120 s
+- 경고 기본값은 규정 · 장치 비트로 정할 수 있는 것만 (`DEFAULT_RULES`). 차의 설정값이 필요한 문턱은 문턱 파일에:
+
+```toml
+# [[rule]] 하나 = 경고 한 줄. 같은 id 는 기본값을 덮는다 (적은 칸만)
+[[rule]]
+id = "W-CELL"
+channel = "bms.cell_min_v"      # CHANNELS 의 ID
+op = "<="                       # "<=" 이하에서 · ">=" 이상에서
+warn = 3.3                      # 예시 값 — 실제 문턱은 차마다 정해 데이터 폴더의 파일에만 둔다
+danger = 3.1
+text = "셀 최저 전압"           # 화면 문구 앞부분 — 뒤에 "3.3 V 이하" 가 붙는다
+hold_s = 2.0                    # 이만큼 이어져야 켠다
+# info = true                   # 판정이 아니라 참고 (타일을 칠하지 않는다)
+# when_speed_kmh = 5.0          # 이 속도를 넘을 때만
+```
+
 ## 시험 주행 보고서 (`lefdata report`)
 
 하루치 시험 주행을 문서 한 장(HTML, `--pdf` 로 A4 PDF)으로 만든다 — 요약 · 시험 개요 · 랩 기록 · 차량 거동 · 배터리 · 구동계 · 데이터 품질 · 조치 사항.

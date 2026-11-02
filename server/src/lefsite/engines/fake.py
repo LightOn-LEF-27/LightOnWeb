@@ -18,7 +18,7 @@ from pathlib import Path
 from . import fake_series, fake_track
 from .base import EngineError, check_file_id, check_sid
 
-CONTRACT = "0.15"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
+CONTRACT = "0.16"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
 
 # 블록마다 화면 이름 · 장비 설명 · 채널 (이름, 라벨, 단위, 부호, 주기 Hz, 자릿수, 계산한 채널인가)
 BLOCKS: dict[str, dict] = {

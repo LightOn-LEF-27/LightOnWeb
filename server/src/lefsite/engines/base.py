@@ -16,6 +16,7 @@ FILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9_./-]{1,256}$
 # 계약 §8 의 오류 code → HTTP 상태
 HTTP_STATUS = {
     "unknown_session": 404, "unknown_channel": 404, "unknown_file": 404, "unknown_job": 404,
+    "live_off": 404, "no_venue": 404,
     "session_retired": 410,
     "bad_argument": 400, "frame_mismatch": 400,
     "unsupported_format": 415, "corrupt_file": 422, "no_session_match": 422,

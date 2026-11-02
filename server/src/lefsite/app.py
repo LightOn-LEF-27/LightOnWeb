@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import __version__, auth, config
+from . import __version__, auth, config, live
 from .auth import AuthError, User, current_user, require
 from .db import Db
 from .engines import Engine, EngineError, make_engine
@@ -130,7 +130,7 @@ def _web(app: FastAPI, dist: Path) -> None:
         return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
-def create_app(settings: config.Settings | None = None, engine: Engine | None = None) -> FastAPI:
+def create_app(settings: config.Settings | None = None, engine: Engine | None = None, start_live: bool = True) -> FastAPI:
     settings = settings or config.load()
     db = Db(settings.db_path)
     db.migrate()
@@ -183,7 +183,13 @@ def create_app(settings: config.Settings | None = None, engine: Engine | None = 
     hosts = {urlsplit(settings.base_url).hostname or "127.0.0.1"} | ({"127.0.0.1", "localhost"} if local else set())
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=sorted(hosts))   # 127.0.0.1 에서 DNS 다시 묶기 공격을 막는다
 
+    feed = live.make_feed(settings)
+    app.state.live = feed
+    if feed is not None and start_live:
+        feed.start()
+
     app.include_router(auth.router(settings, db))
+    app.include_router(live.router(feed))          # api_router 의 "없는 API" 보다 먼저
     app.include_router(api_router(engine, settings, db))
     _web(app, settings.web_dist)
     return app

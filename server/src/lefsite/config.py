@@ -46,6 +46,10 @@ class Settings:
     google_client_id: str = ""
     google_client_secret: str = ""
     web_dist: Path = REPO_DIR / "web" / "dist"
+    live_dir: Path | None = None            # 실시간 수신기가 쓰는 폴더 (계약 §12). 없으면 실시간 화면 꺼짐
+    live_car: str = "LEF-25evo"
+    live_venue: str = ""                    # 경기장 이름 (<데이터 폴더>/_venues/<이름>.json) — 위치 · 랩
+    live_rules: Path | None = None          # 차별 경고 문턱 파일 (TOML). 없으면 엔진 기본 문턱만
 
     @property
     def base_url(self) -> str:
@@ -94,6 +98,10 @@ def load(env: dict[str, str] | None = None, dotenv: bool = True, validate: bool 
         google_client_id=g("LEF_SITE_GOOGLE_CLIENT_ID"),
         google_client_secret=g("LEF_SITE_GOOGLE_CLIENT_SECRET"),
         web_dist=_path(g("LEF_SITE_WEB_DIST")) or REPO_DIR / "web" / "dist",
+        live_dir=_path(g("LEF_SITE_LIVE_DIR")),
+        live_car=g("LEF_SITE_LIVE_CAR", "LEF-25evo"),
+        live_venue=g("LEF_SITE_LIVE_VENUE"),
+        live_rules=_path(g("LEF_SITE_LIVE_RULES")),
     )
     if validate:
         check(s)

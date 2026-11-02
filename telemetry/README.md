@@ -55,6 +55,29 @@ journalctl -u lef-receiver -f
 
 - `retain` 이 참인 메시지는 지금 온 값이 아니라 브로커에 남아 있던 값입니다. 장치가 꺼졌음을 알리는 last will 도 여기에 해당합니다
 
+## 재생 (`replay.py`)
+
+수신기와 같은 모양의 줄을 **지금 시각으로** 수신 폴더에 써 넣는다. 차 없이 실시간 화면을 만들고 연습할 때 쓴다 (계약 §12-7). 줄마다 `"replay": true` 가 붙어 화면에 "재생 중" 이 뜬다. 브로커에는 붙지 않는다.
+
+```
+python replay.py --dir <수신 폴더> --sd <Monolith .log> [--start 600] [--duration 300] [--speed 2] [--drop 20:34]
+python replay.py --dir <수신 폴더> --jsonl <받은 기록 .jsonl>
+```
+
+- `--sd` 는 SD 의 전체 기록에 펌웨어가 서버로 보낼 때의 규칙(보내기 주기마다 `/d` 묶음, CAN 은 ID 마다 0.5 s 에 하나, 128 개씩)을 그대로 돌린다
+- `--drop A:B` 는 재생 시작부터 A ~ B 초의 메시지를 보내지 않는다 (끊김 연습)
+- `--jsonl` 은 장치 설정 토픽(`d/cfg`)을 건너뛴다 — 비밀번호가 평문으로 실린다
+
+내 PC 에서 화면까지 띄우기:
+
+```
+# 1. 사이트 서버 (server/ 에서)
+LEF_SITE_ENGINE=real LEF_SITE_LIVE_DIR=<빈 폴더> LEF_SITE_LIVE_VENUE=yeonggwang python -m lefsite
+# 2. 재생 (telemetry/ 에서, 엔진 가상환경)
+python replay.py --dir <같은 폴더> --sd <SD 로그> --start 600
+# 3. 브라우저 /live (화면), 또는 GET /api/live/state
+```
+
 ## 테스트
 
 ```
