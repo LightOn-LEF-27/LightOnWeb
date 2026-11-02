@@ -18,7 +18,7 @@ from pathlib import Path
 from . import fake_series, fake_track
 from .base import EngineError, check_file_id, check_sid
 
-CONTRACT = "0.12"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
+CONTRACT = "0.15"  # 이 가짜가 따르는 계약 버전 (분석엔진_인터페이스.md)
 
 # 블록마다 화면 이름 · 장비 설명 · 채널 (이름, 라벨, 단위, 부호, 주기 Hz, 자릿수, 계산한 채널인가)
 BLOCKS: dict[str, dict] = {
@@ -159,9 +159,9 @@ SESSIONS: list[FakeSession] = [
     FakeSession("DEMO-2_2026-11-14_S2", E_TRACKDAY, "연습", "트랙데이 오후", "B", "2026-11-14T13:20:00.000+09:00",
                 600.0, None, None, None, None, None, 1210, 196,
                 {"battery": "have", "motor": "have", "bms": "have", "gps": "seek", "imu": "none"}, split_by="time",
-                notes=("시각으로 나눈 세션 — 데모 BMS 시계 기준 13:20 ~ 13:30 (GPS 기록 없음)",),
+                notes=("일정표의 출발 · 도착으로 자른 세션 — 폰 시각 13:20 ~ 13:30 (GPS 기록 없음)",), run_no="2", purpose="오후 — 토크 맵 90 %",
                 quality=(("warn", "clock_mismatch", "battery", "팩 전류와 모터 전류의 파형이 1.6 s 어긋나 보인다 — 장비 시계 차를 다시 볼 것", None),
-                         ("info", "runsheet_unplanned", "battery", "그날 일정표에 없는 주행 — 일정표에 줄을 더하거나, 피트 이동이면 [[session]] skip",
+                         ("info", "runsheet_timed", "battery", "일정표의 출발 · 도착으로 자른 시각 구간 세션 — 장비 시계는 전원 켬으로 잰 값으로 옮겨 몇 초 틀릴 수 있다",
                           [[0.0, 600.0]]))),
 ]
 
