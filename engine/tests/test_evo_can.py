@@ -215,6 +215,19 @@ def test_race_bamocar_registers_and_scale():
     assert (x * sp[fast]).sum() / (sp[fast] ** 2).sum() == E.approx("bamocar.raw_per_kmh")
 
 
+@E.need
+def test_server_only_recordings_read_like_sd_logs():
+    """서버 DB 에서 되살린 로그 — 기존 변환기가 그대로 읽고, 트랙을 달린 레코딩은 랩이 나뉜다."""
+    ev = paths.DATA_ROOT / "LEF-25evo" / E["server_only.event"]
+    if not (ev / "derived" / "laps.csv").exists():
+        pytest.skip("서버에서 옮긴 이벤트 없음")
+    rec = pd.read_csv(ev / "normalized" / "recordings.csv", encoding="utf-8-sig")
+    assert len(rec) == E["server_only.recordings"] and rec["invalid"].sum() == 0
+    laps = pd.read_csv(ev / "derived" / "laps.csv", encoding="utf-8-sig")
+    assert laps["recording_id"].unique().tolist() == [E["server_only.track_recording"]] and len(laps) == E["server_only.laps"]
+    assert laps["distance_m"].between(*E["server_only.lap_distance_m"]).all()                   # 2 Hz 로도 랩 거리는 코스 길이 안쪽에 모인다
+
+
 @need_bam
 @E.need
 def test_race_overvoltage_only_in_the_two_kill_switch_recordings():

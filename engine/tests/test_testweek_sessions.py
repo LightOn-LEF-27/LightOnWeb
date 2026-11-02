@@ -158,7 +158,7 @@ def test_lef26_testweek_golden(s26):
 def test_evo_testweek_golden(sevo):
     from collections import Counter
     assert len(sevo) == E["evo.sessions"] and dict(Counter(s.discipline for s in sevo)) == E["evo.by_discipline"]
-    moved = [s.sid for s in sevo if "motor" in _blocks(s) and "옮겼다" in _blocks(s)["motor"].checks[0]]
+    moved = [s.sid for s in sevo if "motor" in _blocks(s) and "어긋나 있어 옮김" in _blocks(s)["motor"].checks[0]]
     assert moved == E["evo.clock_moved"]
     if (EVO / "derived" / "run_energy.csv").exists():
         assert sum("에너지미터" in _blocks(s)["battery"].device for s in sevo if "battery" in _blocks(s)) == E["evo.em_sessions"]

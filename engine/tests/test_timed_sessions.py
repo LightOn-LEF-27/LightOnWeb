@@ -156,7 +156,7 @@ def test_a_wrong_clock_offset_is_flagged(tmp_path):
     """에너지미터 시계 차를 3 s 틀리게 적으면 Orion 전류와 어긋나 경고가 붙는다 (STM32 는 같은 시계를 따르므로 그대로 겹친다)."""
     s = cb.build_event(write_event(tmp_path, em_offset=-EM_AHEAD_S + 3))[0]
     bms = _blocks(s)["bms"]
-    assert [f["code"] for f in bms.findings] == ["clock_mismatch"] and any("허용 2 s 를 넘는다" in c for c in bms.checks)
+    assert [f["code"] for f in bms.findings] == ["clock_mismatch"] and any("허용 2 s 초과" in c for c in bms.checks)
     assert not _blocks(s)["motor"].findings
     fixed = cb.build_event(write_event(tmp_path / "b", em_offset=-EM_AHEAD_S + 3,
                                        extra_notes=f"[clocks.energymeter.recordings]\nem1 = {-EM_AHEAD_S}\n"))[0]
@@ -185,7 +185,7 @@ def test_an_empty_window_needs_allow_empty(tmp_path):
     ev = write_event(tmp_path, extra_notes='\n[[timed_session]]\nstart = "2027-06-05 12:00:00"\nend = "2027-06-05 12:05:00"\n'
                                           'discipline = "연습 주행"\nallow_empty = true\n')
     empty = cb.build_event(ev)[-1]
-    assert empty.blocks == [] and any("기록이 남은 장비가 없다" in n for n in empty.notes)
+    assert empty.blocks == [] and any("기록이 남은 장비 없음" in n for n in empty.notes)
 
 
 @pytest.fixture()
@@ -375,6 +375,7 @@ def test_evo_race_sessions_keep_their_promises(sevo):
         assert "clock_mismatch" not in _codes(s), s.sid
     for s in (s for s in sevo if s.split_by == "gps"):
         assert "에너지미터" in _blocks(s)["battery"].device, s.sid
+        assert not {m.block for m in s.missing} & set(_blocks(s)), s.sid                         # 있는 데이터를 없다고도 적지 않는다
         if (EVO / "normalized" / s.blocks[0].series[0].source / "apps.parquet").exists():          # 차량 CAN (lefdata evo-can) — 가속페달 · Orion · 모터 컨트롤러
             assert {"pedal", "bms", "motor"} <= set(_blocks(s)) and "Orion" in _blocks(s)["bms"].device and "0x181" in _blocks(s)["motor"].device, s.sid
             assert {c.key for c in _blocks(s)["motor"].channels} == {"t_igbt_c", "t_motor_c", "vdc_v", "rpm", "enabled", "ready"}, s.sid

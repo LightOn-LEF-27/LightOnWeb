@@ -146,7 +146,7 @@ def test_a_row_without_gps_becomes_a_time_window_session(tmp_path):
     c = report["runsheet"]
     assert [m["run_no"] for m in c["timed_sessions"]] == ["1"] and c["power_on"][0]["recordings"] == {"2027-06-05_100303_em": 183.0}
     [left] = c["unmatched_rows"]
-    assert left["run_no"] == "2" and "기록이 남은 장비가 없다" in left["why"]
+    assert left["run_no"] == "2" and "기록이 남은 장비 없음" in left["why"]
     assert any("시각 구간 세션으로 만듦" in line for line in runsheet.check_text(c))
 
 
@@ -168,4 +168,4 @@ def test_a_row_overlapping_a_session_is_not_built_again(tmp_path):
     sessions = cb.build_event(event(tmp_path, csv), report)
     assert all(s.split_by == "gps" for s in sessions) and [s.run_no for s in sessions] == ["1", ""]
     [nine] = [u for u in report["runsheet"]["unmatched_rows"] if u["run_no"] == "9"]
-    assert "겹친다" in nine["why"] and report["runsheet"]["timed_sessions"] == []
+    assert "겹침" in nine["why"] and report["runsheet"]["timed_sessions"] == []

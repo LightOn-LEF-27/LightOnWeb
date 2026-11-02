@@ -347,8 +347,8 @@ def main(argv: list[str] | None = None) -> None:
         import json
 
         from . import catalog_build
-        events = args.event or sorted(p.parent for p in paths.DATA_ROOT.glob(f"*/*/{catalog_build.NOTES_NAME}"))
-        for ev in events:
+        event_dirs = args.event or sorted(p.parent for p in paths.DATA_ROOT.glob(f"*/*/{catalog_build.NOTES_NAME}"))
+        for ev in event_dirs:
             print(f"[catalog] {ev}")
             for row in catalog_build.write_event(ev):
                 print(f"  {row['sid']}  {row['title']} · {row['duration_min']:.1f} 분 · {row['laps']}랩 · "
@@ -363,15 +363,15 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "sessions":
         from . import catalog_build, session_ids, session_store
         import json
-        events = args.event or sorted(p.parent for p in paths.DATA_ROOT.glob(f"*/*/{catalog_build.NOTES_NAME}"))
+        event_dirs = args.event or sorted(p.parent for p in paths.DATA_ROOT.glob(f"*/*/{catalog_build.NOTES_NAME}"))
         root = args.root or session_store.DEFAULT_ROOT
-        for ev in events:
+        for ev in event_dirs:
             print(f"[sessions] {ev}")
             report = {}
             for row in session_store.build_event(ev, root, reframe=args.reframe, report=report):
                 have = [d["block"] for d in row["data_status"] if d["status"] in ("have", "warn")]
-                laps = f"{row['laps']}랩" if row["laps"] is not None else "랩 없음 (시각 구간)"
-                print(f"  {row['sid']}  {row['title']} · {row['duration_s'] / 60:.1f} 분 · {laps} · 데이터 {' · '.join(have)}")
+                lap_text = f"{row['laps']}랩" if row["laps"] is not None else "랩 없음 (시각 구간)"
+                print(f"  {row['sid']}  {row['title']} · {row['duration_s'] / 60:.1f} 분 · {lap_text} · 데이터 {' · '.join(have)}")
             for d in report.get("dropped_runs", []):
                 print(f"  뺀 주행 {d['recording']} {d['run']} — {d['why']}")
             if report.get("runsheet"):

@@ -273,8 +273,8 @@ def page_blocks(s: Session, figures: dict[str, list[Figure]], files_dir: Path | 
     seek = [m for m in s.missing if m.status == SEEK]
     if seek:
         out.append({"t": "h", "level": 2, "text": "찾는 데이터"})
-        out.append({"t": "p", "text": "아래 데이터는 우리에게 파일이 없음. 가지고 있거나 어디 있는지 아는 분은 DAQ 파트로 알려 주세요."})
-        out.append({"t": "table", "head": ["데이터", "없는 이유", "이런 분을 찾습니다"], "rows": [[m.data, m.reason, m.ask or "–"] for m in seek]})
+        out.append({"t": "p", "text": "아래 데이터는 우리에게 파일이 없음. 가지고 있거나 어디 있는지 아는 분은 DAQ 파트로 연락 부탁드립니다."})
+        out.append({"t": "table", "head": ["데이터", "없는 이유", "요청"], "rows": [[m.data, m.reason, m.ask or "–"] for m in seek]})
 
     out.append({"t": "h", "level": 2, "text": "이 페이지에 대해"})
     made = s.made

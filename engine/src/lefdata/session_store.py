@@ -148,23 +148,23 @@ def drive_block(s: Session, dt_s: float = 0.1) -> DataBlock | None:
         return None
     sh = drive.shares(st)
     brake = f"아니고 GPS 속도가 {-drive.BRAKE_G:g} g 보다 빠르게 줄면 제동, 나머지 타력"
-    stop = f"서 있을 때({drive.STOP_KMH:g} km/h 미만)는 값이 없다"
-    avg = "그래프에서 칸으로 줄인 값(평균)은 그 칸의 가속 비율 − 제동 비율이다"
+    stop = f"서 있을 때({drive.STOP_KMH:g} km/h 미만)는 값 없음"
+    avg = "그래프에서 칸으로 줄인 값(평균)은 그 칸의 가속 비율 − 제동 비율"
     checks = []
     if pedal is None:
         source = "배터리 전력"
         derivation = f"배터리 전력 > {drive.POWER_ON_KW:g} kW 이면 가속, {brake} (전력 {drive.POWER_SMOOTH_S:g} s · 속도 {drive.SPEED_SMOOTH_S:g} s 이동평균)"
-        cautions = ["추정 — 가속페달 · 브레이크 압력 신호가 아니다",
-                    "가속페달 · 브레이크를 같이 밟은 순간은 가속으로, 아주 가벼운 제동은 타력으로 나온다",
-                    "제동으로 바뀌는 순간은 GPS 속도 값이 늦은 만큼 늦게 나온다", stop, avg]
-        note = "가속페달 · 브레이크 압력이 기록되지 않아 전력 · 속도로 추정한 값이다. 센서가 붙으면 페달 신호로 바꾼다"
+        cautions = ["추정 — 가속페달 · 브레이크 압력 신호 아님",
+                    "가속페달 · 브레이크를 같이 밟은 순간은 가속으로, 아주 가벼운 제동은 타력으로 나옴",
+                    "제동으로 바뀌는 순간은 GPS 속도 값이 늦은 만큼 늦게 나옴", stop, avg]
+        note = "가속페달 · 브레이크 압력이 기록되지 않아 전력 · 속도로 추정한 값. 센서가 붙으면 페달 신호로 변경"
     else:
         source = f"가속페달({pedal.label})"
         derivation = f"가속페달 블록의 {pedal.label} > {on_at:g} {pedal.unit} 이면 가속, {brake} (속도 {drive.SPEED_SMOOTH_S:g} s 이동평균)"
-        cautions = ["제동은 추정 — 브레이크 압력 신호가 아니다 (가속은 가속페달 신호로 가른다)",
-                    "가속페달 · 브레이크를 같이 밟은 순간은 가속으로, 아주 가벼운 제동은 타력으로 나온다",
-                    "제동으로 바뀌는 순간은 GPS 속도 값이 늦은 만큼 늦게 나온다 (가속은 페달 신호라 제때 나온다)", stop, avg]
-        note = "브레이크 압력이 기록되지 않아 제동은 GPS 속도로 추정한 값이다"
+        cautions = ["제동은 추정 — 브레이크 압력 신호 아님 (가속은 가속페달 신호로 구분)",
+                    "가속페달 · 브레이크를 같이 밟은 순간은 가속으로, 아주 가벼운 제동은 타력으로 나옴",
+                    "제동으로 바뀌는 순간은 GPS 속도 값이 늦은 만큼 늦게 나옴 (가속은 페달 신호라 제때 나옴)", stop, avg]
+        note = "브레이크 압력이 기록되지 않아 제동은 GPS 속도로 추정한 값"
         if power is not None:                           # 가속페달이 없는 세션에서 쓰는 전력판이 이 세션에서 얼마나 맞나
             tp, sp = drive.estimate(power.t_s, power.v, speed.t_s, speed.v, dt_s)
             same, n = drive.agreement(t, st, tp, sp, dt_s)
@@ -172,7 +172,7 @@ def drive_block(s: Session, dt_s: float = 0.1) -> DataBlock | None:
                 shp = drive.shares(sp)
                 checks.append(f"배터리 전력(> {drive.POWER_ON_KW:g} kW)으로만 가른 추정과 같은 순간 같은 상태 {same * 100:.0f} % — "
                               f"전력판은 가속 {shp[1] * 100:.0f} % · 타력 {shp[0] * 100:.0f} % · 제동 {shp[-1] * 100:.0f} % "
-                              f"(가속페달이 없는 세션은 전력판을 쓴다)")
+                              f"(가속페달이 없는 세션은 전력판 사용)")
     ch = Channel("state_est", "주행 상태 (추정)", "", t, st, sign="+1 가속 · 0 타력 · −1 제동", derived=True,
                  derivation=derivation, cautions=cautions, digits=0, levels=[dict(lv) for lv in drive.LEVELS])
     return DataBlock("drive", "주행 상태 (추정)", WARN, f"엔진 계산 — {source} + GPS 속도 변화율 · {1 / dt_s:g} Hz",

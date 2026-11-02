@@ -62,7 +62,7 @@ def in_range(values, lo: float, hi: float, name: str, unit: str = "",
     v = np.asarray(values, dtype=float)
     v = v[np.isfinite(v)]
     if not len(v):
-        return Finding(f"range:{name}", WARN, "값이 없다")
+        return Finding(f"range:{name}", WARN, "값 없음")
     bad = int(((v < lo) | (v > hi)).sum())
     ratio = bad / len(v)
     level = OK if ratio <= max_bad_ratio else (WARN if ratio < 0.01 else ERROR)
@@ -82,7 +82,7 @@ def is_constant(values, name: str) -> Finding:
     v = np.asarray(values, dtype=float)
     v = v[np.isfinite(v)]
     if not len(v):
-        return Finding(f"constant:{name}", WARN, "값이 없다")
+        return Finding(f"constant:{name}", WARN, "값 없음")
     uniq = np.unique(v)
     if len(uniq) == 1:
         return Finding(f"constant:{name}", ERROR,
@@ -108,7 +108,7 @@ def monotonic_time(t_ms, name: str = "t", tol_ms: float = 0.0) -> Finding:
     """
     t = np.asarray(t_ms, dtype=float)
     if len(t) < 2:
-        return Finding(f"time:{name}", WARN, "표본이 너무 적다")
+        return Finding(f"time:{name}", WARN, "표본 너무 적음")
     d = np.diff(t)
     back = d[d < 0]
     if not len(back):
@@ -116,7 +116,7 @@ def monotonic_time(t_ms, name: str = "t", tol_ms: float = 0.0) -> Finding:
     worst = float(back.min())
     level = WARN if abs(worst) <= tol_ms else ERROR
     return Finding(f"time:{name}", level,
-                   f"{len(back):,}번 뒤로 감았다 (최대 {worst:.0f} ms)",
+                   f"{len(back):,}번 뒤로 감음 (최대 {worst:.0f} ms)",
                    float(len(back)), {"worst_ms": worst})
 
 
@@ -127,7 +127,7 @@ def gaps(t_s, max_gap_s: float, name: str = "t") -> Finding:
     """
     t = np.sort(np.asarray(t_s, dtype=float))
     if len(t) < 2:
-        return Finding(f"gap:{name}", WARN, "표본이 너무 적다")
+        return Finding(f"gap:{name}", WARN, "표본 너무 적음")
     d = np.diff(t)
     big = d[d > max_gap_s]
     if not len(big):
@@ -146,7 +146,7 @@ def sample_rate(t_s, expect_hz: float | None = None, tol: float = 0.3,
     """
     t = np.asarray(t_s, dtype=float)
     if len(t) < 2:
-        return Finding(name, WARN, "표본이 너무 적다")
+        return Finding(name, WARN, "표본 너무 적음")
     span = t.max() - t.min()
     hz = len(t) / span if span > 0 else float("nan")
     if expect_hz is None:
@@ -164,7 +164,7 @@ def no_overlap(intervals: list[tuple], name: str = "recordings") -> Finding:
     iv = sorted((a, b) for a, b in intervals if a is not None and b is not None)
     bad = [(iv[i], iv[i + 1]) for i in range(len(iv) - 1) if iv[i][1] > iv[i + 1][0]]
     return Finding(f"overlap:{name}", OK if not bad else ERROR,
-                   f"{len(iv)}개 중 겹침 없음" if not bad else f"{len(bad)}쌍이 겹친다",
+                   f"{len(iv)}개 중 겹침 없음" if not bad else f"{len(bad)}쌍 겹침",
                    float(len(bad)))
 
 
@@ -199,7 +199,7 @@ def cross_check(a, b, name_a: str, name_b: str, tol: float = 0.1) -> Finding:
     x, y = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
     m = np.isfinite(x) & np.isfinite(y)
     if m.sum() < 10:
-        return Finding(f"cross:{name_a}~{name_b}", WARN, "대조할 표본이 부족하다")
+        return Finding(f"cross:{name_a}~{name_b}", WARN, "대조할 표본 부족")
     mx, my = float(np.median(np.abs(x[m]))), float(np.median(np.abs(y[m])))
     if my == 0:
         return Finding(f"cross:{name_a}~{name_b}", WARN, f"{name_b} 가 0 이라 비교 불가")
@@ -221,7 +221,7 @@ def duplicate_rate(df, subset=None, max_ratio: float = 0.2) -> Finding:
     """
     d = df if subset is None else df[list(subset)]
     if len(d) < 2:
-        return Finding("duplicate", WARN, "표본이 너무 적다")
+        return Finding("duplicate", WARN, "표본 너무 적음")
     same = int((d.iloc[1:].to_numpy() == d.iloc[:-1].to_numpy()).all(axis=1).sum())
     ratio = same / (len(d) - 1)
     return Finding("duplicate", OK if ratio <= max_ratio else WARN,

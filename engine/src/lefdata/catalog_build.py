@@ -408,7 +408,7 @@ def _battery_block(r: _Run, al: em_laps.Alignment, run_e: pd.Series, lap_e: pd.D
                       derivation="전압 × 전류의 500 ms 이동평균 (대회 출력 한도 판정과 같은 방식)", source=rec, digits=3)]
     hole_at = [[round(float(ts[i]), 3), round(float(ts[i + 1]), 3)] for i in np.flatnonzero(step > 2 * np.median(step))]   # 맞닿은 틈도 따로 (사이에 표본 하나가 있다)
     findings = [{"level": "warn", "code": "em_dropped_samples", "t_ranges": hole_at,
-                 "message": f"기록 간격의 두 배 넘게 빈 틈 {len(hole_at)}곳 · 합계 {holes:.1f} s — 그 사이에는 값이 없다 (확대하면 그래프가 끊긴다)"}] if hole_at else []
+                 "message": f"기록 간격의 두 배 넘게 빈 틈 {len(hole_at)}곳 · 합계 {holes:.1f} s — 그 사이 값 없음 (확대하면 그래프 끊김)"}] if hole_at else []
     return DataBlock(
         "battery", "배터리 전압 · 전류", HAVE, f"{meta['source']['logger']} · {1000 / meta['time']['median_dt_ms']:.0f} Hz",
         [f"표본 {int(m.sum()):,}개", f"방전 {run_e['discharge_wh']:,.0f} Wh · 배터리로 돌아온 양 {run_e['regen_wh']:,.0f} Wh · 순 {run_e['net_wh']:,.0f} Wh",
@@ -430,7 +430,7 @@ def _battery_block(r: _Run, al: em_laps.Alignment, run_e: pd.Series, lap_e: pd.D
         checks=[f"미터 전류를 같은 레코딩의 Orion 팩 전류(CAN 0x447 — GPS 로거가 받은 것)에 맞춤 — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞, "
                 f"시계 속도 {fit['f']:.5f} (레코딩 앞 · 뒤 절반에서 따로 잼 — 두 쪽 중 낮은 상관 {fit['corr_median']:.4f})" if fit.get("method", "wave") == "can_current" else
                 f"미터 시계를 같은 전원 스위치로 켜지고 꺼진 시각에 맞춤 (lefdata clocks) — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞. "
-                "주행이 짧아 전력 파형으로 맞출 창이 모자랐다" if fit.get("method", "wave") == "power_cycle" else
+                "주행이 짧아 전력 파형으로 맞출 창 부족" if fit.get("method", "wave") == "power_cycle" else
                 f"미터에는 GPS 가 없어 전력 파형으로 시계를 맞춤 — 미터 시계가 GPS 보다 {fit['em_minus_gps_s']:.2f} s 앞, "
                 f"30 초 창 {int(fit['inliers'])} / {int(fit['windows'])}개가 한 직선 위 (잔차 {fit['rms_s']:.2f} s)",
                 f"랩 하나씩 따로 다시 대 본 어긋남 {lag.min():+.2f} ~ {lag.max():+.2f} s" if lag.notna().any() else
@@ -553,7 +553,7 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
     where = r.where("normalized/<로거 레코딩>/")
     code = [CodeRef("catalog", CODE_PAGES["catalog"]["title"], "로거 시각 → 세션 시간, 세션 구간만")]
     raw = [FileRef("로거 통합본 CSV (그날 전체, 용량이 커서 있는 곳만)", "raw_merged/<날짜>_merged.csv", where=r.notes.get("event", {}).get("raw_where", "DAQ 파트 보관"))]
-    sparse = "CAN 신호는 띄엄띄엄 들어와 있다 — 같은 값이 다시 찍힌 표본은 뺐고, 최댓값은 '기록된 것 중' 이다 (실제 순간 최대는 더 클 수 있다)"
+    sparse = "CAN 신호가 띄엄띄엄 들어옴 — 같은 값이 다시 찍힌 표본은 제외, 최댓값은 '기록된 것 중' 값 (실제 순간 최대는 더 클 수 있음)"
     findings = [{"level": "warn", "code": "logger_not_recording", "t_ranges": gaps,
                  "message": f"로거가 기록하지 않은 구간 {len(gaps)}곳 · 합계 {sum(b - a for a, b in gaps):.0f} s (2 s 넘게 빈 곳)"}] if gaps else []
     blocks = []
@@ -563,7 +563,7 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
     series = []
     spec = (("n_act_pct", "rpm", "모터 회전수", "rpm", lambda v: v / 100 * lef26.N_MAX_RPM, "전진할 때 − (컨트롤러가 보는 회전 방향 그대로)", 0,
              [f"컨트롤러 설정값 N-100 % = {lef26.N_MAX_RPM:.0f} rpm 기준으로 바꾼 값", sparse]),
-            ("iq_act_a", "iq_a", "토크 전류", "A", None, "", 1, ["모터 상전류(교류)의 토크 성분 — 배터리 전류가 아니다", sparse]),
+            ("iq_act_a", "iq_a", "토크 전류", "A", None, "", 1, ["모터 상전류(교류)의 토크 성분 — 배터리 전류 아님", sparse]),
             ("iq_cmd_a", "iq_cmd_a", "토크 전류 지령", "A", None, "", 1, [sparse]),
             ("vdc_v", "vdc_v", "DC 버스 전압", "V", None, "", 1, [sparse]),
             ("t_igbt_c", "inverter_c", "인버터(IGBT) 온도", "°C", None, "", 1, ["NTC 값을 컨트롤러 제조사 표로 바꾼 값", sparse]),
@@ -608,8 +608,8 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
                                 raw=raw, code=code, outputs=[FileRef("변환된 표 (로거 레코딩 전체)", "bms.parquet", where=where)],
                                 channels=series, time_keys=[c.key for c in series if c.key in ("cell_min_v", "soc_pct")],
                                 lap_columns=[LapColumn("cell_v_min", "셀 최저 전압", "V", 3)], checks=[clock],
-                                cautions=["BMS 프레임은 체크섬이 약해, 셀 전압이 2.0 ~ 4.3 V 밖인 줄과 valid 가 아닌 줄은 뺐다",
-                                          "팩 전류는 기록되지 않았다 (BMS 가 보내는 프레임이 한 종류뿐)"], series=series))
+                                cautions=["BMS 프레임은 체크섬이 약해, 셀 전압이 2.0 ~ 4.3 V 밖인 줄과 valid 가 아닌 줄은 제외",
+                                          "팩 전류 기록 없음 (BMS 가 보내는 프레임이 한 종류뿐)"], series=series))
 
     # 셀 온도 (Orion 써미스터 확장 모듈)
     has = lambda col: (lambda df: df[col].notna())                                   # noqa: E731
@@ -627,17 +627,17 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
 
     # 서스펜션 (리어 리니어 센서)
     lin = {k: _gather(r, logs, _column("lin", k))[:2] for k in ("lin_rl_mm", "lin_rr_mm")}
-    series = [Channel(k.replace("lin_", ""), label, "mm", *lin[k], sign="압축하면 줄어든다", source=", ".join(used), digits=1)
+    series = [Channel(k.replace("lin_", ""), label, "mm", *lin[k], sign="압축하면 줄어듦", source=", ".join(used), digits=1)
               for k, label in (("lin_rl_mm", "리어 왼쪽 스트로크"), ("lin_rr_mm", "리어 오른쪽 스트로크")) if len(lin[k][0])]
     if series:
         clip = {c.key: float(np.mean(c.v >= lef26_laps.LIN_CLIP_MM)) for c in series}
-        warn = [f"{'왼쪽' if k == 'rl_mm' else '오른쪽'} 표본의 {s * 100:.0f} % 가 센서 상한(75 mm)에 붙어 있다 — 그 구간은 실제 위치를 모른다"
+        warn = [f"{'왼쪽' if k == 'rl_mm' else '오른쪽'} 표본의 {s * 100:.0f} % 가 센서 상한(75 mm)에 붙어 있음 — 그 구간은 실제 위치 모름"
                 for k, s in clip.items() if s > 0.05]
         blocks.append(DataBlock("suspension", "서스펜션 (리어)", WARN if warn else HAVE, "LEF-26 차량 로거 — 리니어 센서 RL · RR (0 ~ 75 mm)",
                                 [f"{c.label} {np.nanpercentile(c.v, 1):.1f} ~ {np.nanpercentile(c.v, 99):.1f} mm (1 ~ 99 %)" for c in series],
                                 raw=raw, code=code, outputs=[FileRef("변환된 표 (로거 레코딩 전체)", "lin.parquet", where=where)],
                                 channels=series, time_keys=[c.key for c in series], trace_keys=[c.key for c in series], checks=[clock],
-                                cautions=warn + ["오프셋을 빼지 않은 원래 거리 (서 있을 때의 값이 0 이 아니다)"], series=series))
+                                cautions=warn + ["오프셋을 빼지 않은 원래 거리 (서 있을 때의 값이 0 이 아님)"], series=series))
     return blocks
 
 
@@ -669,7 +669,7 @@ def _logger_imu_block(r, logs: list, how: str) -> DataBlock | None:
     if not (np.isfinite(long_g).any() and np.isfinite(lat_g).any()):
         return None
     src = ", ".join(used)
-    tilt = "차량 로거 보드의 가속도계 값. 보드가 기운 만큼(장착 · 롤 · 피치) 중력이 섞임 — 영점을 빼지 않았다"
+    tilt = "차량 로거 보드의 가속도계 값. 보드가 기운 만큼(장착 · 롤 · 피치) 중력이 섞임 — 영점을 빼지 않음"
     series = [Channel("long_g", "앞뒤 가속도", "g", *got["long_g"][:2], sign="가속 +, 제동 −", cautions=[tilt], source=src, digits=4),
               Channel("lat_g", "좌우 가속도", "g", *got["lat_g"][:2], sign="좌선회 +, 우선회 −", derived=True,
                       derivation="로거 X 축(우회전 +)의 부호를 뒤집음", cautions=[tilt], source=src, digits=4)]
@@ -802,11 +802,11 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
             shift = lambda d: d.assign(t_s=d["t_s"] + lag).pipe(lambda d: d[(d["t_s"] >= 0) & (d["t_s"] <= dur)])   # noqa: E731
             bms = shift(bms)
             mot = shift(mot) if mot is not None else None
-            clock += f" · 이 세션 안에서 {how} 을 다시 대 보니 {lag:+.1f} s 어긋나 있어 옮겼다 (상관 {c0:.2f} → {c1:.2f}){also}"
+            clock += f" · 이 세션 안에서 {how} 을 다시 대 보니 {lag:+.1f} s 어긋나 있어 옮김 (상관 {c0:.2f} → {c1:.2f}){also}"
         elif np.isfinite(c1):
             clock += f" · 이 세션 안에서 {how} 을 다시 대 본 어긋남 {lag:+.1f} s (상관 {c1:.2f}) — 옮기지 않음{also}"
             if abs(lag) >= EM_REFINE_MIN_S:
-                unsure = (f"백업 로거 시계가 {ref_name}와 {lag:+.1f} s 어긋났을 수 있다 — 다시 대 본 상관이 {c1:.2f} 라 옮길 만큼 확실하지 않아 그대로 둠. "
+                unsure = (f"백업 로거 시계가 {ref_name}와 {lag:+.1f} s 어긋났을 수 있음 — 다시 대 본 상관이 {c1:.2f} 라 옮길 만큼 확실하지 않아 그대로 둠. "
                           "순간 값의 시각(가속 출발 · 제동 시작)은 믿지 말 것")
     elif by_speed:
         lag, c0, c1 = best_lag(mot["t_s"].to_numpy(), np.abs(mot["rpm"].to_numpy(float)), r.ts, r.gps["speed_kmh"].to_numpy(float))
@@ -815,17 +815,17 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
             shift = lambda d: d.assign(t_s=d["t_s"] + lag).pipe(lambda d: d[(d["t_s"] >= 0) & (d["t_s"] <= dur)])   # noqa: E731
             bms = shift(bms) if bms is not None else None
             mot = shift(mot)
-            clock += (f" · 이 세션 안에서 회전수 ↔ GPS 속도를 다시 대 보니 {lag:+.1f} s 어긋나 있어 옮겼다 (상관 {c0:.2f} → {c1:.2f}). "
+            clock += (f" · 이 세션 안에서 회전수 ↔ GPS 속도를 다시 대 보니 {lag:+.1f} s 어긋나 있어 옮김 (상관 {c0:.2f} → {c1:.2f}). "
                       "레코딩 전체를 한 직선으로 맞춘 시계가 이 구간에서 벗어난 것")
         elif np.isfinite(c1):
             clock += f" · 이 세션 안에서 다시 대 본 어긋남 {lag:+.1f} s (상관 {c1:.2f}) — 옮기지 않음"
             if abs(lag) >= REFINE_MIN_S:
-                unsure = (f"로거 시계가 GPS 와 {lag:+.1f} s 어긋났을 수 있다 — 세션 안에서 다시 대 본 상관이 {c1:.2f} 라 옮길 만큼 확실하지 않아 그대로 둠. "
+                unsure = (f"로거 시계가 GPS 와 {lag:+.1f} s 어긋났을 수 있음 — 세션 안에서 다시 대 본 상관이 {c1:.2f} 라 옮길 만큼 확실하지 않아 그대로 둠. "
                           "순간 값의 시각(가속 출발 · 제동 시작)은 믿지 말 것")
     raw = [FileRef("STM32 백업 로거 CSV", f"raw_stm32/ ({len(recs)}개 파일)", where=r.notes.get("event", {}).get("raw_where", "DAQ 파트 보관"))]
     where = r.where("normalized/<STM32 레코딩>/")
     code = [CodeRef("catalog", CODE_PAGES["catalog"]["title"], "로거 시각 → 세션 시간, 세션 구간만")]
-    slow = "행이 초당 2 ~ 10 개라 짧은 변화는 뭉개진다. 로거 시계는 2 % 가까이 느려 변환기가 바로잡은 값"
+    slow = "행이 초당 2 ~ 10 개라 짧은 변화는 뭉개짐. 로거 시계는 2 % 가까이 느려 변환기가 바로잡은 값"
     extra = [unsure] if unsure else []
     findings = [{"level": "warn", "code": "logger_clock_uncertain", "t_ranges": [], "message": unsure}] if unsure else []
     blocks = []
@@ -850,7 +850,7 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
                                     raw=raw, code=code, outputs=[FileRef("변환된 표 (레코딩 전체)", "bms.parquet", note="pack_v · current_a · power_kw", where=where)],
                                     channels=series, time_keys=["current_a", "voltage_v", "power_kw"], trace_keys=["current_a", "power_kw"], map_key="power_kw",
                                     lap_columns=[LapColumn("net_wh", "순 에너지", "Wh", 0, chart=True), LapColumn("p_mean_kw", "평균 전력", "kW", 1)],
-                                    checks=[clock], cautions=extra + ["주최측 에너지미터보다 거칠다 (해상도 · 표본 수). 에너지미터 기록이 있는 날은 그쪽이 정확하다"],
+                                    checks=[clock], cautions=extra + ["주최측 에너지미터보다 거침 (해상도 · 표본 수). 에너지미터 기록이 있는 날은 그쪽이 더 정확"],
                                     series=series, findings=findings))
         cell = [Channel(k, label, unit, t, bms[k].to_numpy(), cautions=[slow], source=src, digits=d)
                 for k, label, unit, d in (("cell_min_v", "셀 최저 전압", "V", 4), ("temp_max_c", "셀 최고 온도", "°C", 0),
@@ -867,13 +867,13 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
                                     [f"{c.label} {np.nanmin(c.v):.4g} ~ {np.nanmax(c.v):.4g} {c.unit}" for c in cell],
                                     raw=raw, code=code, outputs=[FileRef("변환된 표 (레코딩 전체)", "bms.parquet", where=where)],
                                     channels=cell, time_keys=[c.key for c in cell if c.key in ("temp_max_c", "soc_pct")], lap_columns=cols,
-                                    checks=[clock], cautions=extra + ["BMS 가 보고한 셀 최고 · 최저 (셀 하나하나의 값은 없다)"], series=cell))
+                                    checks=[clock], cautions=extra + ["BMS 가 보고한 셀 최고 · 최저 (셀 하나하나의 값은 없음)"], series=cell))
     if mot is not None and "motor" not in skip:
         t = mot["t_s"].to_numpy()
         series = [Channel(k, label, unit, t, mot[k].to_numpy(), cautions=extra + [slow], source=src, digits=d)
-                  for k, label, unit, d, extra in (("t_igbt_c", "인버터(IGBT) 온도", "°C", 1, ["NTC 값을 컨트롤러 제조사 표로 바꾼 값 (새 형식 로그만 있다)"]),
+                  for k, label, unit, d, extra in (("t_igbt_c", "인버터(IGBT) 온도", "°C", 1, ["NTC 값을 컨트롤러 제조사 표로 바꾼 값 (새 형식 로그에만 있음)"]),
                                                    ("t_motor_c", "모터 온도", "°C", 1, []), ("vdc_v", "DC 버스 전압", "V", 1, []),
-                                                   ("rpm", "회전수 (로거 환산)", "rpm", 0, ["로거가 상수 기준으로 환산한 값 — 실제 모터 rpm · 감속비를 말하지 못한다"]))
+                                                   ("rpm", "회전수 (로거 환산)", "rpm", 0, ["로거가 상수 기준으로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음"]))
                   if k in mot and mot[k].notna().any()]
         if series:
             cols = []
@@ -950,7 +950,7 @@ def _pedal_block(r: _Run, apps: pd.DataFrame, ref: dict | None) -> DataBlock:
         checks.append(f"가속페달 ↔ 배터리 전력 상관 {_corr_at(t, pedal, ref['t'], ref['kw']):.2f} (같은 순간 — 서로 다른 장비)")
     bad = status != 0
     findings = [{"level": "warn", "code": "apps_fault", "t_ranges": _runs(t, bad, min_s=0.0),
-                 "message": f"APPS 보드가 고장을 알렸다: {', '.join(names)}"}] if names else []
+                 "message": f"APPS 보드 고장 알림: {', '.join(names)}"}] if names else []
     return DataBlock("pedal", "가속페달 (APPS)", WARN if names else HAVE, "25Evo APPS 보드 — CAN 0x7A0 ~ 0x7A2 (Monolith 가 받은 것) · 20 Hz", facts,
                      code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "CAN 프레임 → 가속페달 · 토크 명령, 세션 구간만")],
                      outputs=[FileRef("변환된 표 (레코딩 전체)", "apps.parquet", note="pedal_pct · apps1/2_raw · apps1/2_pct · torque_cmd_raw · flags · status",
@@ -1001,11 +1001,11 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
               for k, label, unit, sign, how, extra, dg, levels in (
                   ("t_igbt_c", "인버터(IGBT) 온도", "°C", "", "", ["NTC 값을 컨트롤러 제조사 표로 바꾼 값"], 1, []),
                   ("t_motor_c", "모터 온도", "°C", "", "", ["KTY81 값을 컨트롤러 제조사 표로 바꾼 값"], 1, []),
-                  ("vdc_v", "DC 버스 전압", "V", "", "", ["컨트롤러 안쪽(DC 링크) 값 — 전원 차단 때는 배터리와 다를 수 있다. 짧은 순간의 최고값은 표본 사이에 있을 수 있다"], 1, []),
+                  ("vdc_v", "DC 버스 전압", "V", "", "", ["컨트롤러 안쪽(DC 링크) 값 — 전원 차단 때는 배터리와 다를 수 있음. 짧은 순간의 최고값은 표본 사이에 있을 수 있음"], 1, []),
                   ("rpm", "회전수 (로거 환산)", "rpm", "전진할 때 −", f"컨트롤러 값 ÷ {evo_can.RPM_FULL_SCALE} × {evo_can.LOGGER_N100_RPM:.0f} (STM32 백업 로거와 같은 기준)",
-                   ["로거와 같은 상수로 환산한 값 — 실제 모터 rpm · 감속비를 말하지 못한다"], 0, []),
+                   ["로거와 같은 상수로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음"], 0, []),
                   ("enabled", "구동 허용 (Ena)", "", "", "", ["상태 레지스터의 Ena 비트"], 0, on_off),
-                  ("ready", "운전 준비 (Rdy)", "", "", "", ["상태 레지스터의 Rdy 비트 — 오류가 나면 꺼진다"], 0, on_off))
+                  ("ready", "운전 준비 (Rdy)", "", "", "", ["상태 레지스터의 Rdy 비트 — 오류가 나면 꺼짐"], 0, on_off))
               if k in sig]
     keys = {c.key for c in series}
     if not keys & {"t_igbt_c", "t_motor_c", "vdc_v", "rpm"}:
@@ -1027,8 +1027,8 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
     if "rpm" in keys:
         lag, _, c = best_lag(sig["rpm"][0], np.abs(sig["rpm"][1]), r.ts, r.gps["speed_kmh"].to_numpy(float))
         if np.isfinite(c):
-            checks.append(f"회전수 ↔ GPS 속도 — GPS 를 {lag:+.1f} s 옮길 때 가장 잘 맞는다 (+ = GPS 가 늦다, 상관 {c:.2f}). "
-                          "같은 로거 시계다 — 출발 때 바퀴 헛돎 · GPS 속도 값의 지연 · GPS 빈 구간이 섞인 값이라 시계 차로 읽지 않는다")
+            checks.append(f"회전수 ↔ GPS 속도 — GPS 를 {lag:+.1f} s 옮길 때 가장 잘 맞음 (+ = GPS 가 늦음, 상관 {c:.2f}). "
+                          "같은 로거 시계임 — 출발 때 바퀴 헛돎 · GPS 속도 값의 지연 · GPS 빈 구간이 섞인 값이라 시계 차로 읽으면 안 됨")
     if "vdc_v" in keys and oc is not None and len(oc):
         okc = oc[oc["checksum_ok"]]
         t, v = sig["vdc_v"]
@@ -1037,7 +1037,7 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
         if calm.sum() >= 30:
             checks.append(f"DC 버스 − Orion 팩 전압 {np.median(v[calm] - pack[calm]):+.1f} V (전류 3 A 미만인 순간의 가운데값)")
     findings = [{"level": "warn", "code": "inverter_fault", "t_ranges": _runs(te, bad != 0, min_s=0.0),
-                 "message": f"모터 컨트롤러가 오류를 냈다: {', '.join(errors)}"}] if errors else []
+                 "message": f"모터 컨트롤러 오류: {', '.join(errors)}"}] if errors else []
     return DataBlock("motor", "모터 · 인버터 (BAMOCAR)", WARN if errors else HAVE, "25Evo 모터 컨트롤러 — CAN 0x181 (Monolith 가 받은 것) · 레지스터마다 10 Hz", facts,
                      code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "CAN 프레임 → 모터 컨트롤러 값, 세션 구간만")],
                      outputs=[FileRef("변환된 표 (레코딩 전체)", "bamocar.parquet", note="t_rel_ms · t_abs · reg (레지스터 번호) · raw (원시값)", where=r.where(f"normalized/{r.rec}/"))],
@@ -1075,7 +1075,7 @@ def _can_battery_block(r: _Run, stream: pd.DataFrame, oc: pd.DataFrame | None) -
                                        where=r.where(f"normalized/{r.rec}/"))],
                       channels=series, time_keys=["current_a", "voltage_v", "power_kw"], trace_keys=["current_a", "power_kw"], map_key="power_kw",
                       lap_columns=[LapColumn("net_wh", "순 에너지", "Wh", 0, chart=True), LapColumn("p_mean_kw", "평균 전력", "kW", 1)],
-                      checks=checks, cautions=["0.1 A · 0.1 V 단위. 주최측 에너지미터가 있는 세션은 그쪽을 쓴다"] + list(r.extra("battery").get("cautions", [])),
+                      checks=checks, cautions=["0.1 A · 0.1 V 단위. 주최측 에너지미터가 있는 세션은 그쪽 사용"] + list(r.extra("battery").get("cautions", [])),
                       series=series)
     return block, {"net_wh": round(net), "i_max_a": round(float(np.nanmax(i)))}, {"t": t, "kw": kw}
 
@@ -1318,7 +1318,7 @@ def _em_window_block(w: _Window, parts: list[tuple[_Rec, float]], clock: str) ->
         cautions.insert(0, f"표본이 빠진 곳이 있음 — 기록 간격의 두 배 넘게 빈 틈이 합계 {holes:.1f} s (세션의 {100 * holes / dur:.1f} %). "
                            "에너지를 직접 적분할 때는 표본 개수가 아니라 시간 열(t_s)로 적분할 것")
     findings = [{"level": "warn", "code": "em_dropped_samples", "t_ranges": hole_at,
-                 "message": f"기록 간격의 두 배 넘게 빈 틈 {len(hole_at)}곳 · 합계 {holes:.1f} s — 그 사이에는 값이 없다 (확대하면 그래프가 끊긴다)"}] if hole_at else []
+                 "message": f"기록 간격의 두 배 넘게 빈 틈 {len(hole_at)}곳 · 합계 {holes:.1f} s — 그 사이 값 없음 (확대하면 그래프 끊김)"}] if hole_at else []
     series = [Channel("current_a", "배터리 전류", "A", ts, amp, sign="방전 +, 배터리로 돌아오면 −", source=srcs, digits=2),
               Channel("voltage_v", "팩 전압", "V", ts, volt, source=srcs, digits=2),
               Channel("power_kw", "전력", "kW", ts, kw, sign="방전 +", derived=True, derivation="전압 × 전류", source=srcs, digits=3),
@@ -1396,7 +1396,7 @@ def _orion_block(w: _Window, parts: list[tuple[_Rec, float]], clock: str) -> tup
         outputs=[FileRef("변환된 표 (레코딩 전체)", "bms.parquet", note="팩 전류 · 전압 · SOC · 셀 전압 · 온도 · DCL · 제한 표시",
                          where=w.where("normalized/<Orion 레코딩>/"))],
         channels=series, time_keys=[k for k in ("soc_pct", "temp_max_c", "cell_min_v") if k in keys], checks=[clock],
-        cautions=[every + ". 전류 · 전압은 그 사이의 평균이라 순간 값보다 작다", "켠 직후의 SOC 0 은 값이 아니라서 비웠다"]
+        cautions=[every + ". 전류 · 전압은 그 사이의 평균이라 순간 값보다 작음", "켠 직후의 SOC 0 은 값이 아니라서 비움"]
         + list(w.extra("bms").get("cautions", [])), series=series)
     ref = {"t": t, "amp": d["current_a"].to_numpy(float)} if "current_a" in d else None
     return block, ref
@@ -1433,9 +1433,9 @@ def _agree(t, v, t_ref, v_ref, device: str, what: str) -> tuple[str, dict | None
     text = f"{what}: 가장 잘 겹치는 어긋남 {lag:+.1f} s (상관 {c1:.2f})"
     if abs(lag) <= tol_s:
         return text + f" — 허용 {tol_s:g} s 안", None
-    return text + f" — 허용 {tol_s:g} s 를 넘는다", {
+    return text + f" — 허용 {tol_s:g} s 초과", {
         "level": "warn", "code": "clock_mismatch", "t_ranges": [],
-        "message": f"{what} — {lag:+.1f} s 어긋나 보인다. 장비 시계를 기준 시계로 옮기는 값이 틀렸을 수 있다 (순간 값의 시각을 믿지 말 것)"}
+        "message": f"{what} — {lag:+.1f} s 어긋나 보임. 장비 시계를 기준 시계로 옮기는 값이 틀렸을 수 있음 (순간 값의 시각을 믿지 말 것)"}
 
 
 def _add_check(b: DataBlock, said: tuple[str, dict | None]) -> None:
@@ -1499,7 +1499,7 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
         made += [imu] if imu is not None else []
         mixed = [x.rec for x, _ in part if x.meta.get("time", {}).get("clock", {}).get("mode") == "mixed"]
         for b in made if mixed else []:
-            b.cautions.insert(0, f"시계 속도를 바로잡지 못한 로거 레코딩이 섞여 있다 ({', '.join(mixed)}) — 그 부분의 시각은 몇 초씩 밀려 있을 수 있다")
+            b.cautions.insert(0, f"시계 속도를 바로잡지 못한 로거 레코딩이 섞여 있음 ({', '.join(mixed)}) — 그 부분의 시각은 몇 초씩 밀려 있을 수 있음")
         mot = next((b for b in made if b.key == "motor"), None)
         vdc = next((c for c in mot.series if c.key == "vdc_v"), None) if mot is not None else None
         if em_ref is not None and vdc is not None:
@@ -1587,7 +1587,7 @@ def _timed(event_dir: Path, notes: dict, made: dict, ctx: "_GpsCtx | None",
                 soft.append((e, f"만들지 못함 — {type(err).__name__}: {err}"))
                 continue
         if got_s is None:
-            soft.append((e, "그 시각에 기록이 남은 장비가 없다 (시계 차를 모르는 장비는 뺐다)"))
+            soft.append((e, "그 시각에 기록이 남은 장비 없음 (시계 차를 모르는 장비는 제외)"))
             continue
         out.append(got_s)
     return out, covered
@@ -1614,8 +1614,8 @@ def _timed_one(e: dict, event_dir: Path, notes: dict, made: dict, ctx, ev: dict,
         run_e, lap_e = _window_energy(ctx, x.rec, row, lp)
         start = pd.Timestamp(c0, unit="s", tz="UTC").tz_convert(TZ)
         end = start + pd.Timedelta(seconds=c1 - c0)
-        head = [f"시각으로 나눈 세션 — {clocks.label} 기준 {start:%H:%M:%S} ~ {end:%H:%M:%S}. 이 구간을 덮는 GPS 기록({x.rec})으로 랩 · 코스를 냈다"
-                + (f" (GPS 기록이 있는 동안으로 {(t1 - t0) - (c1 - c0):.0f} s 줄였다)" if (t1 - t0) - (c1 - c0) > 0.5 else "")]
+        head = [f"시각으로 나눈 세션 — {clocks.label} 기준 {start:%H:%M:%S} ~ {end:%H:%M:%S}. 이 구간을 덮는 GPS 기록({x.rec})으로 랩 · 코스 계산"
+                + (f" (GPS 기록이 있는 동안으로 {(t1 - t0) - (c1 - c0):.0f} s 줄임)" if (t1 - t0) - (c1 - c0) > 0.5 else "")]
         s = _gps_session(ctx, x.rec, row, lp, {**e, "run": runs}, run_e, lap_e, head=head, split_by="time")
         more, st = _window_blocks(_Window(event_dir, notes, c0, c1), recs, clocks, strict=False)     # 시각으로만 붙는 장비는 빈 자리에
         have = {b.key for b in s.blocks}
@@ -1637,9 +1637,9 @@ def _timed_one(e: dict, event_dir: Path, notes: dict, made: dict, ctx, ev: dict,
     gps = [x.rec for x in recs if x.device in GPS_DEVICES
            and x.t0 + (clocks.offset(x) if clocks.known(x) else 0.0) < t1 and x.t1 + (clocks.offset(x) if clocks.known(x) else 0.0) > t0]
     head = f"시각으로 나눈 세션 — {clocks.label} 기준 {start:%H:%M:%S} ~ {end:%H:%M:%S}. "
-    lines = [head + (f"이 시각의 GPS 기록({', '.join(gps)})이 구간을 덮지 않아(또는 시계 차 · 랩 분할이 없어) 랩 · 코스가 없다" if gps
-                     else "GPS 기록이 없어 랩 · 코스가 없다")]
-    lines += [] if blocks else ["이 시각에 기록이 남은 장비가 없다"]
+    lines = [head + (f"이 시각의 GPS 기록({', '.join(gps)})이 구간을 덮지 않아(또는 시계 차 · 랩 분할이 없어) 랩 · 코스 없음" if gps
+                     else "GPS 기록이 없어 랩 · 코스 없음")]
+    lines += [] if blocks else ["이 시각에 기록이 남은 장비 없음"]
     return Session(
         sid="", car=ev.get("car") or next((x.meta.get("car", "") for x in recs if x.meta.get("car")), ""), day=f"{start:%Y-%m-%d}",
         name=e.get("name", ""), start=start, duration_s=t1 - t0, event_kind=ev.get("kind", ""), event_title=ev.get("title", ""),
@@ -1683,7 +1683,7 @@ def _runsheet_timed(event_dir: Path, notes: dict, made: dict, ctx: "_GpsCtx | No
     for r in rows:
         a, b = r["out"].timestamp(), r["in"].timestamp()
         if any(a < y and x < b for x, y in have):
-            why[id(r)] = "다른 세션과 겹친다 — 그 세션이 이 주행이면 시각 · 종목을 확인"
+            why[id(r)] = "다른 세션과 겹침 — 그 세션이 이 주행이면 시각 · 종목을 확인"
             continue
         entries.append({"start": r["out"].isoformat(), "end": r["in"].isoformat(), "discipline": r["discipline"] or UNCLASSIFIED,
                         "driver": r["driver"], "_row": r})
@@ -1698,7 +1698,7 @@ def _runsheet_timed(event_dir: Path, notes: dict, made: dict, ctx: "_GpsCtx | No
         clocks = sorted({b.title for b in s.blocks})
         s.blocks[0].findings.append({"level": "info", "code": "runsheet_timed",
                                      "message": f"일정표 R{r['run_no'] or '?'} 의 출발 · 도착(폰 시각)으로 자른 세션 — 장비 시각을 폰 시각으로 옮긴 근거는 "
-                                                "각 블록의 '확인' (전원 켬으로 잰 값이면 몇 초 틀릴 수 있다)",
+                                                "각 블록의 '확인' (전원 켬으로 잰 값이면 몇 초 틀릴 수 있음)",
                                      "t_ranges": [[0.0, round(float(s.duration_s), 3)]]})
         check["timed_sessions"].append({**runsheet._row_text(r), "session_start": s.start.isoformat(timespec="seconds"),
                                         "blocks": [b.key for b in s.blocks], "titles": clocks})
@@ -1815,7 +1815,7 @@ def _gps_sessions(ctx: _GpsCtx, skip: set[tuple[str, int]] = frozenset(), report
             continue
         if key not in named:                                    # 이름을 붙이지 않은 주행 구간은 넣지 않는다
             if ctx.ev.get("sessions") != "auto":
-                dropped.append({"recording": key[0], "run": key[1], "why": f"이름을 적지 않음 ({NOTES_NAME} 에 sessions = \"auto\" 가 없다)"})
+                dropped.append({"recording": key[0], "run": key[1], "why": f"이름을 적지 않음 ({NOTES_NAME} 에 sessions = \"auto\" 없음)"})
             continue
         mine = ctx.laps[(ctx.laps["recording_id"] == key[0]) & (ctx.laps["run"] == key[1])]
         e = ctx.run_e[(ctx.run_e["recording_id"] == key[0]) & (ctx.run_e["run"] == key[1])] if ctx.run_e is not None else pd.DataFrame()
@@ -1866,14 +1866,14 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
     if info.get("unclassified"):                                # 랩 · 종목을 알아보지 못한 주행 — 사람이 정하게
         blocks[0].findings.append({"level": "warn", "code": "unclassified_run",
                                    "message": f"랩 · 종목을 알아보지 못한 주행 — 확인 필요 ({_run_facts(info['unclassified'])}). "
-                                              f"{NOTES_NAME} 의 [[session]] 에 종목을 적거나 skip = true 로 뺀다",
+                                              f"{NOTES_NAME} 의 [[session]] 에 종목을 적거나 skip = true 로 제외",
                                    "t_ranges": [[0.0, round(r.t1 - r.t0, 3)]]})
     start = pd.Timestamp(r.t0_abs, unit="s", tz="UTC").tz_convert(TZ)
     shown = []
     x = ctx.gps_recs.get(r.rec)
     if x is not None and ctx.clocks.known(x) and ctx.clocks.offset(x):
         start += pd.Timedelta(seconds=ctx.clocks.offset(x))
-        shown = [f"시작 시각은 이벤트의 기준 시계로 옮겨 보인다 — {ctx.clocks.text(x)}. 세션 안의 시간축(t_s)은 GPS 로거 그대로"]
+        shown = [f"시작 시각은 이벤트의 기준 시계로 옮겨 표시 — {ctx.clocks.text(x)}. 세션 안의 시간축(t_s)은 GPS 로거 그대로"]
     gps_cols = [c for c in r.laps.columns if c not in ("t_start_s", "t_end_s")]
     blocks[0].exports.append(Export("laps.csv", "이 세션의 랩별 값 전체 (모든 데이터 종류의 열을 한 표에)", r.laps[gps_cols].round(3), f"{len(r.laps)} 랩"))
     track = pd.DataFrame({"t_s": r.ts, "x_m": r.x, "y_m": r.y, "dist_m": r.dist})
@@ -1885,7 +1885,7 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
         frame_id=ctx.gate_file.get("frame_id") or f"{event_dir.parent.name}/{event_dir.name}",
         blocks=[b for b in blocks if b is not None],
         missing=[Missing(m["data"], m["status"], m["reason"], m.get("ask", ""), m.get("block", "")) for m in ctx.notes.get("missing", [])
-                 if not m.get("sessions") or info.get("name") in m["sessions"]],
+                 if (not m.get("sessions") or info.get("name") in m["sessions"]) and m.get("block") not in {x.key for x in blocks if x is not None}],
         notes=list(info.get("notes", [])) + list(head) + _segment_notes(info, ctx.derived, r) + shown + list(ctx.day_notes.get(f"{start:%Y-%m-%d}", [])),
         made=ctx.made, split_by=split_by)
 
