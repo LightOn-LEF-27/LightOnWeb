@@ -105,30 +105,29 @@ export function deltaColors(track: TrackResponse, edges: number[], miniDelta: nu
 }
 
 // 채널 색 — 정해진 값(가속 · 타력 · 제동)은 그 색, 나머지는 채널마다 색표 (사이트_설계.md §7 "트랙맵 색" 검토안)
-const LEVEL_COLORS: Record<number, string> = { 1: '#18b04f', 0: '#8e959e', [-1]: '#e2261c' }
+export const LEVEL_COLORS: Record<number, string> = { 1: '#18b04f', 0: '#8e959e', [-1]: '#e2261c' }
 const GRAY = [110, 116, 124]
 
 export interface Palette {
   kind: 'ramp' | 'magnitude' | 'regen' | 'hue'
   from: number[]
   to: number[]
-  legend: string
+  note: string // 색 막대만으로 모자란 설명
 }
 
-export function channelPalette(id: string, unit: string): Palette {
-  if (/apps|throttle|torque_cmd/.test(id)) return { kind: 'ramp', from: GRAY, to: [24, 176, 79], legend: '회색 → 진한 초록 (많이 밟음)' }
-  if (/brake/.test(id)) return { kind: 'ramp', from: GRAY, to: [226, 38, 28], legend: '회색 → 진한 빨강 (세게 밟음)' }
-  if (/^imu\.(lat|long)_g$/.test(id)) return { kind: 'magnitude', from: GRAY, to: [255, 255, 255], legend: '크기만 — 0 g 회색 → 큰 값 흰색 (방향 없음)' }
-  if (/^battery\.power/.test(id)) return { kind: 'regen', from: GRAY, to: [235, 235, 235], legend: '회생(−) 노랑 · 방전 회색 → 흰색' }
-  if (unit === '°C') return { kind: 'hue', from: [], to: [], legend: '파랑 낮음 → 빨강 높음' }
-  return { kind: 'hue', from: [], to: [], legend: '파랑 낮음 → 빨강 높음' }
+export function channelPalette(id: string): Palette {
+  if (/apps|throttle|torque_cmd/.test(id)) return { kind: 'ramp', from: GRAY, to: [24, 176, 79], note: '' }
+  if (/brake/.test(id)) return { kind: 'ramp', from: GRAY, to: [226, 38, 28], note: '' }
+  if (/^imu\.(lat|long)_g$/.test(id)) return { kind: 'magnitude', from: GRAY, to: [255, 255, 255], note: '크기만 · 방향 없음' }
+  if (/^battery\.power/.test(id)) return { kind: 'regen', from: GRAY, to: [235, 235, 235], note: '노랑 = 회생' }
+  return { kind: 'hue', from: [], to: [], note: '' }
 }
 
-export function channelColors(values: (number | null)[], levels?: { value: number }[], id = '', unit = ''): { colors: (string | null)[]; min: number; max: number } {
+export function channelColors(values: (number | null)[], levels?: { value: number }[], id = ''): { colors: (string | null)[]; min: number; max: number } {
   const ok = values.filter((v): v is number => v !== null)
   const min = ok.length ? Math.min(...ok) : 0
   const max = ok.length ? Math.max(...ok) : 1
-  const p = channelPalette(id, unit)
+  const p = channelPalette(id)
   const top = Math.max(...ok.map(Math.abs), 1e-9)
   const colors = values.map((v) => {
     if (v === null) return null
@@ -141,6 +140,16 @@ export function channelColors(values: (number | null)[], levels?: { value: numbe
   })
   return { colors, min, max }
 }
+
+// 범례 색 막대 — 지도에 칠하는 함수를 그대로 불러 샘플링한다 (막대와 지도의 색이 어긋나지 않게)
+const gradient = (colors: (string | null)[]) => `linear-gradient(to right, ${colors.filter(Boolean).join(', ')})`
+const samples = (lo: number, hi: number, n = 48) => Array.from({ length: n }, (_, i) => lo + ((hi - lo) * i) / (n - 1))
+
+export function channelGradient(min: number, max: number, id: string): string {
+  return gradient(channelColors(samples(min, max), undefined, id).colors)
+}
+
+export const paceGradient = (): string => gradient(samples(-1, 1).map(paceColor))
 
 // 그래프 채널 목록 · 겹치기에서 빼는 채널 — 위치(경기장 원점에서 동 · 북 m)는 지도 좌표라 시간 · 거리 그래프로 볼 일이 없다
 // (사용자 결정 2026-10-29). 트랙맵은 엔진의 코스 좌표(get_track)를 따로 받으므로 상관없다. 옛 주소에 있으면 그대로 그린다

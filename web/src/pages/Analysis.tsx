@@ -17,7 +17,7 @@ import { addToAxis, cmpKey, lastAnalysis, MAX_AXES, MAX_CMP, readState, recentSe
          type AnalysisState, type CmpLap, type XMode } from '../analysis/state'
 import { DELTA, mergeDetail, tracesFor, type Trace } from '../analysis/traces'
 import { sameAxes, sheetAxes, workbook, WORKBOOK_GROUPS, WORKBOOKS } from '../analysis/workbooks'
-import { channelPalette, GRAPH_HIDDEN } from '../analysis/lookup'
+import { channelGradient, channelPalette, GRAPH_HIDDEN, LEVEL_COLORS, paceGradient, PURPLE } from '../analysis/lookup'
 import { Toast, type Notice } from '../overview/Download'
 import { formatLapTime, runLabel, sessionName } from '../sessions/format'
 import { ThemeContext } from '../themeContext'
@@ -501,29 +501,63 @@ function Pick() {
   )
 }
 
-// 트랙맵 아래 범례 — 색 기준마다 읽는 법 (값은 엔진 것, 색만 화면)
+// 트랙맵 아래 범례 — 색 막대 · 색 칸 (값은 엔진 것, 색만 화면)
+function ColorBar({ left, right, background }: { left: string; right: string; background: string }) {
+  return (
+    <span className="map-bar-row">
+      <span>{left}</span>
+      <span className="map-bar" style={{ background }} aria-hidden="true" />
+      <span>{right}</span>
+    </span>
+  )
+}
+
+function Swatch({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="map-swatch">
+      <i style={{ background: color }} aria-hidden="true" />
+      {label}
+    </span>
+  )
+}
+
 function MapLegend({ mode, colored, channel, delta }: { mode: MapMode; colored: TrackResponse | null; channel?: Channel; delta?: DeltaResponse }) {
   if (mode === 'pace')
     return (
-      <p className="map-legend muted">
-        <span className="best">보라</span> 세션 최속 · <span className="pace-good">초록</span> 평균보다 빠름 · <span className="pace-bad">빨강</span> 느림 — 미니 구간 25 m, 평균은 완주 랩
-      </p>
+      <div className="map-legend muted">
+        <ColorBar left="평균보다 빠름" right="느림" background={paceGradient()} />
+        <div className="map-legend-note">
+          <Swatch color={PURPLE} label="세션 최속" />
+          <span>미니 구간 25 m</span>
+        </div>
+      </div>
     )
   if (mode === 'delta')
     return (
-      <p className="map-legend muted">
-        <span className="pace-good">초록</span> 비교 1 이 빠른 미니 구간 · <span className="pace-bad">빨강</span> 느린 곳
-        {delta && ` · 랩 끝 차이 ${delta.total_s > 0 ? '+' : ''}${delta.total_s.toFixed(2)} s`}
-      </p>
+      <div className="map-legend muted">
+        <ColorBar left="비교 1 빠름" right="느림" background={paceGradient()} />
+        {delta && <div className="map-legend-note">랩 끝 차이 {delta.total_s > 0 ? '+' : ''}{delta.total_s.toFixed(2)} s</div>}
+      </div>
     )
   const c = colored?.color
   if (!c || !channel) return null
-  if (c.levels) return <p className="map-legend muted">{c.levels.map((l) => l.label).join(' · ')} — 초록 · 회색 · 빨강</p>
+  if (c.levels)
+    return (
+      <div className="map-legend muted">
+        <div className="map-legend-note">
+          {c.levels.map((l) => <Swatch key={l.value} color={LEVEL_COLORS[l.value] ?? '#8e959e'} label={l.label} />)}
+        </div>
+      </div>
+    )
   const vals = c.values.filter((v): v is number => v !== null)
+  if (!vals.length) return null
   const d = channel.digits > 1 ? 1 : channel.digits
+  const [min, max] = [Math.min(...vals), Math.max(...vals)]
+  const note = channelPalette(channel.channel_id).note
   return (
-    <p className="map-legend muted">
-      {channel.label} {vals.length ? `${Math.min(...vals).toFixed(d)} ~ ${Math.max(...vals).toFixed(d)}` : ''} {c.unit} — {channelPalette(channel.channel_id, channel.unit).legend}
-    </p>
+    <div className="map-legend muted">
+      <ColorBar left={min.toFixed(d)} right={`${max.toFixed(d)} ${c.unit}`} background={channelGradient(min, max, channel.channel_id)} />
+      {note && <div className="map-legend-note">{note}</div>}
+    </div>
   )
 }

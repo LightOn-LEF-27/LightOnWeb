@@ -61,7 +61,7 @@ export default function TrackMap(p: Props) {
     if (p.mode === 'pace' && p.sectors && p.refLap !== null) colors = paceColors(p.track, p.sectors, p.refLap)
     else if (p.mode === 'delta' && p.delta) colors = deltaColors(p.track, p.delta.mini.edges_ref_m, p.delta.mini.delta_s)
     else if (p.mode.startsWith('ch:') && p.colored?.color)
-      colors = channelColors(p.colored.color.values, p.colored.color.levels, p.colored.color.channel_id, p.colored.color.unit).colors
+      colors = channelColors(p.colored.color.values, p.colored.color.levels, p.colored.color.channel_id).colors
     const plain = cssVar('--text-muted') || '#8e959e'
     ctx.lineWidth = 3.5
     ctx.lineCap = 'round'

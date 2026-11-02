@@ -1267,6 +1267,35 @@ ul.plain {
   padding: 4px 8px 6px;
   font-size: 10px;
 }
+.map-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.map-bar {
+  flex: 1;
+  min-width: 40px;
+  height: 8px;
+  border-radius: 2px;
+  outline: 1px solid var(--line-soft);
+}
+.map-legend-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin-top: 3px;
+}
+.map-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.map-swatch i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
 .pace-good {
   color: #18b04f;
 }

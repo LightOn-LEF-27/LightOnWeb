@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { DeltaResponse, SectorsResponse, SeriesResponse, TrackResponse } from '../types'
-import { centerZero, channelColors, channelPalette, deltaColors, floorIndex, nearestIndex, paceColor, paceColors, PURPLE, trackIndex, valueAt, xOfTrackPoint } from './lookup'
+import { centerZero, channelColors, channelGradient, channelPalette, deltaColors, floorIndex, nearestIndex, paceColor, paceColors, paceGradient, PURPLE, trackIndex, valueAt, xOfTrackPoint } from './lookup'
 import { axisData, DELTA, tracesFor } from './traces'
 
 const track = (over: Partial<TrackResponse> = {}): TrackResponse => ({
@@ -59,13 +59,19 @@ describe('트랙맵 색', () => {
     expect(channelColors([10, 20]).min).toBe(10)
   })
   it('채널마다 색표 — 가속도는 크기만(부호 무시), 회생 전력은 노랑', () => {
-    const g = channelColors([-1, 0, 1], undefined, 'imu.lat_g', 'g').colors
+    const g = channelColors([-1, 0, 1], undefined, 'imu.lat_g').colors
     expect(g[0]).toBe(g[2]) // 좌 · 우 같은 크기면 같은 색
-    expect(channelPalette('imu.lat_g', 'g').kind).toBe('magnitude')
-    expect(channelPalette('pedal.apps_pct', '%').legend).toContain('초록')
-    expect(channelPalette('pedal.brake_f_bar', 'bar').legend).toContain('빨강')
-    const pw = channelColors([-5, 10], undefined, 'battery.power_kw', 'kW').colors
+    expect(channelPalette('imu.lat_g').kind).toBe('magnitude')
+    expect(channelPalette('battery.power_kw').note).toContain('회생')
+    const pw = channelColors([-5, 10], undefined, 'battery.power_kw').colors
     expect(pw[0]).toMatch(/^rgb\((2\d\d), (1[7-9]\d|2\d\d), (4\d|5\d|6\d)\)$/) // 노랑 쪽
+  })
+  it('범례 색 막대 — 양 끝이 지도의 최소 · 최대 색과 같다', () => {
+    const [lo, hi] = channelColors([-5, 10], undefined, 'battery.power_kw').colors
+    const g = channelGradient(-5, 10, 'battery.power_kw')
+    expect(g.startsWith(`linear-gradient(to right, ${lo}`)).toBe(true)
+    expect(g.endsWith(`${hi})`)).toBe(true)
+    expect(paceGradient().startsWith(`linear-gradient(to right, ${paceColor(-1)}`)).toBe(true)
   })
 })
 
