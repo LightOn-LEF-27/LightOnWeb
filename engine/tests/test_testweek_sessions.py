@@ -16,7 +16,7 @@ need26 = pytest.mark.skipif(not (L26 / cb.NOTES_NAME).exists() or not (L26 / "de
                             reason="LEF-26 테스트위크 catalog_notes.toml · lef26-clock 결과 없음")
 need_evo = pytest.mark.skipif(not (EVO / cb.NOTES_NAME).exists() or not (EVO / "derived" / "stm32_alignment.csv").exists(),
                               reason="25Evo 테스트위크 catalog_notes.toml · evo-stm32 결과 없음")
-DISCIPLINES = {"트랙", "가속", "스키드패드", "미분류"}
+DISCIPLINES = {"트랙", "내구", "가속", "스키드패드", "미분류"}
 
 
 @pytest.fixture(scope="module")
@@ -97,7 +97,7 @@ def test_evo_backup_logger_blocks_and_clock_check(sevo):
         lag = _rpm_lag(s)
         if lag is not None and np.isfinite(lag[2]) and abs(lag[0]) > 0.55:
             assert any(f["code"] == "logger_clock_uncertain" for x in s.blocks for f in x.findings), (s.sid, lag)
-    track = [s for s in sevo if s.discipline == "트랙" and "battery" in _blocks(s)]
+    track = [s for s in sevo if s.discipline in ("트랙", "내구") and "battery" in _blocks(s)]
     for s in track:                                                           # 랩 에너지 = 평균 전력 × 랩 시간 (같은 값을 두 길로)
         ok = s.laps["net_wh"].notna() & s.laps["p_mean_kw"].notna()
         assert np.allclose(s.laps.loc[ok, "net_wh"], s.laps.loc[ok, "p_mean_kw"] * s.laps.loc[ok, "lap_time_s"] / 3.6, rtol=0.05)
