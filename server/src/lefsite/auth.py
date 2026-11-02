@@ -28,9 +28,9 @@ PERMISSIONS = {
 ROLE_LABEL = {"admin": "관리자", "lead": "팀장", "member": "팀원"}
 DENIED = {
     "view": "보기 권한 없음",
-    "download": "내려받기 권한 없음 — 팀장만 할 수 있습니다",
-    "upload": "올리기 권한 없음 — 팀장만 할 수 있습니다",
-    "manage_users": "명단 관리 권한 없음 — 관리자만 할 수 있습니다",
+    "download": "내려받기 권한 없음 — 팀장만 가능",
+    "upload": "올리기 권한 없음 — 팀장만 가능",
+    "manage_users": "명단 관리 권한 없음 — 관리자만 가능",
 }
 
 # Google 로그인을 거절한 이유 — 로그인 화면이 code 로 안내 글을 고른다 (web/src/pages/Login.tsx)
@@ -70,12 +70,12 @@ def current_user(request: Request) -> User:
         email = request.session["email"] = settings.dev_email      # 개발용 자동 로그인 — 아래부터는 Google 과 같은 길
         request.session["login_at"] = now()
     if not email:
-        raise AuthError("login_required", "로그인이 필요합니다", 401, {"login": settings.auth})
+        raise AuthError("login_required", "로그인 필요", 401, {"login": settings.auth})
     user = db.get_user(email)
     if not user or not user["active"]:
         request.session.clear()
         code = "disabled" if user else "not_listed"
-        raise AuthError(code, "사용이 꺼진 계정입니다" if user else "명단에 없는 계정입니다", 403, {"login": settings.auth})
+        raise AuthError(code, "사용이 꺼진 계정" if user else "명단에 없는 계정", 403, {"login": settings.auth})
     return User(email=user["email"], name=user["name"], role=user["role"])
 
 

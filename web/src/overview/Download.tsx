@@ -15,12 +15,12 @@ async function askServer(fileId: string): Promise<Notice | null> {
   try {
     r = await fetch(fileUrl(fileId), { method: 'HEAD', credentials: 'same-origin' })
   } catch {
-    return { title: '내려받기 실패', body: '서버에 연결할 수 없습니다.' }
+    return { title: '내려받기 실패', body: '서버 연결 실패' }
   }
   if (r.ok) return null
-  if (r.status === 403) return { title: '내려받기 권한 없음', body: '내려받기는 팀장만 할 수 있습니다.' }
-  if (r.status === 401) return { title: '로그인이 필요합니다', body: '다시 로그인해 주세요.' }
-  if (r.status === 404) return { title: '파일을 찾을 수 없습니다', body: '데이터 폴더에 파일이 없을 수 있습니다. DAQ 파트에 알려 주세요.' }
+  if (r.status === 403) return { title: '내려받기 권한 없음', body: '내려받기는 팀장만 가능' }
+  if (r.status === 401) return { title: '로그인 필요', body: '다시 로그인 필요' }
+  if (r.status === 404) return { title: '파일 없음', body: '데이터 폴더에 파일이 없을 수 있음. DAQ 파트로 연락 부탁드립니다.' }
   return { title: '내려받기 실패', body: `서버 응답 ${r.status}` }
 }
 

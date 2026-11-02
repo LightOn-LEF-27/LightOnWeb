@@ -41,15 +41,15 @@ export default function SessionView() {
   if (retired && retired.current.length !== 1)
     return (
       <div className="page-msg">
-        <h1>{retired.current.length > 1 ? '세션이 나뉘었습니다' : '삭제된 세션입니다'}</h1>
+        <h1>{retired.current.length > 1 ? '세션 나뉨' : '삭제된 세션'}</h1>
         <p>
           <span className="mono-id">{retired.sid}</span>{' '}
-          {retired.current.length > 1 ? '세션은 여러 세션으로 나뉘었습니다' : '세션은 삭제되었습니다'}
+          {retired.current.length > 1 ? '세션은 여러 세션으로 나뉨' : '세션은 삭제됨'}
           {retired.retired_at && ` (${retired.retired_at})`}.
         </p>
         {retired.current.length > 1 && (
           <>
-            <p>이어서 볼 세션을 선택하세요.</p>
+            <p>이어서 볼 세션 선택</p>
             <ul>
               {retired.current.map((s) => (
                 <li key={s}>
@@ -67,7 +67,7 @@ export default function SessionView() {
   if (error && !retired)
     return (
       <div className="page-msg">
-        <h1>{error.code === 'unknown_session' ? '세션을 찾을 수 없습니다' : '세션을 열 수 없습니다'}</h1>
+        <h1>{error.code === 'unknown_session' ? '세션을 찾을 수 없음' : '세션을 열 수 없음'}</h1>
         <p>{error.message}</p>
         <p>
           <Link to="/sessions">세션 목록으로</Link>
@@ -94,7 +94,7 @@ export default function SessionView() {
       {moved && (
         <div className="banner info" role="status">
           <span>
-            이전 주소(<span className="mono-id">{moved.sid}</span>)의 세션이 {MOVED_WHY[moved.why ?? ''] ?? '바뀌어'} 이 세션으로 이동했습니다.
+            이전 주소(<span className="mono-id">{moved.sid}</span>)의 세션이 {MOVED_WHY[moved.why ?? ''] ?? '바뀌어'} 이 세션으로 이동함
           </span>
           <button type="button" className="banner-close" aria-label="알림 닫기" onClick={dismissMoved}>
             ×
@@ -165,11 +165,10 @@ export default function SessionView() {
                     <li key={m.data}>
                       <span className="st-seek">✕</span> <strong>{m.data}</strong>
                       <p>{m.reason}</p>
-                      {m.ask && <p className="muted">찾는 분: {m.ask}</p>}
+                      <p className="muted">{m.ask || '사본을 갖고 계신 분은 DAQ 파트로 연락 부탁드립니다.'}</p>
                     </li>
                   ))}
                 </ul>
-                <p className="panel-msg muted">가진 분은 DAQ 파트에 알려 주세요.</p>
               </section>
             )}
           </div>
@@ -181,7 +180,7 @@ export default function SessionView() {
         ) : (
           <section className="panel">
             <h2>랩</h2>
-            <p className="panel-msg muted">{laps.error ? `랩 표를 불러오지 못했습니다 — ${laps.error.message}` : '랩 표 불러오는 중…'}</p>
+            <p className="panel-msg muted">{laps.error ? `랩 표 불러오기 실패 — ${laps.error.message}` : '랩 표 불러오는 중…'}</p>
           </section>
         )}
       </div>

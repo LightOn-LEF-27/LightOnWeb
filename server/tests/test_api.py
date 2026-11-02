@@ -95,7 +95,7 @@ def test_member_cannot_download_and_nothing_is_logged(make_client):
     for method in ("GET", "HEAD"):
         r = c.request(method, f"/api/files/{FILE}")
         assert r.status_code == 403
-    assert c.get(f"/api/files/{FILE}").json()["error"]["message"] == "내려받기 권한 없음 — 팀장만 할 수 있습니다"
+    assert c.get(f"/api/files/{FILE}").json()["error"]["message"] == "내려받기 권한 없음 — 팀장만 가능"
     assert c.app.state.db.recent_downloads() == []
 
 

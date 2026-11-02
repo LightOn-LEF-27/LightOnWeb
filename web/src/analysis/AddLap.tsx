@@ -31,7 +31,7 @@ export default function AddLap({ sessions, current, onPick, onClose }: Props) {
       <div className="modal" role="dialog" aria-modal="true" aria-label="다른 세션의 랩 추가" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <strong>다른 세션의 랩 추가</strong>
-          <span className="muted">같은 코스(계측선)의 세션만 겹칠 수 있습니다</span>
+          <span className="muted">같은 코스(계측선)의 세션만 겹칠 수 있음</span>
           <span style={{ flex: 1 }} />
           <label htmlFor="drv" className="muted">
             드라이버
@@ -56,7 +56,7 @@ export default function AddLap({ sessions, current, onPick, onClose }: Props) {
               return (
                 <li key={s.sid}>
                   <button type="button" className={`modal-item${sid === s.sid ? ' on' : ''}`} disabled={!ok} onClick={() => setSid(s.sid)}
-                          title={ok ? s.sid : '다른 코스 — 거리축에 겹칠 수 없습니다'}>
+                          title={ok ? s.sid : '다른 코스 — 거리축에 겹칠 수 없음'}>
                     <span>{n.main}</span>
                     <span className="muted">{n.purpose}</span>
                     <span className="muted">{s.laps}랩</span>
@@ -64,10 +64,10 @@ export default function AddLap({ sessions, current, onPick, onClose }: Props) {
                 </li>
               )
             })}
-            {sorted.length === 0 && <li className="muted panel-msg">고를 수 있는 세션이 없습니다.</li>}
+            {sorted.length === 0 && <li className="muted panel-msg">고를 수 있는 세션 없음</li>}
           </ul>
           <div className="modal-laps">
-            {!sid && <p className="panel-msg muted">왼쪽에서 세션을 고르세요.</p>}
+            {!sid && <p className="panel-msg muted">왼쪽에서 세션 선택</p>}
             {sid && !laps.data && <p className="panel-msg muted">랩 불러오는 중…</p>}
             {laps.data && lapCol && (
               <table className="grid">

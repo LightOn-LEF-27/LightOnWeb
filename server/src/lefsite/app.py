@@ -122,8 +122,8 @@ def _web(app: FastAPI, dist: Path) -> None:
             return JSONResponse({"error": {"code": "not_found", "message": f"없는 주소: /{path}", "detail": None}}, status_code=404)
         if not index.exists():
             return HTMLResponse("<!doctype html><meta charset='utf-8'><title>LightOn Data</title>"
-                                "<p>화면이 아직 빌드되지 않았습니다. <code>cd web &amp;&amp; npm run build</code> 를 실행하거나, 개발 중이면 "
-                                "<code>npm run dev</code> 의 주소(http://127.0.0.1:5173)를 여세요.</p>", status_code=503)
+                                "<p>화면이 아직 빌드되지 않음. <code>cd web &amp;&amp; npm run build</code> 를 실행하거나, 개발 중이면 "
+                                "<code>npm run dev</code> 의 주소(http://127.0.0.1:5173) 사용</p>", status_code=503)
         f = (dist / path).resolve()
         if path and f.is_file() and dist.resolve() in f.parents:
             return FileResponse(f)
@@ -155,7 +155,7 @@ def create_app(settings: config.Settings | None = None, engine: Engine | None = 
     @app.exception_handler(Exception)
     def crash(request: Request, e: Exception) -> JSONResponse:
         log.exception("처리 중 오류: %s %s", request.method, request.url.path)
-        return JSONResponse({"error": {"code": "internal", "message": "서버 오류가 발생했습니다. 서버 콘솔 기록을 확인하세요", "detail": None}}, status_code=500)
+        return JSONResponse({"error": {"code": "internal", "message": "서버 오류 발생 — 서버 콘솔 기록 확인 필요", "detail": None}}, status_code=500)
 
     base = _origin(settings.base_url)
     local = config.is_loopback(settings.host)
@@ -166,7 +166,7 @@ def create_app(settings: config.Settings | None = None, engine: Engine | None = 
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             origin = request.headers.get("origin")
             if origin and origin != base and not (local and config.is_loopback(urlsplit(origin).hostname or "")):
-                return JSONResponse({"error": {"code": "forbidden", "message": "다른 사이트에서 보낸 요청은 받지 않습니다", "detail": None}}, status_code=403)
+                return JSONResponse({"error": {"code": "forbidden", "message": "다른 사이트에서 보낸 요청은 받지 않음", "detail": None}}, status_code=403)
         response = await call_next(request)
         h = response.headers
         h.setdefault("X-Content-Type-Options", "nosniff")

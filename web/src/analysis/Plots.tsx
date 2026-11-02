@@ -56,7 +56,7 @@ export default function Plots(p: Props) {
   return (
     <div className="plots">
       <div className="plots-area" ref={area}>
-        {p.axes.length === 0 && <p className="panel-msg muted">왼쪽 채널 목록에서 채널을 누르면 그래프가 생깁니다.</p>}
+        {p.axes.length === 0 && <p className="panel-msg muted">왼쪽 목록에서 채널을 누르면 그래프 추가</p>}
         {p.axes.map((chs, i) => (
           <AxisRow key={chs.join(',')} index={i} ids={chs} {...p} width={Math.max(200, size.w - HEAD_W)} height={h + (i === p.axes.length - 1 ? X_AXIS_H : 0)}
                    showX={i === p.axes.length - 1} refResp={refResp} refLap={refLap} />
@@ -116,7 +116,7 @@ function Navigator({ group, unit }: { group: ZoomGroup; unit: string }) {
       <button type="button" className="btn btn-sm" aria-label="왼쪽으로" disabled={!r} onClick={() => panBy(group, -0.5)}>
         ◀
       </button>
-      <div className="nav-bar" ref={bar} onClick={jump} title={r ? '끌어서 옆으로 넘기기 · 빈 곳을 누르면 그리로' : '확대하면 여기서 옆으로 넘길 수 있습니다'}>
+      <div className="nav-bar" ref={bar} onClick={jump} title={r ? '끌어서 옆으로 넘기기 · 빈 곳을 누르면 그리로' : '확대하면 여기서 옆으로 넘길 수 있음'}>
         <div className={`nav-win${r ? '' : ' full'}`} style={{ left: `${lo * 100}%`, width: `${w * 100}%` }} onPointerDown={drag} />
       </div>
       <button type="button" className="btn btn-sm" aria-label="오른쪽으로" disabled={!r} onClick={() => panBy(group, 0.5)}>
@@ -164,7 +164,7 @@ function AxisRow(p: Props & { index: number; ids: string[]; width: number; heigh
           ))}
         </div>
         {chs.length === 1 && (
-          <select className="field axis-add" aria-label="이 칸에 채널 겹치기" title="이 칸에 채널을 하나 더 겹쳐 그립니다. 눈금은 오른쪽에 나옵니다." value=""
+          <select className="field axis-add" aria-label="이 칸에 채널 겹치기" title="이 칸에 채널 하나 더 겹치기 · 눈금은 오른쪽에 표시" value=""
                   onChange={(e) => e.target.value && p.onAdd(p.index, e.target.value)}>
             <option value="">+ 채널 겹치기</option>
             {others.map((c) => (
@@ -179,7 +179,7 @@ function AxisRow(p: Props & { index: number; ids: string[]; width: number; heigh
         <Chart channels={chs} axis={data} colors={p.colors} width={p.width} height={p.height} showX={p.showX} shade={shade} group={p.group}
                theme={p.theme} readout={readout} />
       ) : (
-        <p className="panel-msg muted">{p.ids.includes(DELTA) ? '시간 차는 거리축에서 비교 랩을 고르면 나옵니다.' : '이 랩에는 이 채널의 값이 없습니다.'}</p>
+        <p className="panel-msg muted">{p.ids.includes(DELTA) ? '시간 차는 거리축에서 비교 랩을 고르면 표시' : '이 랩에는 이 채널 값 없음'}</p>
       )}
     </div>
   )

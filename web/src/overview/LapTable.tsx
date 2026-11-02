@@ -8,7 +8,7 @@ export default function LapTable({ table, empty }: { table: Table; empty: string
     return (
       <section className="panel">
         <h2>랩</h2>
-        <p className="panel-msg muted">{empty ?? '랩이 없습니다.'}</p>
+        <p className="panel-msg muted">{empty ?? '랩 없음'}</p>
       </section>
     )
   const cols = table.columns

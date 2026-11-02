@@ -49,7 +49,7 @@ export function useApi<T>(path: string | null): Loaded<T> {
       (data) => setState({ data, error: null, loading: false }),
       (e: unknown) => {
         if (ctl.signal.aborted) return
-        const error = e instanceof ApiError ? e : new ApiError(0, 'network', '서버에 연결할 수 없습니다. 서버가 켜져 있는지 확인해 주세요', null)
+        const error = e instanceof ApiError ? e : new ApiError(0, 'network', '서버 연결 실패 — 서버가 켜져 있는지 확인 필요', null)
         setState({ data: null, error, loading: false })
       },
     )

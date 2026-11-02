@@ -132,7 +132,7 @@ SESSIONS: list[FakeSession] = [
                 run_no="2", purpose="댐퍼 앞 2클릭 · 브레이크 바이어스 앞 58 %"),
     FakeSession("DEMO-1_2027-05-08_S5", E_TEST, "연습", "토크 맵 100 %", "B", "2027-05-08T11:05:44.900+09:00",
                 498.2, 6, 60.42, 4, 5.4, 91.6, 1391, 248, _all(tire="none"),
-                notes=("나중에 들어온 기록으로 만든 세션이라, 시간상 앞이지만 다음 번호를 받았습니다",), run_no="4", purpose="토크 맵 100 %"),
+                notes=("나중에 들어온 기록으로 만든 세션이라, 시간상 앞이지만 다음 번호를 받음",), run_no="4", purpose="토크 맵 100 %"),
     FakeSession("DEMO-1_2027-05-08_S3", E_TEST, "연습", "타이어 공기압", "B", "2027-05-08T11:38:02.700+09:00",
                 655.0, 8, 61.12, 3, 7.1, 89.7, 1655, 230, _all(), run_no="5", purpose="타이어 공기압 −0.1 bar"),
     FakeSession("DEMO-1_2027-05-08_S4", E_TEST, "내구", "완주 연습", "B", "2027-05-08T13:10:21.300+09:00",
@@ -160,7 +160,7 @@ SESSIONS: list[FakeSession] = [
                 600.0, None, None, None, None, None, 1210, 196,
                 {"battery": "have", "motor": "have", "bms": "have", "gps": "seek", "imu": "none"}, split_by="time",
                 notes=("일정표의 출발 · 도착으로 자른 세션 — 폰 시각 13:20 ~ 13:30 (GPS 기록 없음)",), run_no="2", purpose="오후 — 토크 맵 90 %",
-                quality=(("warn", "clock_mismatch", "battery", "팩 전류와 모터 전류의 파형이 1.6 s 어긋나 보인다 — 장비 시계 차를 다시 볼 것", None),
+                quality=(("warn", "clock_mismatch", "battery", "팩 전류와 모터 전류의 파형이 1.6 s 어긋나 보임 — 장비 시계 차 재확인 필요", None),
                          ("info", "runsheet_timed", "battery", "일정표의 출발 · 도착으로 자른 시각 구간 세션 — 장비 시계는 전원 켬으로 잰 값으로 옮겨 몇 초 틀릴 수 있다",
                           [[0.0, 600.0]]))),
 ]
@@ -228,7 +228,7 @@ def _block(s: FakeSession, b: str) -> dict:
         "block": b, "title": meta["title"], "status": s.status[b], "device": meta["device"],
         "facts": [f"합성 데이터 — {s.duration_s:.0f} s 분량 (실제 주행 아님)"],
         "checks": [] if computed else ["가짜 연결부: 시계 맞춤 검사 없음"],
-        "cautions": list(s.cautions.get(b, [])) + (["추정 — 가속페달 · 브레이크 압력 신호가 아니다"] if computed else []),
+        "cautions": list(s.cautions.get(b, [])) + (["추정 — 가속페달 · 브레이크 압력 신호 아님"] if computed else []),
         "raw": _raw(s, b),
         "outputs": [] if computed else [{"label": "변환된 표 (합성)", "name": f"{b}.parquet", "note": "", "where": "가짜 연결부 — 메모리"}],
         "exports": _exports(s, b),
@@ -386,7 +386,7 @@ class FakeEngine:
         s = self._get(sid)
         missing = [{"block": b, "data": BLOCKS[b]["title"], "status": st, "reason": MISSING_TEXT[st][0], "ask": MISSING_TEXT[st][1]}
                    for b, st in s.status.items() if st in ("seek", "none")]
-        return {"summary": _row(s, self._order), "notes": ["합성 데이터입니다 (실제 주행 아님 · 가짜 연결부)", *s.notes],
+        return {"summary": _row(s, self._order), "notes": ["합성 데이터 (실제 주행 아님 · 가짜 연결부)", *s.notes],
                 "blocks": [_block(s, b) for b in FULL if s.status.get(b) in ("have", "warn")],
                 "missing": missing, "best_lap": s.best_lap,
                 "made": {"built_at": "2027-05-09T09:00:00+09:00", "commit": "fake", "command": "가짜 연결부 (lefsite.engines.fake)"}}
@@ -432,7 +432,7 @@ class FakeEngine:
     def get_laps(self, sid: str) -> dict:
         s = self._get(sid)
         rows = _lap_rows(s)
-        notes = ["합성 랩 — 실제 주행이 아닙니다", "t_start_s · t_end_s 는 세션 시간"]
+        notes = ["합성 랩 — 실제 주행 아님", "t_start_s · t_end_s 는 세션 시간"]
         if rows:
             notes.append(f"구간 S1 ~ S3 은 기준 거리 위의 경계. 평균은 완주 랩 {len(rows)}개, 이론 최속 = 구간마다 최속의 합")
         return {"columns": _lap_columns(s), "rows": rows, "sectors": _sectors(rows), "notes": notes, "best_lap": s.best_lap}

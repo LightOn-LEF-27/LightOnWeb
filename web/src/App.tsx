@@ -36,8 +36,8 @@ export default function App() {
   if (auth.state === 'down')
     return (
       <div className="page-msg">
-        <h1>서버에 연결할 수 없습니다</h1>
-        <p>서버(<code>python -m lefsite</code>)가 켜져 있는지 확인해 주세요.</p>
+        <h1>서버 연결 실패</h1>
+        <p>서버(<code>python -m lefsite</code>)가 켜져 있는지 확인 필요</p>
         <button className="btn" onClick={check}>
           다시 시도
         </button>
@@ -126,7 +126,7 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
             <span>사이트 {info.data.site.version}</span>
           </>
         ) : (
-          <span>{info.error ? `엔진 정보를 불러오지 못했습니다 — ${info.error.message}` : '엔진 정보 불러오는 중…'}</span>
+          <span>{info.error ? `엔진 정보 불러오기 실패 — ${info.error.message}` : '엔진 정보 불러오는 중…'}</span>
         )}
       </footer>
     </div>

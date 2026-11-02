@@ -36,7 +36,7 @@ def test_google_mode_needs_login(make_client):
     assert c.get("/auth/mode").json() == {"mode": "google"}
     r = c.get("/api/sessions")
     assert r.status_code == 401
-    assert r.json()["error"] == {"code": "login_required", "message": "로그인이 필요합니다", "detail": {"login": "google"}}
+    assert r.json()["error"] == {"code": "login_required", "message": "로그인 필요", "detail": {"login": "google"}}
 
 
 @pytest.mark.parametrize("claims, refusal", [

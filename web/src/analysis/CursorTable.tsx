@@ -36,7 +36,7 @@ export default function CursorTable({ channels, traces, responses, deltas, x, co
         {b != null && ` · B ${b.toFixed(x === 'time' ? 2 : 1)} ${unit}`}
       </h2>
       {a == null ? (
-        <p className="panel-msg muted">그래프를 클릭하면 커서 A 가 놓입니다 (Shift + 클릭 = B).</p>
+        <p className="panel-msg muted">그래프 클릭 = 커서 A · Shift + 클릭 = 커서 B</p>
       ) : (
         <table className="grid cursor-table">
           <thead>

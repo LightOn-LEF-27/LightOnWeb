@@ -261,7 +261,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
   if (page.error)
     return (
       <div className="page-msg">
-        <h1>{retired ? '세션이 바뀌었습니다' : '세션을 열 수 없습니다'}</h1>
+        <h1>{retired ? '세션 변경됨' : '세션을 열 수 없음'}</h1>
         <p>{page.error.message}</p>
         <p>
           <Link to={`/sessions/${encodeURIComponent(sid)}`}>세션 개요에서 보기</Link> · <Link to="/sessions">세션 목록으로</Link>
@@ -295,8 +295,8 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
   const reduced = refResp?.reduced
   const copyLink = () =>
     navigator.clipboard.writeText(window.location.href).then(
-      () => setNotice({ title: '링크를 복사했습니다', body: '받는 사람도 같은 화면(세션 · 랩 · 축)을 보게 됩니다.', kind: 'info' }),
-      () => setNotice({ title: '복사하지 못했습니다', body: '주소창의 주소를 직접 복사해 주세요.' }),
+      () => setNotice({ title: '링크 복사됨', body: '받는 사람도 같은 화면(세션 · 랩 · 축)을 보게 됨', kind: 'info' }),
+      () => setNotice({ title: '복사 실패', body: '주소창의 주소를 직접 복사 필요' }),
     )
 
   return (
@@ -346,7 +346,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
           <button type="button" aria-pressed={x === 'time'} onClick={() => set({ x: 'time' })}>
             시간
           </button>
-          <button type="button" aria-pressed={x === 'distance'} disabled={ref === 'all'} title={ref === 'all' ? '랩을 기준으로 골라야 거리축을 쓸 수 있습니다' : undefined}
+          <button type="button" aria-pressed={x === 'distance'} disabled={ref === 'all'} title={ref === 'all' ? '랩을 기준으로 골라야 거리축 사용 가능' : undefined}
                   onClick={() => set({ x: 'distance' })}>
             거리
           </button>
@@ -402,7 +402,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
         <ChannelList channels={listChannels} blockTitles={new Map([...s.data_status.map((d): [string, string] => [d.block, d.title]), ['calc', '화면 계산 (엔진 값)']])}
                      shown={new Set(axes.flat())} onToggle={(c) => set({ axes: toggleChannel(axes, c) })} />
         <div className="analysis-center">
-          {series.error && <div className="banner">그래프 값을 불러오지 못했습니다 — {series.error}</div>}
+          {series.error && <div className="banner">그래프 값 불러오기 실패 — {series.error}</div>}
           <Plots axes={axes} channels={channelMap} traces={traces} responses={series.data} deltas={deltas} x={x} quality={quality.data ?? []} colors={colors}
                  theme={theme} group={group} onRemove={(i) => set({ axes: axes.filter((_, k) => k !== i) })} onAdd={(i, c) => set({ axes: addToAxis(axes, i, c) })} />
         </div>
@@ -432,7 +432,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
                           refLap={ref === 'all' ? null : ref} x={x} lapStart={lapStart} group={group} cursorA={cur.a} cursorB={cur.b} theme={theme}
                           height={wide ? 460 : 230} />
               ) : (
-                <p className="panel-msg muted">{track.error ? `코스를 불러오지 못했습니다 — ${track.error.message}` : '코스 불러오는 중…'}</p>
+                <p className="panel-msg muted">{track.error ? `코스 불러오기 실패 — ${track.error.message}` : '코스 불러오는 중…'}</p>
               )}
               <MapLegend mode={mode} colored={colored.data} channel={mode.startsWith('ch:') ? channelMap.get(mode.slice(3)) : undefined} delta={deltas.get('cmp0')} />
             </section>
@@ -450,7 +450,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
                    onRef={(r) => set({ ref: r, x: r === 'all' ? 'time' : x, cmp: r === 'all' ? [] : cmp.filter((c) => c.sid || c.lap !== r) })}
                    onCmp={(ls) => set({ cmp: [...otherCmp, ...ls.map((lap): CmpLap => ({ sid: null, lap }))].slice(0, MAX_CMP) })} />
       ) : (
-        <p className="lap-picker-empty muted">{s.has_track ? '랩이 없는 세션입니다 — 세션 전체를 시간축으로 봅니다.' : '코스(위치) 기록이 없는 세션입니다 — 세션 전체를 시간축으로 봅니다.'}</p>
+        <p className="lap-picker-empty muted">{s.has_track ? '랩이 없는 세션 — 세션 전체를 시간축으로 표시' : '코스(위치) 기록이 없는 세션 — 세션 전체를 시간축으로 표시'}</p>
       )}
       <div className="analysis-status muted">
         {series.loading ? '그래프 값 불러오는 중…' : reduced ? `기준 랩 표시 ${reduced.to_points.toLocaleString('en-US')}점 / 원래 ${reduced.from_points.toLocaleString('en-US')}점 · 줄여도 최소 · 최대 보존` : ''}
@@ -485,7 +485,7 @@ function Pick() {
   }
   return (
     <div className="page-msg">
-      <h1>분석할 세션을 고르세요</h1>
+      <h1>분석할 세션 선택</h1>
       {recent.length > 0 && (
         <>
           <p className="muted">최근 연 세션</p>

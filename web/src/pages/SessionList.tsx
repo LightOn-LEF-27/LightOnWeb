@@ -113,10 +113,10 @@ export default function SessionList({ total }: { total: number | null }) {
         <section className="table-wrap" aria-label="세션">
           <div className="table-scroll">
             {loading && <div className="empty">세션 목록 불러오는 중…</div>}
-            {error && <div className="empty">세션 목록을 불러오지 못했습니다 — {error.message}</div>}
+            {error && <div className="empty">세션 목록 불러오기 실패 — {error.message}</div>}
             {data && shown.length === 0 && (
               <div className="empty">
-                조건에 맞는 세션이 없습니다.{' '}
+                조건에 맞는 세션 없음{' '}
                 <button type="button" className="linkish" onClick={() => setParams({}, { replace: true })}>조건 초기화</button>
               </div>
             )}

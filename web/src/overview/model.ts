@@ -45,8 +45,8 @@ export function lapFooter(t: LapTable, col: LapColumn): { mean: string; theoreti
 
 export function lapEmptyText(page: SessionPage): string | null {
   const s = page.summary
-  if (!s.has_track) return '코스(위치) 기록이 없는 세션이라 랩이 없습니다.'
-  if (!s.laps) return '랩이 없는 세션입니다 (가속 · 스키드패드 등).'
+  if (!s.has_track) return '코스(위치) 기록이 없는 세션이라 랩 없음'
+  if (!s.laps) return '랩이 없는 세션 (가속 · 스키드패드 등)'
   return null
 }
 
