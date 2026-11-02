@@ -147,6 +147,7 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
     // 마우스 자리의 값 — 그래프 위, 마우스 선 옆에 (모든 축이 같이)
     const tip = document.createElement('div')
     tip.className = 'chart-tip'
+    let pointerY: number | null = null // 마우스가 이 축 위에 있을 때만 — 값을 마우스 높이에 붙인다 (다른 축은 위쪽 그대로)
     const showTip = (u: uPlot) => {
       const left = u.cursor.left
       if (u.cursor.idx == null || left == null || left < 0) return void (tip.style.display = 'none')
@@ -170,6 +171,7 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
       tip.style.display = 'block'
       const w = tip.offsetWidth
       tip.style.left = `${left + 10 + w > u.over.clientWidth ? left - 10 - w : left + 10}px`
+      tip.style.top = pointerY === null ? '' : `${Math.max(0, Math.min(u.over.clientHeight - tip.offsetHeight, pointerY - tip.offsetHeight / 2))}px`
     }
     let ready = false
     const opts: uPlot.Options = {
@@ -300,10 +302,16 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
       const nMax = Math.min(hi, at + (max - at) * k)
       if (nMax - nMin > 1e-6) u.setScale('x', { min: nMin, max: nMax })
     }
+    const track = (e: MouseEvent) => (pointerY = e.offsetY)
+    const untrack = () => (pointerY = null)
+    u.over.addEventListener('mousemove', track, true) // uPlot 이 값을 채우기 전에 높이를 먼저 안다
+    u.over.addEventListener('mouseleave', untrack)
     u.over.addEventListener('mousedown', down)
     u.over.addEventListener('click', click)
     u.over.addEventListener('wheel', wheel, { passive: false })
     return () => {
+      u.over.removeEventListener('mousemove', track, true)
+      u.over.removeEventListener('mouseleave', untrack)
       u.over.removeEventListener('mousedown', down)
       u.over.removeEventListener('click', click)
       u.over.removeEventListener('wheel', wheel)
