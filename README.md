@@ -9,6 +9,7 @@
 | [`engine/`](engine/) | 분석 엔진 `lefdata` (Python). 장비별 변환기, 시계 맞추기, 랩 · 종목 분석, 품질 검사, 사이트가 부르는 `lefdata.api` | 동작 · 테스트 있음 |
 | [`server/`](server/) | 사이트 서버 `lefsite` (FastAPI). 로그인과 권한, 엔진 연결부(진짜 `lefdata.api` · 가짜 합성 세션), 앱 DB | 뼈대 · 테스트 있음 |
 | [`web/`](web/) | 사이트 화면 (React + TypeScript + Vite). 세션 목록과 세션 페이지가 있고, 엔진이 준 값을 그리기만 합니다 | 만드는 중 |
+| [`telemetry/`](telemetry/) | 실시간 전송 시험 판정 (`t8_judge.py`). 서버 기록과 로거 SD 를 맞대 지연 · 끊김 · 전달률을 잽니다 | 동작 · 테스트 있음 |
 
 계산은 모두 엔진이 맡고 사이트는 받은 값을 그립니다. 둘 사이의 약속(함수 이름, 인자, 돌려주는 모양)은 `engine/src/lefdata/api.py` 맨 위에 적혀 있습니다.
 
