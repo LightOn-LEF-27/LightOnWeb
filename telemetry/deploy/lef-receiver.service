@@ -1,0 +1,21 @@
+[Unit]
+Description=LightOn 실시간 수신기 (MQTT 구독 → 파일)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=lefrx
+Group=lefrx
+# 값은 관리자만 읽는 파일에서. systemd 가 읽어 이 프로세스에만 넘긴다
+EnvironmentFile=/etc/lighton/receiver.env
+ExecStart=/opt/lef-receiver/.venv/bin/python /opt/lef-receiver/receiver.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/lef-receiver
+
+[Install]
+WantedBy=multi-user.target
