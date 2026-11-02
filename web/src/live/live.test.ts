@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { LiveState } from '../types'
-import { ageText, clock, emptyBuf, lapText, linkView, mergeChart, outageText, rateText, shownStatus, sinceOf, trail } from './model'
+import { ageText, clock, emptyBuf, lapText, linkView, mergeChart, offState, outageText, rateText, shownStatus, sinceOf, trail } from './model'
 
 const chart = (t: number[], speed: (number | null)[], extra: Record<string, (number | null)[]> = {}): LiveState['chart'] => ({
   t,
@@ -66,5 +66,15 @@ describe('실시간 표시', () => {
     expect(lapText(31.2)).toBe('31.2')
     expect(lapText(null)).toBe('—')
     expect(clock(Date.UTC(2026, 10, 14, 3, 41, 7) / 1000)).toBe('12:41:07') // UTC 03:41 = 한국 12:41
+  })
+})
+
+describe('수신이 꺼졌을 때의 틀', () => {
+  it('타일 11개 · 원천 5개가 전부 무수신이고 값은 없다', () => {
+    const s = offState(100)
+    expect(s.tiles).toHaveLength(11)
+    expect(s.tiles.every((t) => t.status === 'none' && t.value === null)).toBe(true)
+    expect(s.sources.map((x) => x.status)).toEqual(['none', 'none', 'none', 'none', 'none'])
+    expect(linkView(s.link).text).toBe('수신 없음')
   })
 })

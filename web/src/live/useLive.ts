@@ -8,7 +8,8 @@ import type { LiveState } from '../types'
 import { type ChartBuf, emptyBuf, FROZEN_S, mergeChart, POLL_MS, sinceOf } from './model'
 
 const TIMEOUT_MS = 5000 // 응답이 이보다 늦으면 끊고 다시 묻는다
-const STOP = new Set(['live_off', 'login_required', 'forbidden'])
+const STOP = new Set(['login_required', 'forbidden'])
+const OFF_RETRY_MS = 10000 // 수신이 꺼져 있으면 드물게만 다시 묻는다 (서버 설정이 켜지면 저절로 넘어가게)
 
 export interface Live {
   state: LiveState | null
@@ -57,6 +58,7 @@ export function useLive(): Live {
         const err = e instanceof ApiError ? e : new ApiError(0, 'network', '서버 연결 실패', null)
         setError(err)
         if (STOP.has(err.code) || err.status === 401 || err.status === 403) return
+        if (err.code === 'live_off') return void next(OFF_RETRY_MS)
         fails += 1
         next(Math.min(5000, POLL_MS * 2 ** Math.min(fails, 4)))
       } finally {

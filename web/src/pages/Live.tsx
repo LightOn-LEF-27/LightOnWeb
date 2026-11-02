@@ -7,7 +7,7 @@ import { useApi } from '../api'
 import LiveChart from '../live/LiveChart'
 import LiveMap from '../live/LiveMap'
 import {
-  ageText, clock, deviceView, lapText, linkView, onOff, outageText, PANELS, rateText, receiverView, shownStatus, STATUS_WORD, tileValue, trail,
+  ageText, clock, deviceView, lapText, linkView, offState, onOff, outageText, PANELS, rateText, receiverView, shownStatus, STATUS_WORD, tileValue, trail,
 } from '../live/model'
 import { useLive } from '../live/useLive'
 import { ThemeContext } from '../themeContext'
@@ -15,8 +15,13 @@ import type { LiveState, LiveTile, LiveTrack } from '../types'
 
 export default function Live() {
   const theme = useContext(ThemeContext)
-  const { state, buf, error, frozen, frozenFor } = useLive()
-  const track = useApi<LiveTrack>(state ? '/api/live/track' : null)
+  const live = useLive()
+  const { buf, error, frozenFor } = live
+  // 수신이 꺼져 있으면 아무것도 안 받은 틀을 회색으로 보인다 (켜지면 다음 묻기에서 넘어간다)
+  const off = !live.state && error?.code === 'live_off'
+  const state = useMemo(() => live.state ?? (off ? offState() : null), [live.state, off])
+  const frozen = live.frozen && !off
+  const track = useApi<LiveTrack>(live.state ? '/api/live/track' : null)
   const tiles = useMemo(() => new Map((state?.tiles ?? []).map((t) => [t.id, t])), [state])
   const path = useMemo(() => (state ? trail(buf, state.now) : []), [buf, state])
 
@@ -24,7 +29,7 @@ export default function Live() {
     if (error)
       return (
         <div className="page-msg">
-          <h1>{error.code === 'live_off' ? '실시간 수신 꺼짐' : '실시간 값을 불러올 수 없음'}</h1>
+          <h1>실시간 값을 불러올 수 없음</h1>
           <p>{error.message}</p>
         </div>
       )
@@ -34,6 +39,7 @@ export default function Live() {
   const pos = state.position
   return (
     <div className="live">
+      {off && <div className="live-band off">{error?.message} · 화면 틀만 표시</div>}
       {state.source.replay && <div className="live-band replay">재생 중 — 실제 주행 아님</div>}
       {frozen && (
         <div className="live-band frozen">
@@ -62,7 +68,7 @@ export default function Live() {
             {track.data ? (
               <LiveMap track={track.data} trail={path} position={pos} fresh={!frozen && !!pos && pos.age_s <= 2} theme={theme} height={260} />
             ) : (
-              <p className="panel-msg muted">{track.error ? track.error.message : '경기장 불러오는 중…'}</p>
+              <p className="panel-msg muted">{off ? '수신이 켜지면 경기장 · 지금 위치 표시' : track.error ? track.error.message : '경기장 불러오는 중…'}</p>
             )}
             <Laps laps={state.laps} />
           </section>

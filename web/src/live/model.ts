@@ -130,3 +130,28 @@ export const PANELS: { key: string; title: string; series: PanelSeries[] }[] = [
   { key: 'power', title: '전력 · 전류', series: [{ id: 'battery.power_kw', color: 0 }, { id: 'battery.current_a', right: true, color: 2 }] },
   { key: 'temp', title: '온도', series: [{ id: 'bms.temp_max_c', color: 0 }, { id: 'motor.t_motor_c', color: 2 }, { id: 'motor.t_igbt_c', color: 1 }] },
 ]
+
+// ---------------------------------------------------------------- 수신이 꺼졌을 때의 틀
+
+// 서버에 수신 폴더가 없으면(live_off) 엔진 상태가 오지 않는다. 화면 모양만 보이게 '아무것도 안 받은 상태' 를 만든다.
+// 이름 · 단위는 엔진 lefdata.live 의 TILES · CHANNELS · SOURCES 를 옮겨 둔 것 — 수신이 켜지면 엔진 것을 쓴다
+const OFF_TILES: [string, string, string, number][] = [
+  ['gps.speed_kmh', '속도', 'km/h', 0], ['battery.power_kw', '전력', 'kW', 1], ['battery.voltage_v', '팩 전압', 'V', 1],
+  ['battery.current_a', '배터리 전류', 'A', 0], ['bms.soc_pct', 'SOC', '%', 1], ['bms.cell_min_v', '셀 최저 전압', 'V', 3],
+  ['bms.temp_max_c', '셀 최고 온도', '°C', 0], ['motor.t_motor_c', '모터 온도', '°C', 0], ['motor.t_igbt_c', '인버터(IGBT) 온도', '°C', 0],
+  ['pedal.apps_pct', '가속페달', '%', 0], ['lv.voltage_v', 'LV 전압 (추정 환산)', 'V', 1],
+]
+const OFF_SOURCES: [string, string][] = [['bms', 'BMS'], ['inverter', '인버터'], ['pedal', '가속페달'], ['gps', 'GPS'], ['lv', 'LV']]
+
+export function offState(now = Date.now() / 1000): LiveState {
+  return {
+    contract: '', now, car: '', source: { replay: false },
+    receiver: { status: 'unknown', since: null },
+    device: { status: 'unknown', boot_at: null, firmware: null, boots: 0 },
+    link: { status: 'none', age_s: null, period_s: 0.5, rate_10s: null, outages: 0, longest_s: null, since_s: null },
+    sources: OFF_SOURCES.map(([id, label]) => ({ id, label, status: 'none', age_s: null })),
+    tiles: OFF_TILES.map(([id, label, unit, digits]) => ({ id, label, unit, sign: '', digits, value: null, age_s: null, status: 'none', alert: null })),
+    inverter: { status: 'none', enabled: null, ready: null, errors: [], warnings: [], age_s: null },
+    position: null, laps: null, alerts: [], events: [], chart: { t: [], series: {} },
+  }
+}

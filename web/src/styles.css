@@ -1535,6 +1535,11 @@ ul.plain {
 .live-band.replay {
   background: color-mix(in srgb, var(--best) 30%, var(--panel));
 }
+.live-band.off {
+  background: var(--bar);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-label);
+}
 .live-band.frozen {
   background: var(--warn-band);
   border-bottom: 1px solid var(--warn);
