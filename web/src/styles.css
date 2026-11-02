@@ -144,6 +144,8 @@ select {
   flex-shrink: 0;
 }
 .appbar .brand {
+  color: inherit;
+  text-decoration: none;
   display: flex;
   align-items: center;
   padding: 0 14px;

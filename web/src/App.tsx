@@ -1,7 +1,7 @@
 // 틀 — 로그인 확인 → 앱 바 · 본문 · 상태 줄. 주소는 세션 ID(sid)로만 세션을 가리킨다 (계약 §3-1)
 
 import { useCallback, useEffect, useState } from 'react'
-import { Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom'
+import { Link, Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom'
 
 import { ApiError, getJson, post, useApi } from './api'
 import Later from './pages/Later'
@@ -62,7 +62,7 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
   return (
     <div className="app">
       <header className="appbar">
-        <div className="brand">LIGHTON DATA</div>
+        <Link to="/sessions" className="brand" title="처음 화면으로">LIGHTON DATA</Link>
         <nav style={{ display: 'flex' }} aria-label="화면">
           <NavLink to="/sessions" className={tab}>
             세션
