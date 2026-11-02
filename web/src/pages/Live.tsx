@@ -1,0 +1,205 @@
+// 실시간 화면 (계약 §12, 실시간화면_v1.md) — 0.5 s 마다 받은 상태를 그리기만 한다. 다시 계산하지 않는다.
+// 분기는 id · status · level · kind 로만 (문구는 엔진 것). 서버 응답이 끊기면 화면 전체를 낡음으로 돌린다
+
+import { useContext, useMemo } from 'react'
+
+import { useApi } from '../api'
+import LiveChart from '../live/LiveChart'
+import LiveMap from '../live/LiveMap'
+import {
+  ageText, clock, deviceView, lapText, linkView, onOff, outageText, PANELS, rateText, receiverView, shownStatus, STATUS_WORD, tileValue, trail,
+} from '../live/model'
+import { useLive } from '../live/useLive'
+import { ThemeContext } from '../themeContext'
+import type { LiveState, LiveTile, LiveTrack } from '../types'
+
+export default function Live() {
+  const theme = useContext(ThemeContext)
+  const { state, buf, error, frozen, frozenFor } = useLive()
+  const track = useApi<LiveTrack>(state ? '/api/live/track' : null)
+  const tiles = useMemo(() => new Map((state?.tiles ?? []).map((t) => [t.id, t])), [state])
+  const path = useMemo(() => (state ? trail(buf, state.now) : []), [buf, state])
+
+  if (!state) {
+    if (error)
+      return (
+        <div className="page-msg">
+          <h1>{error.code === 'live_off' ? '실시간 수신 꺼짐' : '실시간 값을 불러올 수 없음'}</h1>
+          <p>{error.message}</p>
+        </div>
+      )
+    return <div className="page-msg muted">실시간 값 불러오는 중…</div>
+  }
+
+  const pos = state.position
+  return (
+    <div className="live">
+      {state.source.replay && <div className="live-band replay">재생 중 — 실제 주행 아님</div>}
+      {frozen && (
+        <div className="live-band frozen">
+          화면 갱신 멈춤 — 서버 응답 {Math.round(frozenFor ?? 0)} s 없음{error ? ` (${error.message})` : ''} · 아래 값은 그 전 값
+        </div>
+      )}
+      <TopBar s={state} frozen={frozen} />
+
+      <div className="live-grid">
+        <section className="live-tiles" aria-label="지금 값">
+          {state.tiles.map((t) => (
+            <Tile key={t.id} t={t} frozen={frozen} />
+          ))}
+        </section>
+
+        <section className="panel live-charts">
+          <h2>최근 5분</h2>
+          {PANELS.map((p) => (
+            <LiveChart key={p.key} title={p.title} series={p.series} buf={buf} now={state.now} tiles={tiles} theme={theme} height={110} />
+          ))}
+        </section>
+
+        <div className="live-side">
+          <section className="panel live-map">
+            <h2>트랙맵</h2>
+            {track.data ? (
+              <LiveMap track={track.data} trail={path} position={pos} fresh={!frozen && !!pos && pos.age_s <= 2} theme={theme} height={260} />
+            ) : (
+              <p className="panel-msg muted">{track.error ? track.error.message : '경기장 불러오는 중…'}</p>
+            )}
+            <Laps laps={state.laps} />
+          </section>
+          <section className="panel">
+            <h2>경고</h2>
+            {state.alerts.length ? (
+              <ul className="live-list">
+                {state.alerts.map((a) => (
+                  <li key={a.id} className={`live-alert ${frozen ? 'stale' : a.level}`}>
+                    <span className="live-dot" aria-hidden="true" />
+                    <span>{a.text}</span>
+                    {a.since !== null && <span className="muted">{clock(a.since)}부터</span>}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="panel-msg muted">켜진 경고 없음</p>
+            )}
+          </section>
+          <Inverter inv={state.inverter} frozen={frozen} />
+        </div>
+
+        <section className="panel live-events">
+          <h2>사건</h2>
+          {state.events.length ? (
+            <ul className="live-list">
+              {state.events.map((e, i) => (
+                <li key={`${e.t}-${i}`} className={`live-event ${e.kind}`}>
+                  <span className="mono">{clock(e.t)}</span>
+                  <span>{e.text}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="panel-msg muted">오늘 사건 없음</p>
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
+
+// 맨 윗줄 — 수신 · 수신률 · 끊김 · 장치 · 수신기 · 원천별 표시등 (설계안 §4-2 "맨 윗줄은 언제나 수신 상태")
+function TopBar({ s, frozen }: { s: LiveState; frozen: boolean }) {
+  const link = linkView(s.link)
+  const dev = deviceView(s.device)
+  const rx = receiverView(s.receiver)
+  const tone = (t: string) => (frozen && t !== 'none' ? 'stale' : t)
+  return (
+    <div className="live-top" role="status">
+      <span className={`live-flag ${tone(link.tone)}`}>
+        <span className="live-dot" aria-hidden="true" />
+        {frozen ? '수신 — 화면 갱신 멈춤' : link.text}
+      </span>
+      <span>{rateText(s.link)}</span>
+      <span>{outageText(s.link)}</span>
+      <span className={`live-flag ${tone(dev.tone)}`}>
+        <span className="live-dot" aria-hidden="true" />
+        {dev.text}
+      </span>
+      <span className={`live-flag ${tone(rx.tone)}`}>
+        <span className="live-dot" aria-hidden="true" />
+        {rx.text}
+      </span>
+      <span className="live-sources">
+        {s.sources.map((src) => (
+          <span key={src.id} className={`live-flag ${tone(src.status)}`} title={src.age_s !== null ? ageText(src.age_s) : '받은 적 없음'}>
+            <span className="live-dot" aria-hidden="true" />
+            {src.label}
+          </span>
+        ))}
+      </span>
+      <span className="spacer" />
+      <span className="muted">
+        {s.car}
+        {s.device.firmware && ` · ${s.device.firmware}`}
+        {s.device.boots > 0 && ` · 부팅 ${s.device.boots}번`}
+        {!!s.source.bad_rows && ` · 깨진 줄 ${s.source.bad_rows}`}
+      </span>
+    </div>
+  )
+}
+
+// 타일 다섯 상태 — 위험 · 주의 · 정상은 색, 낡음은 회색 + 지난 초, 무수신은 빗금 + "—" (낡음 · 무수신이 먼저)
+function Tile({ t, frozen }: { t: LiveTile; frozen: boolean }) {
+  const st = shownStatus(t.status, frozen)
+  const word = STATUS_WORD[st]
+  return (
+    <div className={`live-tile ${st}`} title={[t.id, t.sign && `부호: ${t.sign}`].filter(Boolean).join('\n')}>
+      <div className="live-tile-label">
+        <span>{t.label}</span>
+        {word && <span className="live-tile-word">{word}</span>}
+      </div>
+      <div className="live-tile-value">
+        {tileValue(t)}
+        {t.value !== null && <span className="live-tile-unit">{t.unit}</span>}
+      </div>
+      <div className="live-tile-age">{st === 'none' ? '수신 없음' : st === 'stale' ? (frozen ? '갱신 멈춤' : ageText(t.age_s)) : ''}</div>
+    </div>
+  )
+}
+
+function Laps({ laps }: { laps: LiveState['laps'] }) {
+  if (!laps) return <p className="panel-msg muted">랩 — 계측선 통과 전</p>
+  return (
+    <div className="live-laps">
+      <span>
+        랩 <strong>{laps.count}</strong>
+      </span>
+      <span>이번 {lapText(laps.current_s)}</span>
+      <span>직전 {lapText(laps.last_s)}</span>
+      <span>
+        최고 <span className="best">{lapText(laps.best_s)}</span>
+      </span>
+      <span className="live-laps-basis muted">{laps.basis}</span>
+    </div>
+  )
+}
+
+function Inverter({ inv, frozen }: { inv: LiveState['inverter']; frozen: boolean }) {
+  const st = shownStatus(inv.status, frozen)
+  return (
+    <section className={`panel live-inverter ${st}`}>
+      <h2>
+        인버터
+        {(st === 'stale' || st === 'none') && <span className="muted"> · {st === 'none' ? '수신 없음' : frozen ? '갱신 멈춤' : ageText(inv.age_s)}</span>}
+      </h2>
+      <dl className="live-facts">
+        <dt>구동 허용</dt>
+        <dd>{onOff(inv.enabled)}</dd>
+        <dt>운전 준비</dt>
+        <dd>{onOff(inv.ready)}</dd>
+        <dt>오류</dt>
+        <dd className={inv.errors.length ? 'live-err' : ''}>{inv.errors.length ? inv.errors.join(' · ') : '없음'}</dd>
+        <dt>경고</dt>
+        <dd className={inv.warnings.length ? 'live-warn-text' : ''}>{inv.warnings.length ? inv.warnings.join(' · ') : '없음'}</dd>
+      </dl>
+    </section>
+  )
+}

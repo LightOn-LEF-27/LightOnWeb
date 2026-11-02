@@ -5,6 +5,7 @@ import { Link, Navigate, NavLink, Route, Routes, useLocation } from 'react-route
 
 import { ApiError, getJson, post, useApi } from './api'
 import Later from './pages/Later'
+import Live from './pages/Live'
 import Login from './pages/Login'
 import NotFound from './pages/NotFound'
 import SessionList from './pages/SessionList'
@@ -58,9 +59,10 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
     setTheme(t)
   }
   const tab = ({ isActive }: { isActive: boolean }) => `tab${isActive ? ' active' : ''}`
+  const live = useLocation().pathname === '/live' // 실시간은 피트에서 폰으로도 본다 — PC 최소 폭을 풀어 준다
 
   return (
-    <div className="app">
+    <div className={`app${live ? ' app-live' : ''}`}>
       <header className="appbar">
         <Link to="/sessions" className="brand" title="처음 화면으로">LIGHTON DATA</Link>
         <nav style={{ display: 'flex' }} aria-label="화면">
@@ -69,6 +71,9 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
           </NavLink>
           <NavLink to="/analysis" className={tab}>
             분석
+          </NavLink>
+          <NavLink to="/live" className={tab}>
+            실시간
           </NavLink>
           {/* 레이싱 라인은 아직 없지만 탭은 둔다 — 누르면 "구현 중" 안내 (사이트_설계.md §7) */}
           <NavLink to="/racing-line" className={({ isActive }) => `tab later${isActive ? ' active' : ''}`}>
@@ -106,6 +111,7 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
           <Route path="/sessions/:sid" element={<SessionView />} />
           <Route path="/racing-line" element={<Later what="레이싱 라인" />} />
           <Route path="/analysis" element={<Analysis />} />
+          <Route path="/live" element={<Live />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
         </ThemeContext.Provider>

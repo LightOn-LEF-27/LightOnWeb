@@ -230,3 +230,44 @@ export interface Info {
     store: { format: number; sessions: number; retired_sids: number }
   }
 }
+
+// §12-4 실시간 state() — 0.5 s 마다 (GET /api/live/state?since=). 화면은 그리기만 하고 다시 계산하지 않는다
+export type LiveStatus = 'danger' | 'warn' | 'ok' | 'stale' | 'none'
+export type LiveLevel = 'danger' | 'warn' | 'info'
+
+export interface LiveTile {
+  id: string
+  label: string
+  unit: string
+  sign: string
+  digits: number
+  value: number | null
+  age_s: number | null
+  status: LiveStatus
+  alert: string | null
+}
+
+export interface LiveState {
+  contract: string
+  now: number // 서버 시계 (epoch s)
+  car: string
+  source: { replay: boolean; bad_rows?: number; unknown_topics?: number }
+  receiver: { status: 'connected' | 'disconnected' | 'unknown'; since: number | null }
+  device: { status: 'on' | 'off' | 'disconnected' | 'unknown'; boot_at: number | null; firmware: string | null; boots: number }
+  link: { status: 'ok' | 'late' | 'lost' | 'none'; age_s: number | null; period_s: number; rate_10s: number | null; outages: number; longest_s: number | null; since_s: number | null }
+  sources: { id: string; label: string; status: 'ok' | 'stale' | 'none'; age_s: number | null }[]
+  tiles: LiveTile[]
+  inverter: { status: LiveStatus; enabled: boolean | null; ready: boolean | null; errors: string[]; warnings: string[]; age_s: number | null }
+  position: { frame_id: string | null; x_m: number; y_m: number; age_s: number } | null
+  laps: { count: number; current_s: number | null; last_s: number | null; best_s: number | null; basis: string } | null
+  alerts: { id: string; level: LiveLevel; text: string; value: number | null; since: number | null }[]
+  events: { t: number; kind: string; text: string }[]
+  chart: { t: number[]; series: Record<string, (number | null)[]> }
+}
+
+// §12-5 실시간 track() — 경기장 기준선 · 계측선 (get_track 과 같은 좌표계)
+export interface LiveTrack {
+  frame_id: string | null
+  line: { x_m: number[]; y_m: number[] }
+  gate: { x: number; y: number; heading_deg: number; half_width_m: number | null }
+}

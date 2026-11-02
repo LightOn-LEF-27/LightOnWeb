@@ -28,6 +28,8 @@
   --trace-0: #f08a3c; /* 기준 랩 */
   --trace-1: #e8e8e8; /* 비교 1 */
   --trace-2: #5b9bf0; /* 비교 2 */
+  --ok: #18b04f; /* 실시간 — 정상 */
+  --danger: #e2261c; /* 실시간 — 위험 */
   color-scheme: dark;
 }
 
@@ -58,6 +60,8 @@
   --trace-0: #e06a12;
   --trace-1: #3a4048; /* 라이트에서는 흰색이 안 보여 진한 회색 */
   --trace-2: #2463c4;
+  --ok: #138a3d;
+  --danger: #c4231a;
   color-scheme: light;
 }
 
@@ -1510,4 +1514,319 @@ ul.plain {
 .chart-tip .tip-unit {
   margin-left: 4px;
   color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------- 실시간 (계약 §12) */
+
+.app.app-live {
+  min-width: 0; /* 피트에서 폰으로도 본다 */
+}
+.live {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.live-band {
+  padding: 6px 12px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--text-strong);
+}
+.live-band.replay {
+  background: color-mix(in srgb, var(--best) 30%, var(--panel));
+}
+.live-band.frozen {
+  background: var(--warn-band);
+  border-bottom: 1px solid var(--warn);
+}
+.live-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 6px 12px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.live-top .spacer {
+  flex: 1;
+}
+.live-sources {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.live-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.live-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.live-flag.ok .live-dot {
+  background: var(--ok);
+}
+.live-flag.warn .live-dot {
+  background: var(--warn);
+}
+.live-flag.danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+.live-flag.danger .live-dot {
+  background: var(--danger);
+}
+.live-flag.none .live-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+
+.live-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  grid-template-rows: auto auto 1fr;
+  grid-template-areas:
+    'tiles side'
+    'charts side'
+    'events side';
+  align-items: start;
+  gap: 10px;
+  padding: 10px;
+}
+.live-tiles {
+  grid-area: tiles;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+.live-tile {
+  min-height: 72px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line);
+  background: var(--panel);
+}
+.live-tile.ok {
+  border-left-color: var(--ok);
+}
+.live-tile.warn {
+  border-left-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 16%, var(--panel));
+}
+.live-tile.danger {
+  border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 20%, var(--panel));
+}
+.live-tile.stale {
+  border-left-color: var(--text-muted);
+}
+.live-tile.none {
+  background: repeating-linear-gradient(135deg, var(--panel) 0 6px, var(--panel-2) 6px 12px);
+}
+.live-tile.stale .live-tile-value,
+.live-tile.none .live-tile-value {
+  color: var(--text-muted);
+}
+.live-tile-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-label);
+}
+.live-tile-word {
+  font-weight: 700;
+}
+.live-tile.warn .live-tile-word {
+  color: var(--warn);
+}
+.live-tile.danger .live-tile-word {
+  color: var(--danger);
+}
+.live-tile-value {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.live-tile-unit {
+  margin-left: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.live-tile-age {
+  min-height: 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.live-map-canvas {
+  display: block;
+  width: 100%;
+}
+.live-laps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  padding: 6px 10px 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  border-top: 1px solid var(--line-faint);
+}
+.live-laps strong {
+  color: var(--text-strong);
+}
+.live-laps-basis {
+  flex-basis: 100%;
+  font-size: 10px;
+}
+.live-charts {
+  grid-area: charts;
+}
+.live-chart {
+  padding: 4px 8px 2px;
+}
+.live-chart + .live-chart {
+  border-top: 1px solid var(--line-faint);
+}
+.live-chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  font-size: 11px;
+}
+.live-chart-title {
+  font-weight: 600;
+  color: var(--text-label);
+}
+.live-chart-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.live-chart-key i {
+  display: inline-block;
+  width: 14px;
+  border-top: 2px solid;
+}
+.live-chart-key i.dashed {
+  border-top-style: dashed;
+}
+.live-chart-plot {
+  width: 100%;
+}
+.live-side {
+  grid-area: side;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.live-events {
+  grid-area: events;
+}
+.panel .live-list {
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+}
+.live-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line-faint);
+}
+.live-list .mono {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.live-alert .live-dot {
+  align-self: center;
+}
+.live-alert.danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+.live-alert.danger .live-dot {
+  background: var(--danger);
+}
+.live-alert.warn .live-dot {
+  background: var(--warn);
+}
+.live-alert.info .live-dot {
+  background: var(--text-strong); /* 알림 — 판정이 아닌 것 (설계안 §4-2 흰 배지) */
+}
+.live-event.outage {
+  color: var(--danger);
+}
+.live-event.restored {
+  color: var(--ok);
+}
+.live-facts {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 4px 8px;
+  margin: 0;
+  padding: 6px 10px 8px;
+  font-size: 12px;
+}
+.live-facts dt {
+  color: var(--text-muted);
+}
+.live-facts dd {
+  margin: 0;
+}
+.live-inverter.danger {
+  border-color: var(--danger);
+}
+.live-inverter.stale dd,
+.live-inverter.none dd {
+  color: var(--text-muted);
+}
+.live-err {
+  color: var(--danger);
+  font-weight: 600;
+}
+.live-warn-text {
+  color: var(--warn);
+}
+
+@media (max-width: 860px) {
+  .app-live .appbar {
+    overflow-x: auto;
+  }
+  .app-live .appbar > * {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .app-live .statusbar {
+    display: none;
+  }
+  .live-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-template-areas: 'tiles' 'side' 'charts' 'events';
+    padding: 8px;
+  }
+  .live-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .live-tile-value {
+    font-size: 22px;
+  }
 }
