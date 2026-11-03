@@ -7,11 +7,13 @@ import { useApi } from '../api'
 import LiveChart from '../live/LiveChart'
 import LiveMap from '../live/LiveMap'
 import {
-  ageText, clock, deviceView, lapText, linkView, offState, onOff, outageText, PANELS, rateText, receiverView, shownStatus, STATUS_WORD, tileValue, trail,
+  ageText, clock, deviceView, gaugePos, kindOf, lapText, linkView, offState, onOff, outageText, PANELS, rateText, receiverView, scaleOf, shownStatus, SPARK,
+  sparkPoints, STATUS_WORD, type TileKind, tileValue, trail,
 } from '../live/model'
 import { useLive } from '../live/useLive'
 import { ThemeContext } from '../themeContext'
-import type { LiveState, LiveTile, LiveTrack } from '../types'
+import { formatValue } from '../overview/model'
+import type { LiveScale, LiveState, LiveStatus, LiveTile, LiveTrack } from '../types'
 
 export default function Live() {
   const theme = useContext(ThemeContext)
@@ -50,8 +52,12 @@ export default function Live() {
 
       <div className="live-grid">
         <section className="live-tiles" aria-label="지금 값">
-          {state.tiles.map((t) => (
-            <Tile key={t.id} t={t} frozen={frozen} />
+          {(['big', 'gauge', 'small'] as const).map((k) => (
+            <div key={k} className={`live-row ${k}`}>
+              {state.tiles.filter((t) => kindOf(t.id) === k).map((t) => (
+                <Tile key={t.id} t={t} kind={k} frozen={frozen} spark={SPARK.has(t.id) ? sparkPoints(buf, t.id, state.now) : null} />
+              ))}
+            </div>
           ))}
         </section>
 
@@ -152,12 +158,14 @@ function TopBar({ s, frozen }: { s: LiveState; frozen: boolean }) {
   )
 }
 
-// 타일 다섯 상태 — 위험 · 주의 · 정상은 색, 낡음은 회색 + 지난 초, 무수신은 빗금 + "—" (낡음 · 무수신이 먼저)
-function Tile({ t, frozen }: { t: LiveTile; frozen: boolean }) {
+// 타일 다섯 상태 — 위험 · 주의 · 정상은 색, 낡음은 회색 + 지난 초, 무수신은 빗금 + "—" (낡음 · 무수신이 먼저).
+// 범위 · 한도가 있는 값은 게이지, 한계를 모르는 값은 최근 1분 추세선을 붙인다
+function Tile({ t, kind, frozen, spark }: { t: LiveTile; kind: TileKind; frozen: boolean; spark: ([number, number] | null)[] | null }) {
   const st = shownStatus(t.status, frozen)
   const word = STATUS_WORD[st]
+  const scale = kind === 'small' ? null : scaleOf(t)
   return (
-    <div className={`live-tile ${st}`} title={[t.id, t.sign && `부호: ${t.sign}`].filter(Boolean).join('\n')}>
+    <div className={`live-tile ${kind} ${st}`} title={[t.id, t.sign && `부호: ${t.sign}`].filter(Boolean).join(' · ')}>
       <div className="live-tile-label">
         <span>{t.label}</span>
         {word && <span className="live-tile-word">{word}</span>}
@@ -166,8 +174,56 @@ function Tile({ t, frozen }: { t: LiveTile; frozen: boolean }) {
         {tileValue(t)}
         {t.value !== null && <span className="live-tile-unit">{t.unit}</span>}
       </div>
+      {scale && <Gauge v={t.value} s={scale} st={st} />}
+      {spark && <Spark pts={spark} />}
       <div className="live-tile-age">{st === 'none' ? '수신 없음' : st === 'stale' ? (frozen ? '갱신 멈춤' : ageText(t.age_s)) : ''}</div>
     </div>
+  )
+}
+
+// 가로 막대 게이지 — 채움은 0(범위에 0 이 있으면) 또는 최소에서 지금 값까지, 색은 타일 상태. 선은 주의(노랑) · 한도(빨강)
+function Gauge({ v, s, st }: { v: number | null; s: LiveScale; st: LiveStatus }) {
+  const base = s.min < 0 && s.max > 0 ? gaugePos(0, s) : 0
+  const p = v === null ? null : gaugePos(v, s)
+  const at = (x: number) => `${gaugePos(x, s) * 100}%`
+  const fmt = (x: number) => formatValue(x, Number.isInteger(x) ? 0 : 1)
+  const crowded = [s.warn, s.danger].some((m) => m !== null && gaugePos(m, s) > 0.88) // 끝 숫자와 겹치면 끝 숫자를 뺀다
+  return (
+    <div className="live-gauge">
+      <div className="live-gauge-track">
+        {p !== null && <div className={`live-gauge-fill ${st}`} style={{ left: `${Math.min(base, p) * 100}%`, width: `${Math.abs(p - base) * 100}%` }} />}
+        {base > 0 && <i className="live-gauge-zero" style={{ left: `${base * 100}%` }} />}
+        {s.warn !== null && <i className="live-gauge-mark warn" style={{ left: at(s.warn) }} />}
+        {s.danger !== null && <i className="live-gauge-mark danger" style={{ left: at(s.danger) }} />}
+      </div>
+      <div className="live-gauge-scale">
+        <span>{fmt(s.min)}</span>
+        {s.warn !== null && <span className="mark warn" style={{ left: at(s.warn) }}>{fmt(s.warn)}</span>}
+        {s.danger !== null && <span className="mark danger" style={{ left: at(s.danger) }}>{fmt(s.danger)}</span>}
+        <span>{crowded ? '' : fmt(s.max)}</span>
+      </div>
+    </div>
+  )
+}
+
+// 최근 1분 추세선 — 세로는 그 1분의 최소 ~ 최대 (모양만 본다, 눈금 없음)
+function Spark({ pts }: { pts: ([number, number] | null)[] }) {
+  if (!pts.length) return <div className="live-spark" />
+  const runs: string[] = []
+  let cur: string[] = []
+  for (const q of pts) {
+    if (q === null) {
+      if (cur.length > 1) runs.push(cur.join(' '))
+      cur = []
+    } else cur.push(`${(q[0] * 100).toFixed(1)},${(22 - q[1] * 20).toFixed(1)}`)
+  }
+  if (cur.length > 1) runs.push(cur.join(' '))
+  return (
+    <svg className="live-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true">
+      {runs.map((r, i) => (
+        <polyline key={i} points={r} />
+      ))}
+    </svg>
   )
 }
 

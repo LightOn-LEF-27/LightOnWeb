@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { LiveState } from '../types'
-import { ageText, clock, emptyBuf, lapText, linkView, mergeChart, offState, outageText, rateText, shownStatus, sinceOf, trail } from './model'
+import { ageText, clock, deviceView, emptyBuf, gaugePos, kindOf, lapText, linkView, mergeChart, offState, outageText, rateText, scaleOf, shownStatus, sinceOf, sparkPoints, trail } from './model'
 
 const chart = (t: number[], speed: (number | null)[], extra: Record<string, (number | null)[]> = {}): LiveState['chart'] => ({
   t,
@@ -76,5 +76,36 @@ describe('수신이 꺼졌을 때의 틀', () => {
     expect(s.tiles.every((t) => t.status === 'none' && t.value === null)).toBe(true)
     expect(s.sources.map((x) => x.status)).toEqual(['none', 'none', 'none', 'none', 'none'])
     expect(linkView(s.link).text).toBe('수신 없음')
+  })
+})
+
+describe('게이지 · 추세선', () => {
+  const tile = (id: string, over = {}) => ({ id, label: id, unit: '', sign: '', digits: 0, value: 50, age_s: 0.3, status: 'ok' as const, alert: null, ...over })
+  it('엔진이 범위를 주면 그것을, 없으면 정해진 값(규정 한도 · 0 ~ 100 %)만, 그 밖은 게이지 없음', () => {
+    expect(scaleOf(tile('battery.power_kw'))?.danger).toBe(80)
+    expect(scaleOf(tile('bms.temp_max_c'))?.danger).toBe(60)
+    expect(scaleOf(tile('bms.temp_max_c'))?.warn).toBeNull() // 55 °C 는 가정 — 엔진 문턱 파일에만
+    expect(scaleOf(tile('bms.cell_min_v'))).toBeNull()
+    const s = { min: 2.5, max: 4.2, warn: 3.0, danger: 2.8, dir: '<=' as const }
+    expect(scaleOf(tile('bms.cell_min_v', { scale: s }))).toEqual(s)
+  })
+  it('게이지 위치는 범위 밖이면 끝에 붙는다', () => {
+    const s = { min: -20, max: 90, warn: null, danger: 80, dir: '>=' as const }
+    expect(gaugePos(-20, s)).toBe(0)
+    expect(gaugePos(200, s)).toBe(1)
+    expect(gaugePos(35, s)).toBeCloseTo(0.5)
+  })
+  it('칸 모양 — 모르는 칸은 작은 숫자', () => {
+    expect(kindOf('gps.speed_kmh')).toBe('big')
+    expect(kindOf('bms.cell_min_v')).toBe('gauge')
+    expect(kindOf('새.채널')).toBe('small')
+  })
+  it('추세선 — 최근 60 s 를 0 ~ 1 로, 끊긴 곳은 null', () => {
+    const b = mergeChart(emptyBuf(), chart([0, 50, 60, 70, 100], [5, 10, null, 20, 30]), 100)
+    expect(sparkPoints(b, 'gps.speed_kmh', 100)).toEqual([[1 / 6, 0], null, [0.5, 0.5], [1, 1]]) // 40 s 이후만: 50 · 60(빈) · 70 · 100
+  })
+  it('장치 상태는 단정하지 않는다 — 연결 끊김 · 확인 중', () => {
+    expect(deviceView({ status: 'disconnected', boot_at: null, firmware: null, boots: 0 }).text).toBe('장치 연결 끊김')
+    expect(deviceView({ status: 'unknown', boot_at: null, firmware: null, boots: 0 }).text).toBe('장치 확인 중')
   })
 })

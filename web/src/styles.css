@@ -1608,9 +1608,23 @@ ul.plain {
 }
 .live-tiles {
   grid-area: tiles;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+}
+.live-row {
+  display: grid;
+  gap: 8px;
+}
+.live-row.big,
+.live-row.gauge {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.live-row.small {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.live-row:empty {
+  display: none;
 }
 .live-tile {
   min-height: 72px;
@@ -1669,6 +1683,92 @@ ul.plain {
   font-size: 12px;
   font-weight: 400;
   color: var(--text-muted);
+}
+.live-tile.big .live-tile-value {
+  font-size: 36px;
+}
+.live-tile.small {
+  min-height: 0;
+}
+.live-tile.small .live-tile-value {
+  font-size: 20px;
+}
+.live-gauge {
+  margin: 4px 0 2px;
+}
+.live-gauge-track {
+  position: relative;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--raised);
+}
+.live-gauge-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: var(--text-muted);
+}
+.live-gauge-fill.ok {
+  background: var(--ok);
+}
+.live-gauge-fill.warn {
+  background: var(--warn);
+}
+.live-gauge-fill.danger {
+  background: var(--danger);
+}
+.live-gauge-zero,
+.live-gauge-mark {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text-muted);
+}
+.live-gauge-mark.warn {
+  background: var(--warn);
+}
+.live-gauge-mark.danger {
+  background: var(--danger);
+}
+.live-gauge-scale {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  height: 14px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.live-gauge-scale .mark {
+  position: absolute;
+  transform: translateX(-50%);
+}
+.live-gauge-scale .mark.warn {
+  color: var(--warn);
+}
+.live-gauge-scale .mark.danger {
+  color: var(--danger);
+}
+.live-spark {
+  display: block;
+  width: 100%;
+  height: 24px;
+  margin: 2px 0;
+}
+.live-spark polyline {
+  fill: none;
+  stroke: var(--text-label);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.live-tile.big .live-spark {
+  height: 34px;
+}
+.live-tile.stale .live-spark polyline {
+  stroke: var(--text-muted);
 }
 .live-tile-age {
   min-height: 14px;
@@ -1828,10 +1928,14 @@ ul.plain {
     grid-template-areas: 'tiles' 'side' 'charts' 'events';
     padding: 8px;
   }
-  .live-tiles {
+  .live-row.big,
+  .live-row.gauge {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .live-row.small {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .live-tile-value {
-    font-size: 22px;
+  .live-tile.big .live-tile-value {
+    font-size: 30px;
   }
 }

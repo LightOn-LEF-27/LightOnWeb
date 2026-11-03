@@ -235,6 +235,15 @@ export interface Info {
 export type LiveStatus = 'danger' | 'warn' | 'ok' | 'stale' | 'none'
 export type LiveLevel = 'danger' | 'warn' | 'info'
 
+// 게이지 범위 · 문턱 (계약 §12-4 tiles[].scale — 엔진이 주면 그것을, 없으면 화면의 정해진 값만)
+export interface LiveScale {
+  min: number
+  max: number
+  warn: number | null
+  danger: number | null
+  dir: '>=' | '<=' // 문턱을 넘는 쪽 — >= 높을수록 위험 (온도 · 전력), <= 낮을수록 위험 (셀 전압 · SOC)
+}
+
 export interface LiveTile {
   id: string
   label: string
@@ -245,6 +254,7 @@ export interface LiveTile {
   age_s: number | null
   status: LiveStatus
   alert: string | null
+  scale?: LiveScale | null
 }
 
 export interface LiveState {
