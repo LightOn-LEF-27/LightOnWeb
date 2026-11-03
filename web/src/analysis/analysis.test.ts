@@ -108,6 +108,13 @@ describe('워크북', () => {
     expect(sheetAxes(sh, new Set(['bms.soc_pct']))).toBeNull()
     expect(sheetAxes({ name: 'd', axes: [[DELTA]] }, new Set([DELTA]))).toBeNull() // 시간 차만 남는 워크시트는 숨김
   })
+  it('가속도는 500 ms 평균 채널이 기본 — 없는 세션은 원래 채널, 원래 채널을 같이 그리지 않음', () => {
+    const sh = workbook('coach').sheets.find((x) => x.name === '코너')!
+    const both = new Set(['gps.speed_kmh', 'imu.lat_g', 'imu.lat_500ms_g'])
+    expect(sheetAxes(sh, both)).toEqual([['gps.speed_kmh'], ['imu.lat_500ms_g']])
+    expect(sheetAxes(sh, new Set(['gps.speed_kmh', 'imu.lat_g']))).toEqual([['gps.speed_kmh'], ['imu.lat_g']])
+    expect(sheetAxes({ name: 'd', axes: [['imu.long_500ms_g', 'imu.long_g']] }, new Set(['imu.long_g']))).toEqual([['imu.long_g']]) // 대신 쓴 채널이 겹치지 않음
+  })
   it('워크북 고르기 — 모르는 이름은 기본', () => {
     expect(workbook('coach').name).toBe('드라이버 코칭')
     expect(workbook('nope').key).toBe(WORKBOOKS[0].key)

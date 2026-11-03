@@ -1,6 +1,6 @@
 // g-g — 가로 = 좌우 가속도(좌선회를 왼쪽에), 세로 = 앞뒤 가속도(가속 위 · 제동 아래), 기준 랩의 표본마다 점 하나, 고리 0.5 · 1.0 · 1.5 g.
 // 커서 A 의 순간을 흰 점 + 지난 1 초 꼬리로. 아래 진행 막대 · ▶ 로 커서 A 를 옮긴다 (사이트_설계.md §7)
-// 값은 엔진이 0.5 s 이동평균한 것 (카메라 가속도계처럼 떨리는 값 — smooth_s 는 엔진이 한다)
+// 값은 0.5 s 평균 — 엔진의 500 ms 평균 채널, 없는 세션은 원래 채널을 엔진이 smooth_s 로 (카메라 가속도계처럼 떨리는 값)
 
 import { useEffect, useRef, useState } from 'react'
 
@@ -10,7 +10,8 @@ import { nearestIndex, trackIndex, xOfTrackPoint } from './lookup'
 import type { XMode } from './state'
 
 interface Props {
-  gg: SeriesResponse // x = 세션 시간, imu.lat_g · imu.long_g
+  gg: SeriesResponse // x = 세션 시간
+  ch: [string, string] // 좌우 · 앞뒤 가속도 채널
   track: TrackResponse | null // 커서(거리축) ↔ 시각을 잇는 데 쓴다
   x: XMode
   lapStart: number
@@ -31,8 +32,8 @@ function cssVar(name: string): string {
 export default function GG(p: Props) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const [playing, setPlaying] = useState(false)
-  const lat = p.gg.series.find((s) => s.channel_id === 'imu.lat_g')?.values ?? []
-  const lon = p.gg.series.find((s) => s.channel_id === 'imu.long_g')?.values ?? []
+  const lat = p.gg.series.find((s) => s.channel_id === p.ch[0])?.values ?? []
+  const lon = p.gg.series.find((s) => s.channel_id === p.ch[1])?.values ?? []
   const ts = p.gg.x.values
 
   // 그래프의 x(커서 A) ↔ 세션 시간

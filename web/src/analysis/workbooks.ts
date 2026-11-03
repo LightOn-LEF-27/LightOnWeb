@@ -21,8 +21,9 @@ export interface Workbook {
 const SPEED = ['gps.speed_kmh']
 const PEDAL = ['pedal.apps_pct', 'pedal.brake_f_bar', 'pedal.torque_cmd_pct']
 const STEER = ['steer.angle_deg']
-const LAT = ['imu.lat_g']
-const LONG = ['imu.long_g']
+// 차의 가속도는 500 ms 평균 채널이 기본 — 원래 채널(200 Hz)은 진동이 섞여 한 점 값이 튄다. 원래 채널은 채널 고르기로 겹쳐 본다
+const LAT = ['imu.lat_500ms_g']
+const LONG = ['imu.long_500ms_g']
 const CURRENT = ['battery.current_a']
 const VOLT = ['battery.voltage_v', 'motor.vdc_v']
 const POWER = ['battery.power_kw', 'battery.power_500ms_kw']
@@ -93,9 +94,17 @@ export function workbook(key: string | null): Workbook {
   return WORKBOOKS.find((w) => w.key === key) ?? WORKBOOKS[0]
 }
 
-// 워크시트를 이 세션에 맞춘 축 — 있는 채널만, 축마다 둘까지. 축이 하나도 안 남으면 null (숨김)
+// 후보가 없는 세션에서 대신 쓸 채널 — 평균 채널이 없는 옛 저장소 · 데모 세션
+export const FALLBACK: Record<string, string> = { 'imu.lat_500ms_g': 'imu.lat_g', 'imu.long_500ms_g': 'imu.long_g' }
+
+const pick = (c: string, available: Set<string>): string | null =>
+  available.has(c) ? c : FALLBACK[c] && available.has(FALLBACK[c]) ? FALLBACK[c] : null
+
+// 워크시트를 이 세션에 맞춘 축 — 있는 채널만(없으면 FALLBACK), 축마다 둘까지. 축이 하나도 안 남으면 null (숨김)
 export function sheetAxes(sheet: Sheet, available: Set<string>): string[][] | null {
-  const axes = sheet.axes.map((a) => a.filter((c) => available.has(c)).slice(0, MAX_PER_AXIS)).filter((a) => a.length)
+  const axes = sheet.axes
+    .map((a) => [...new Set(a.map((c) => pick(c, available)).filter((c): c is string => c !== null))].slice(0, MAX_PER_AXIS))
+    .filter((a) => a.length)
   return axes.some((a) => !a.includes(DELTA)) ? axes : null
 }
 

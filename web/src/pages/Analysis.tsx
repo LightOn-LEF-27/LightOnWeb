@@ -222,8 +222,11 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
   const colored = useApi<TrackResponse>(hasTrack && laps.data && mode.startsWith('ch:') ? `${base}/track?lap=${ref}&color=${encodeURIComponent(mode.slice(3))}` : null)
   const sectors = useApi<SectorsResponse>(hasTrack && hasLaps ? `${base}/sectors` : null)
   const deltas = useDeltas(sid, ref, traces, deltaOk || mode === 'delta')
-  const hasGG = channelMap.has('imu.lat_g') && channelMap.has('imu.long_g')
-  const gg = useApi<SeriesResponse>(hasGG && laps.data ? `${base}/series?ch=imu.lat_g&ch=imu.long_g&x=time&max_points=1500&smooth_s=0.5${ref === 'all' ? '' : `&lap=${ref}`}` : null)
+  // g-g 는 500 ms 평균 채널 — 없는 세션은 원래 채널을 엔진이 0.5 s 로 부드럽게 (같은 평균)
+  const ggAvg = channelMap.has('imu.lat_500ms_g') && channelMap.has('imu.long_500ms_g')
+  const ggCh: [string, string] = ggAvg ? ['imu.lat_500ms_g', 'imu.long_500ms_g'] : ['imu.lat_g', 'imu.long_g']
+  const hasGG = channelMap.has(ggCh[0]) && channelMap.has(ggCh[1])
+  const gg = useApi<SeriesResponse>(hasGG && laps.data ? `${base}/series?ch=${ggCh[0]}&ch=${ggCh[1]}&x=time&max_points=1500${ggAvg ? '' : '&smooth_s=0.5'}${ref === 'all' ? '' : `&lap=${ref}`}` : null)
 
   // 처음 범위 — 처음 받은 모든 계열(기준 · 비교 랩)을 덮는 범위. 모든 축이 이 범위를 같이 쓴다
   // (휠 · 두 번 클릭 · 이동 막대가 이 안에서 움직인다)
@@ -439,7 +442,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
           )}
           <CursorTable channels={shownChannels} traces={traces} responses={series.data} deltas={deltas} x={x} colors={colors} a={cur.a} b={cur.b} />
           {hasGG && gg.data && (
-            <GG gg={gg.data} track={track.data} x={x} lapStart={lapStart} lapEnd={lapEnd} a={cur.a} onA={(v) => setCur((c) => ({ ...c, a: v }))} group={group} theme={theme} />
+            <GG gg={gg.data} ch={ggCh} track={track.data} x={x} lapStart={lapStart} lapEnd={lapEnd} a={cur.a} onA={(v) => setCur((c) => ({ ...c, a: v }))} group={group} theme={theme} />
           )}
         </aside>
       </div>
