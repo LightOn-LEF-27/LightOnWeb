@@ -63,18 +63,19 @@ class Ch:
     digits: int = 1
     stale_s: float = 2.0
     source: str = ""
+    gauge: tuple[float, float] | None = None     # 화면 막대 게이지의 양 끝 (계약 §12-4 tiles[].scale). 문턱은 경고 규칙에서 온다
 
 
 CHANNELS = {c.id: c for c in (
     Ch("gps.speed_kmh", "속도", "km/h", digits=0, source="gps"),
     Ch("gps.x_m", "위치 (동쪽)", "m", "동쪽 +", 1, source="gps"),
     Ch("gps.y_m", "위치 (북쪽)", "m", "북쪽 +", 1, source="gps"),
-    Ch("battery.power_kw", "전력", "kW", "방전 +", 1, source="bms"),
+    Ch("battery.power_kw", "전력", "kW", "방전 +", 1, source="bms", gauge=(-20.0, 90.0)),      # 회생 쪽 조금 · 규정 80 kW 위 조금
     Ch("battery.voltage_v", "팩 전압", "V", "", 1, source="bms"),
     Ch("battery.current_a", "배터리 전류", "A", "방전 +, 배터리로 돌아오면 −", 0, source="bms"),
-    Ch("bms.soc_pct", "SOC", "%", "", 1, source="bms"),
-    Ch("bms.cell_min_v", "셀 최저 전압", "V", "", 3, source="bms"),
-    Ch("bms.temp_max_c", "셀 최고 온도", "°C", "", 0, source="bms"),
+    Ch("bms.soc_pct", "SOC", "%", "", 1, source="bms", gauge=(0.0, 100.0)),
+    Ch("bms.cell_min_v", "셀 최저 전압", "V", "", 3, source="bms", gauge=(2.5, 4.2)),          # 리튬이온 셀의 일반적인 하한 · 만충
+    Ch("bms.temp_max_c", "셀 최고 온도", "°C", "", 0, source="bms", gauge=(0.0, 70.0)),       # 규정 60 °C 위 조금
     Ch("bms.temp_min_c", "셀 최저 온도", "°C", "", 0, source="bms"),
     Ch("bms.dcl_kw", "방전 출력 한계 (DCL)", "kW", "", 1, 120.0, "bms"),          # 0x6D0 슬롯이 돌아가며 실려 드물다
     Ch("motor.t_motor_c", "모터 온도", "°C", "", 0, 15.0, "inverter"),             # 0x181 레지스터가 돌아가며 실린다
@@ -84,7 +85,7 @@ CHANNELS = {c.id: c for c in (
     Ch("motor.enabled", "구동 허용 (Ena)", "", "", 0, 15.0, "inverter"),
     Ch("motor.ready", "운전 준비 (Rdy)", "", "", 0, 15.0, "inverter"),
     Ch("motor.error_raw", "오류 비트", "", "", 0, 15.0, "inverter"),
-    Ch("pedal.apps_pct", "가속페달", "%", "밟을수록 +", 0, source="pedal"),
+    Ch("pedal.apps_pct", "가속페달", "%", "밟을수록 +", 0, source="pedal", gauge=(0.0, 100.0)),
     Ch("pedal.torque_cmd_pct", "토크 명령", "%", "가속 +", 0, source="pedal"),
     Ch("lv.voltage_v", "LV 전압 (추정 환산)", "V", "", 1, source="lv"),
 )}
@@ -536,6 +537,14 @@ class Live:
             return top["level"], x[1], age, top["id"]
         return "ok", x[1], age, None
 
+    def _scale(self, c: Ch) -> dict | None:
+        """막대 게이지 — 양 끝은 채널 표, 문턱은 그 채널의 경고 규칙(기본값 + 차별 문턱 파일)과 같은 값."""
+        if c.gauge is None:
+            return None
+        rule = next(iter(self.by_channel.get(c.id, ())), None)
+        return {"min": c.gauge[0], "max": c.gauge[1], "warn": rule.warn if rule else None, "danger": rule.danger if rule else None,
+                "dir": rule.op if rule else None}
+
     def _link(self, now: float) -> dict:
         late, lost = self._limits()
         p = self.period_s()
@@ -566,7 +575,7 @@ class Live:
             st, v, age, alert = self._status(ch, now)
             c = CHANNELS[ch]
             tiles.append({"id": ch, "label": c.label, "unit": c.unit, "sign": c.sign, "digits": c.digits, "value": _r(v, 4),
-                          "age_s": _r(age, 1), "status": st, "alert": alert})
+                          "age_s": _r(age, 1), "status": st, "alert": alert, "scale": self._scale(c)})
         sources = []
         for sid, label in SOURCES:
             last = self.seen.get(sid)

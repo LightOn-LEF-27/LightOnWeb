@@ -407,6 +407,19 @@ def test_state_is_strict_json_and_contract():
     assert [x["id"] for x in st["tiles"]] == list(live.TILES)
 
 
+def test_tile_scale_follows_rules(tmp_path):
+    st = live.Live().state(0.0)
+    sc = {x["id"]: x["scale"] for x in st["tiles"]}
+    assert sc["bms.temp_max_c"] == {"min": 0.0, "max": 70.0, "warn": 55.0, "danger": 60.0, "dir": ">="}
+    assert sc["battery.power_kw"]["danger"] == 80.0 and sc["battery.power_kw"]["warn"] is None
+    assert sc["bms.cell_min_v"] == {"min": 2.5, "max": 4.2, "warn": None, "danger": None, "dir": None}   # 차별 문턱이 없으면 게이지 끝만
+    assert sc["motor.t_motor_c"] is None and sc["gps.speed_kmh"] is None
+    p = tmp_path / "car.toml"
+    p.write_text('[[rule]]\nid = "W-CELL"\nchannel = "bms.cell_min_v"\nop = "<="\nwarn = 3.3\ndanger = 3.1\ntext = "셀"\n', encoding="utf-8")
+    sc = {x["id"]: x["scale"] for x in live.Live(rules=p).state(0.0)["tiles"]}
+    assert sc["bms.cell_min_v"]["warn"] == 3.3 and sc["bms.cell_min_v"]["dir"] == "<="
+
+
 def test_live_contract_is_the_engine_contract():
     from lefdata import api
     assert live.CONTRACT == api.CONTRACT_VERSION
