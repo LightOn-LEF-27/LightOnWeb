@@ -334,6 +334,22 @@ def test_engine_estimates_drive_state_when_power_and_speed_exist(tmp_path):
         api.configure()
 
 
+def test_rewriting_a_session_leaves_no_stale_series_files(tmp_path):
+    """같은 세션을 다시 쓸 때 채널 묶음이 바뀌어(주기가 다른 채널이 생겨) 파일 이름이 바뀌면 — 지난번 파일이 남지 않는다."""
+    root = tmp_path / "store"
+    store.write_session(circle_session(), root, tmp_path)
+    before = {p.name for p in (root / "LEF-27_2027-06-05_S1" / "series").glob("*.parquet")}
+    s = circle_session()
+    bat = next(b for b in s.blocks if b.key == "battery")
+    ts = np.arange(0.0, 100.0, 0.5)
+    bat.channels.append(Channel("current_avg_a", "배터리 전류 평균", "A", ts, np.full(len(ts), 100.0), digits=1))   # 다른 주기 → 파일 둘
+    store.write_session(s, root, tmp_path)
+    after = {p.name for p in (root / "LEF-27_2027-06-05_S1" / "series").glob("*.parquet")}
+    spec = json.loads((root / "LEF-27_2027-06-05_S1" / "session.json").read_text(encoding="utf-8"))["channels"]
+    assert "battery.parquet" in before and "battery.parquet" not in after
+    assert after == {Path(c["_file"]).name for c in spec}
+
+
 def test_real_driver_names_never_enter_the_store(tmp_path):
     s = circle_session()
     s.driver = "홍길동"
@@ -435,6 +451,24 @@ def test_race_smoothing_lowers_camera_noise(race_sids):
 
 
 @race
+def test_race_500ms_accel_channels_match_the_lap_table(race_sids):
+    """「500 ms 평균」 가속도 채널 (v0.16 추가) — 20 Hz 안팎, 원래 채널과 같은 부호, 랩 표의 가속도 최대 · 최소와 같은 평균.
+    원래 채널은 진동이 섞여 그보다 크게 튀고, 그렇다고 cautions 에 적혀 온다."""
+    for sid in race_sids:
+        ch = {c["channel_id"]: c for c in api.list_channels(sid)}
+        for k in ("long", "lat"):
+            raw, avg = ch[f"imu.{k}_g"], ch[f"imu.{k}_500ms_g"]
+            assert avg["derived"] and avg["unit"] == "g" and avg["sign"] == raw["sign"] and 15 <= avg["rate_hz"] <= 25
+            assert avg["source"] == raw["source"] and any("500 ms 평균" in c for c in raw["cautions"])
+        for row in api.get_laps(sid)["rows"]:
+            r = api.get_series(sid, ["imu.long_500ms_g", "imu.long_g"], lap=row["lap"], max_points=20_000)
+            avg, raw = r["series"]
+            hi, lo = max(v for v in avg["y_max"] if v is not None), min(v for v in avg["y_min"] if v is not None)
+            assert hi == pytest.approx(row["long_g_max"], abs=0.05) and lo == pytest.approx(row["long_g_min"], abs=0.05), (sid, row["lap"])
+            assert max(v for v in raw["y_max"] if v is not None) > hi
+
+
+@race
 def test_race_position_channels_follow_the_track(race_sids):
     """시간축 커서를 지도에 찍을 수 있게 세션 전체의 위치가 채널로 온다 — 코스(get_track)와 같은 좌표."""
     sid = race_sids[0]
@@ -525,7 +559,8 @@ def test_race_estimated_drive_state_agrees_with_the_camera(race_store, race_sids
         ch = {c["channel_id"]: c for c in api.list_channels(sid)}["drive.state_est"]
         assert ch["derived"] and [lv["value"] for lv in ch["levels"]] == [1, 0, -1]
         st = pd.read_parquet(race_store / sid / "series" / "drive.parquet")
-        imu = pd.read_parquet(race_store / sid / "series" / "imu.parquet")
+        spec = {c["channel_id"]: c for c in json.loads((race_store / sid / "session.json").read_text(encoding="utf-8"))["channels"]}
+        imu = pd.read_parquet(race_store / sid / spec["imu.long_g"]["_file"])           # 주기가 다른 채널은 다른 파일 (imu_1 · imu_2)
         long_g = ser.sample_at(imu["t_s"].to_numpy(), ser.smooth(imu["t_s"].to_numpy(), imu["long_g"].to_numpy(float), 0.5), st["t_s"].to_numpy())
         state = st["state_est"].to_numpy(float)
         assert set(np.unique(state[np.isfinite(state)])) == {-1.0, 0.0, 1.0}

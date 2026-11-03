@@ -179,6 +179,24 @@ def _agreement(a: np.ndarray, b: np.ndarray, ok: np.ndarray) -> tuple[float, flo
     return float(np.corrcoef(a[m], b[m])[0, 1]), float(np.polyfit(b[m], a[m], 1)[0])
 
 
+# 가속도계 한 점 값에는 진동이 섞인다 — 원래 채널에 붙이는 말과, 같이 내보내는 500 ms 평균 채널
+VIBRATION = "원래 주기 값이라 진동이 섞여 한 점 값이 실제 가속보다 크게 튈 수 있음. 차의 가속도는 「500 ms 평균」 채널을 볼 것"
+
+
+def avg_accel_channels(t_s: np.ndarray, long_g: np.ndarray, lat_g: np.ndarray, cautions: list[str], source: str) -> list[Channel]:
+    """이미 SMOOTH_S 이동평균한 앞뒤 · 좌우 가속도 → 엔진이 내보내는 「500 ms 평균」 채널 둘 (`long_500ms_g` · `lat_500ms_g`).
+
+    랩 표의 가속도 최대 · 최소 · g-g 와 같은 평균이다.
+    """
+    how = (f"원래 채널(앞뒤 · 좌우 가속도)의 가운데 맞춘 {SMOOTH_S * 1000:.0f} ms 이동평균, {1 / STEP_S:.0f} Hz 안팎으로 줄임 "
+           "(랩 표의 가속도 최대 · 최소와 같은 평균)")
+    short = f"{SMOOTH_S * 1000:.0f} ms 보다 짧은 충격은 원래 채널(앞뒤 · 좌우 가속도)로 볼 것"
+    return [Channel("long_500ms_g", "앞뒤 가속도 500 ms 평균", "g", t_s, long_g, sign="가속 +, 제동 −", derived=True,
+                    derivation=how, cautions=[*cautions, short], source=source, digits=4),
+            Channel("lat_500ms_g", "좌우 가속도 500 ms 평균", "g", t_s, lat_g, sign="좌선회 +, 우선회 −", derived=True,
+                    derivation=how, cautions=[*cautions, short], source=source, digits=4)]
+
+
 # ---------------------------------------------------------------- 블록
 
 class _Run:
@@ -297,7 +315,8 @@ def _imu_block(r: _Run) -> DataBlock | None:
     n = round(SMOOTH_S / float(np.median(np.diff(t[m]))))
     grid = np.arange(0.0, r.t1 - r.t0, STEP_S)
     native = camera_to_vehicle(acc[m], gyro[m], up)                     # 원래 주기 (엔진이 내보낸다)
-    long_g, lat_g, yaw = (np.interp(grid + r.t0, t[m], _roll(v, n)) for v in native)   # 0.5 초 평균 (페이지 · 그림 · 랩 표)
+    rolled = [_roll(v, n) for v in native]                              # 0.5 초 평균 (페이지 · 그림 · 랩 표 · 500 ms 채널)
+    long_g, lat_g, yaw = (np.interp(grid + r.t0, t[m], v) for v in rolled)
 
     # 독립 확인: GPS 위치에서 낸 가속도 · 요레이트와 대 본다 (같은 만큼 한 번 더 고른 뒤)
     v, g_long, g_lat, g_yaw = gps_motion(r.g_t, r.g_x, r.g_y, grid + r.t0)
@@ -331,8 +350,11 @@ def _imu_block(r: _Run) -> DataBlock | None:
     tilt = "카메라(롤후프)의 가속도계 값. 달리는 중 차체가 기우는 만큼(롤 · 피치) 중력이 섞임"
     series = [Channel(key, label, unit, ts[inside], v[inside], sign=sign, derived=True, derivation=how, cautions=extra, source=r.rec, digits=d)
               for (key, label, unit, sign, extra, d), v in zip(
-                  (("long_g", "앞뒤 가속도", "g", "가속 +, 제동 −", [tilt], 4), ("lat_g", "좌우 가속도", "g", "좌선회 +, 우선회 −", [tilt], 4),
+                  (("long_g", "앞뒤 가속도", "g", "가속 +, 제동 −", [tilt, VIBRATION], 4),
+                   ("lat_g", "좌우 가속도", "g", "좌선회 +, 우선회 −", [tilt, VIBRATION], 4),
                    ("yaw_dps", "요레이트", "°/s", "좌회전 +", [], 2)), native)]
+    pick = np.flatnonzero(inside)[::max(1, round(STEP_S / float(np.median(np.diff(t[m])))))]   # 원래 표본을 20 Hz 안팎으로 솎는다
+    series += avg_accel_channels(ts[pick], rolled[0][pick], rolled[1][pick], [tilt], r.rec)
     findings = []
     if loose_at:
         findings.append({"level": "warn", "code": "imu_time_uncalibrated",
@@ -670,11 +692,12 @@ def _logger_imu_block(r, logs: list, how: str) -> DataBlock | None:
         return None
     src = ", ".join(used)
     tilt = "차량 로거 보드의 가속도계 값. 보드가 기운 만큼(장착 · 롤 · 피치) 중력이 섞임 — 영점을 빼지 않음"
-    series = [Channel("long_g", "앞뒤 가속도", "g", *got["long_g"][:2], sign="가속 +, 제동 −", cautions=[tilt], source=src, digits=4),
+    series = [Channel("long_g", "앞뒤 가속도", "g", *got["long_g"][:2], sign="가속 +, 제동 −", cautions=[tilt, VIBRATION], source=src, digits=4),
               Channel("lat_g", "좌우 가속도", "g", *got["lat_g"][:2], sign="좌선회 +, 우선회 −", derived=True,
-                      derivation="로거 X 축(우회전 +)의 부호를 뒤집음", cautions=[tilt], source=src, digits=4)]
+                      derivation="로거 X 축(우회전 +)의 부호를 뒤집음", cautions=[tilt, VIBRATION], source=src, digits=4)]
     if len(got["yaw_dps"][0]):
         series.append(Channel("yaw_dps", "요레이트", "°/s", *got["yaw_dps"][:2], sign="좌회전 +", source=src, digits=2))
+    series += avg_accel_channels(grid + STEP_S / 2, long_g, lat_g, [tilt], src)      # 칸 평균이라 칸 가운데 시각
     gg = pd.DataFrame({"long_g": long_g, "lat_g": lat_g}).iloc[::round(GG_STEP_S / STEP_S)].dropna()
     gg.attrs["step_s"] = GG_STEP_S
     hz = (len(t) - 1) / max(float(t[-1] - t[0]), 1e-9)

@@ -128,6 +128,25 @@ def test_camera_axes_become_vehicle_axes():
     assert yaw == pytest.approx(20.0)
 
 
+def test_500ms_channels_keep_the_car_and_drop_the_vibration():
+    """200 Hz 가속도에 60 Hz 진동(±2 g)이 얹혀 있다 → 「500 ms 평균」 채널은 20 Hz 로 느린 가속만 남는다 (한 점 값은 ±2.9 g 까지 튄다)."""
+    dt = 0.005
+    t = np.arange(0.0, 20.0, dt)
+    car = 0.9 * np.sin(2 * np.pi * 0.2 * t)
+    raw = car + 2.0 * np.sin(2 * np.pi * 61.3 * t)
+    pick = slice(None, None, round(cb.STEP_S / dt))
+    avg = cb._roll(raw, round(cb.SMOOTH_S / dt))[pick]
+    ch = {c.key: c for c in cb.avg_accel_channels(t[pick], avg, -avg, ["기울기"], "rec")}
+    assert set(ch) == {"long_500ms_g", "lat_500ms_g"}
+    assert ch["long_500ms_g"].sign == "가속 +, 제동 −" and ch["lat_500ms_g"].sign.startswith("좌선회 +")
+    assert all(c.derived and c.unit == "g" and c.cautions[0] == "기울기" and c.source == "rec" for c in ch.values())
+    assert 1 / np.median(np.diff(ch["long_500ms_g"].t_s)) == pytest.approx(1 / cb.STEP_S)
+    inner = slice(10, -10)                                                        # 양 끝은 창이 반만 찬다
+    assert np.abs(raw).max() > 2.5
+    assert np.abs(ch["long_500ms_g"].v[inner] - car[pick][inner]).max() < 0.05
+    assert "500 ms" in cb.VIBRATION
+
+
 def test_up_is_measured_where_the_car_stood_still():
     rng = np.random.default_rng(0)
     t = np.arange(0.0, 120.0, 0.005)

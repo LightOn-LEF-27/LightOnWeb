@@ -320,7 +320,7 @@ def test_logger_time_window_matches_the_video_session(s26):
     assert t.split_by == "time" and {"motor", "bms", "thermistor", "imu"} <= set(_blocks(t))
     lag, c = _lag(_ch(t, "motor", "rpm"), _ch(g, "motor", "rpm"))
     assert abs(lag) <= 0.2 and c > 0.99, (lag, c)
-    for key in ("long_g", "lat_g", "yaw_dps"):                                        # 로거 축 ↔ 카메라 축 (서로 다른 센서)
+    for key in ("long_g", "lat_g", "yaw_dps", "long_500ms_g", "lat_500ms_g"):         # 로거 축 ↔ 카메라 축 (서로 다른 센서)
         lag, c = _lag(_ch(t, "imu", key), _ch(g, "imu", key))
         assert abs(lag) <= 0.3 and c > 0.9, (key, lag, c)
 

@@ -187,6 +187,8 @@ def write_session(s: Session, root: Path, data_root: Path | None = None) -> dict
         raise ValueError(f"{s.sid}: 드라이버는 '드라이버 A' 같은 표시만 쓴다 (실명 금지) — {s.driver!r}")
     out = Path(root) / s.sid
     (out / "files").mkdir(parents=True, exist_ok=True)
+    for old in (out / "series").glob("*.parquet"):     # 지난번 채널 값 — 주기가 다른 채널이 생기면 파일 이름이 바뀐다 (imu → imu_1 · imu_2)
+        old.unlink()
     files: dict[str, dict] = {}
     channels: list[dict] = []
     blocks: list[dict] = []
