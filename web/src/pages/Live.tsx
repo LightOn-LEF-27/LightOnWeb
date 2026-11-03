@@ -7,7 +7,7 @@ import { useApi } from '../api'
 import LiveChart from '../live/LiveChart'
 import LiveMap from '../live/LiveMap'
 import {
-  ageText, clock, deviceView, gaugePos, kindOf, lapText, linkView, offState, onOff, outageText, PANELS, rateText, receiverView, scaleOf, shownStatus, SPARK,
+  ageText, clock, deviceView, gaugePos, kindOf, lapText, linkView, offState, onOff, outageText, PANELS, rateText, receiverView, scaleOf, shownStatus, SPARK, TILE_KIND,
   sparkPoints, STATUS_WORD, type TileKind, tileValue, trail,
 } from '../live/model'
 import { useLive } from '../live/useLive'
@@ -54,7 +54,8 @@ export default function Live() {
         <section className="live-tiles" aria-label="지금 값">
           {(['big', 'gauge', 'small'] as const).map((k) => (
             <div key={k} className={`live-row ${k}`}>
-              {state.tiles.filter((t) => kindOf(t.id) === k).map((t) => (
+              {/* 칸 배치를 정한 것만 — 엔진이 칸을 더 보내도 뷰 화면이 생기기 전까지는 이 11개 */}
+              {state.tiles.filter((t) => t.id in TILE_KIND && kindOf(t.id) === k).map((t) => (
                 <Tile key={t.id} t={t} kind={k} frozen={frozen} spark={SPARK.has(t.id) ? sparkPoints(buf, t.id, state.now) : null} />
               ))}
             </div>
