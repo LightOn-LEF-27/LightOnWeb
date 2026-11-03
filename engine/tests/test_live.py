@@ -170,6 +170,23 @@ def test_bamocar_and_pedal_match_evo_can():
     assert dict(live.decode_frame(ec.APPS_SCALED, 8, cmd))["pedal.torque_cmd_pct"] == pytest.approx(want) and want > 0
 
 
+def test_apps_sensors_and_faults_match_evo_can():
+    rng = np.random.default_rng(9)
+    d = rng.integers(0, 256, size=(100, 8), dtype=np.uint8)
+    sc, stt = ec.decode_apps_scaled(d), ec.decode_apps_status(d)
+    for i in range(len(d)):
+        got = dict(live.decode_frame(ec.APPS_SCALED, 8, d[i].tobytes()))
+        assert got["pedal.apps1_pct"] == pytest.approx(sc["apps1_pct"][i]) and got["pedal.apps2_pct"] == pytest.approx(sc["apps2_pct"][i])
+        got = dict(live.decode_frame(ec.APPS_STATUS, 8, d[i].tobytes()))
+        assert int(got["pedal.fault_raw"]) == int(stt["status"][i]) | int(stt["fault_latched"][i])
+
+
+def test_every_tile_is_a_channel_and_ccl_is_not_sent():
+    assert set(live.TILES) <= set(live.CHANNELS) and len(set(live.TILES)) == len(live.TILES)
+    assert "ccl_a" not in live.STREAM_TO_CH                         # 세션과 같이 — 다른 세션의 Orion 로그와 반쯤만 맞음
+    assert all(c in live.CHANNELS for c in live.STREAM_TO_CH.values())
+
+
 def test_bad_checksum_frames_are_dropped():
     good = summary()
     bad = good[:7] + bytes([good[7] ^ 1])
@@ -219,6 +236,49 @@ def test_link_states_and_outage_counted_when_it_ends():
     assert st["events"][0]["kind"] == "restored" or any(e["kind"] == "restored" for e in st["events"])
 
 
+def test_link_lost_event_once_whether_or_not_the_screen_asked():
+    def drive(ask: bool):
+        L = live.Live()
+        car = Car(L)
+        t = car.run(10)
+        for k in range(30):                                       # 15 s 끊김
+            car.tick(skip=True)
+            if ask:
+                L.state(car.dev / 1000 + car.clock + 0.2)
+        car.run(4)
+        return [(e["kind"], e["t"]) for e in L.state(car.dev / 1000 + car.clock + 0.3)["events"] if e["kind"] in ("lost", "restored")], t
+    asked, t_last = drive(True)
+    quiet, _ = drive(False)
+    assert asked == quiet and [k for k, _ in asked] == ["restored", "lost"]          # 최근 것이 앞
+    assert asked[1][1] == pytest.approx(t_last + 10.0, abs=0.01)                   # 끊김 기준(10 s)을 넘은 순간
+
+
+def test_source_events_only_while_link_continues():
+    L = live.Live()
+    car = Car(L)
+    pedal = (ec.APPS_RAW, le(0) + le(0) + le(100) + b"\x01\x00", 8)
+    bms = (ec.ORION_SUMMARY, summary(), 8)
+    car.run(10, frames=[pedal, bms])
+    car.run(10, frames=[bms])                                     # 페달만 5 s 멈춤
+    t = car.run(4, frames=[pedal, bms])
+    ev = [(e["kind"], e.get("source"), e["text"]) for e in L.state(t)["events"] if e["kind"].startswith("source")]
+    assert ev[1] == ("source_lost", "pedal", "APPS no data")
+    assert ev[0][:2] == ("source_back", "pedal") and ev[0][2].startswith("APPS data back — 5.")
+    car.run(30, skip=True)                                        # 수신이 통째로 끊김 — 원천별 사건은 내지 않는다
+    t = car.run(10, frames=[pedal, bms])
+    kinds = [e["kind"] for e in L.state(t)["events"]]
+    assert kinds.count("source_lost") == 1 and kinds[:2] == ["restored", "lost"]
+
+
+def test_status_events_are_english_with_device_name():
+    L = live.Live()
+    L.feed({"t_ns": 1_000 * 10**9, "event": "connected"})
+    Car(L, clock=1_000).run(2)
+    texts = [e["text"] for e in L.state(1_020)["events"]]
+    assert texts[-2:] == ["Monolith online", "Receiver connected"]
+    assert live.Live(car="LEF-27").dev_name == "Device" and live.Live(device_name="Gateway").dev_name == "Gateway"
+
+
 def test_restart_is_not_an_outage():
     L = live.Live()
     car = Car(L)
@@ -228,7 +288,7 @@ def test_restart_is_not_an_outage():
     t = car.run(4)
     st = L.state(t)
     assert st["link"]["outages"] == 0 and st["device"]["boots"] == 2
-    assert any(e["text"] == "장치 재시작" for e in st["events"])
+    assert any(e["text"] == "Monolith reboot" for e in st["events"])
 
 
 def test_last_will_marks_device_disconnected_and_silences_link_alert():
@@ -347,6 +407,88 @@ def test_source_stale_alert_only_while_device_on():
     assert next(s for s in st["sources"] if s["id"] == "bms")["status"] == "none"
 
 
+def src(st, sid):
+    return next(s for s in st["sources"] if s["id"] == sid)
+
+
+def test_source_rate_counts_new_frames_against_real_spacing():
+    L = live.Live()
+    car = Car(L)
+    pedal = (ec.APPS_RAW, le(0) + le(0) + le(100) + b"\x01\x00", 8)
+    bms = (ec.ORION_SUMMARY, summary(), 8)
+    t = None
+    for k in range(60):                                           # 페달은 매번, BMS 는 1 s 에 한 번 (원래 그렇게 오는 ID)
+        t = car.tick(frames=[pedal] + ([bms] if k % 2 == 0 else []))
+    st = L.state(t)
+    assert src(st, "pedal")["rate_10s"] == 1.0 and src(st, "bms")["rate_10s"] == 1.0   # BMS 는 1 s 간격을 배워서 1
+    assert src(st, "pedal")["rate_status"] == "ok" and src(st, "inverter")["rate_status"] is None
+    assert src(st, "inverter")["rate_10s"] is None and src(st, "lv")["rate_10s"] is None
+    # 펌웨어가 같은 프레임(같은 장치 시각)을 다시 보내면 세지 않는다
+    last = car.dev - 100                                          # 마지막으로 받은 페달 프레임의 장치 시각
+    for _ in range(20):
+        t = car.tick()
+        L.feed(row(t, "d/can", can_rec(last, ec.APPS_RAW, pedal[1])))
+    assert src(L.state(t), "pedal")["rate_10s"] == 0.0 and src(L.state(t), "pedal")["rate_status"] == "danger"
+    # 절반만 오면 0.5 쯤
+    for k in range(40):
+        t = car.tick(frames=[pedal] if k % 2 == 0 else [])
+    assert src(L.state(t), "pedal")["rate_10s"] == pytest.approx(0.5, abs=0.06)
+    for k in range(40):                                           # 4/5 → 주의 경계 위
+        t = car.tick(frames=[pedal] if k % 5 else [])
+    assert src(L.state(t), "pedal")["rate_status"] == "ok"
+    for k in range(40):                                           # 2/3 → 주의
+        t = car.tick(frames=[pedal] if k % 3 else [])
+    assert src(L.state(t), "pedal")["rate_status"] == "warn"
+
+
+def test_source_rate_is_one_between_batches_and_drops_with_outage():
+    L = live.Live()
+    car = Car(L)
+    pedal = (ec.APPS_RAW, le(0) + le(0) + le(100) + b"\x01\x00", 8)
+    t = car.run(40, frames=[pedal])
+    assert src(L.state(t + 0.3), "pedal")["rate_10s"] == 1.0          # 다음 묶음 전에 물어도
+    car.run(10, skip=True)                                         # 5 s 끊김
+    t = car.run(10, frames=[pedal])
+    assert src(L.state(t), "pedal")["rate_10s"] == pytest.approx(0.5, abs=0.06)
+
+
+def test_gps_fix_ratio():
+    L = live.Live(venue=VENUE)
+    car = Car(L)
+    t = None
+    for k in range(20):
+        g = gps_rec(car.dev + 450, 1.0, 1.0, 10.0, 90) if k % 4 else rec(3, car.dev + 450, bytes(16))
+        t = car.tick(gps=g)
+    assert src(L.state(t), "gps")["fix_10s"] == pytest.approx(0.75, abs=0.01)
+    assert "fix_10s" not in src(L.state(t), "bms")
+
+
+def test_apps_fault_named_in_pedal_block_and_alert():
+    L = live.Live()
+    car = Car(L)
+    ok = le(0) + le(0) + le(0) + b"\0\x07"
+    t = car.run(3, frames=[(ec.APPS_STATUS, ok, 8)])
+    st = L.state(t)
+    assert st["pedal"] == {"status": "ok", "faults": [], "age_s": pytest.approx(0.1, abs=0.05)} and not st["alerts"]
+    bad = le(0x04) + le(0x20) + le(0) + b"\0\x08"
+    t = car.run(1, frames=[(ec.APPS_STATUS, bad, 8)])
+    st = L.state(t)
+    assert st["pedal"]["status"] == "warn" and st["pedal"]["faults"] == ["SIGNAL1_RANGE_FAULT", "FAULT_LATCHED"]
+    assert st["alerts"][0]["id"] == "W-APPS-FLT" and tile(st, "pedal.fault_raw")["status"] == "warn"
+    t = car.run(1, frames=[(ec.APPS_STATUS, ok, 8)])
+    assert not L.state(t)["alerts"] and L.state(t)["events"][0]["text"] == "APPS 고장 — 해제"
+
+
+def test_slot_values_stay_fresh_for_minutes():
+    L = live.Live()
+    car = Car(L)
+    slot = {v[0]: k for k, v in ec.STREAM_SLOTS.items()}["bms_heatsink_c"]
+    t = car.tick(frames=[(ec.ORION_STREAM, with_sum(bytes([slot]) + be(0) + be(2800) + be(31, signed=True), ec.ORION_STREAM + 8), 8)])
+    assert tile(L.state(t), "bms.bms_heatsink_c")["value"] == 31.0
+    assert tile(L.state(t + 200), "bms.bms_heatsink_c")["status"] == "ok"
+    assert tile(L.state(t + 400), "bms.bms_heatsink_c")["status"] == "stale"
+
+
 # ---------------------------------------------------------------- 위치 · 랩 · LV
 
 def test_position_and_laps_from_gate_crossings():
@@ -362,6 +504,44 @@ def test_position_and_laps_from_gate_crossings():
     assert st["position"]["x_m"] == pytest.approx(58, abs=0.5) and st["position"]["frame_id"] == "venue/test"
     assert tile(st, "gps.speed_kmh")["value"] == pytest.approx(40)
     assert L.track()["gate"]["half_width_m"] == 30.0 and live.Live().track() is None
+
+
+def test_lap_rows_energy_soc_cell_and_temp():
+    L = live.Live(venue=VENUE)
+    car = Car(L)
+    t, n = None, 0
+    for lap in range(3):
+        for k in range(60):                                       # 30 s 한 바퀴 · 36 kW 그대로 → 300 Wh
+            soc = 80 - n * 0.05
+            cell = 3.6 if (lap, k) == (1, 10) else 3.9
+            t = car.tick(frames=[(ec.ORION_SUMMARY, summary(power_kw=36, cell_v=cell, tmax=40 + lap, soc=soc), 8)],
+                         gps=gps_rec(car.dev + 450, -60 + k * 2, 1.0, 40.0, 90))
+            n += 1
+    st = L.state(t)
+    rows = st["laps"]["rows"]
+    assert [r["lap"] for r in rows] == [1, 2] and st["laps"]["count"] == 2
+    for r in rows:
+        assert r["lap_time_s"] == pytest.approx(30.0, abs=0.1) and r["net_wh"] == pytest.approx(300, abs=2) and r["cover"] == 1.0
+        assert r["soc_delta_pct"] == pytest.approx(-3.0, abs=0.6) and r["soc_end_pct"] < r["soc_start_pct"]
+    assert rows[0]["cell_v_min"] == pytest.approx(3.6) and rows[1]["cell_v_min"] == pytest.approx(3.9)   # 30번째 tick 의 3.6 V 는 첫 랩
+    assert rows[0]["cell_t_max_c"] == 41 and rows[1]["cell_t_max_c"] == 42
+    cur = st["laps"]["current"]
+    assert cur["lap"] == 3 and cur["net_wh"] == pytest.approx(36 * cur["lap_time_s"] / 3.6, rel=0.05)
+    json.dumps(st, allow_nan=False)
+
+
+def test_lap_energy_skips_gaps_and_says_so():
+    L = live.Live(venue=VENUE)
+    car = Car(L)
+    t = None
+    for lap in range(3):
+        for k in range(60):
+            gap = lap == 1 and 20 <= k < 30                        # 둘째 랩에 5 s 동안 BMS 프레임 없음
+            t = car.tick(frames=[] if gap else [(ec.ORION_SUMMARY, summary(power_kw=36), 8)],
+                         gps=gps_rec(car.dev + 450, -60 + k * 2, 1.0, 40.0, 90))
+    rows = L.state(t)["laps"]["rows"]
+    gap_lap = next(r for r in rows if r["cover"] < 1)
+    assert gap_lap["cover"] == pytest.approx(25 / 30, abs=0.03) and gap_lap["net_wh"] == pytest.approx(300 * gap_lap["cover"], abs=3)
 
 
 def test_no_fix_gives_no_gps_values():
