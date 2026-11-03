@@ -265,14 +265,60 @@ export interface LiveState {
   receiver: { status: 'connected' | 'disconnected' | 'unknown'; since: number | null }
   device: { status: 'on' | 'off' | 'disconnected' | 'unknown'; boot_at: number | null; firmware: string | null; boots: number }
   link: { status: 'ok' | 'late' | 'lost' | 'none'; age_s: number | null; period_s: number; rate_10s: number | null; outages: number; longest_s: number | null; since_s: number | null }
-  sources: { id: string; label: string; status: 'ok' | 'stale' | 'none'; age_s: number | null }[]
+  sources: LiveSource[]
   tiles: LiveTile[]
   inverter: { status: LiveStatus; enabled: boolean | null; ready: boolean | null; errors: string[]; warnings: string[]; age_s: number | null }
+  pedal?: { status: LiveStatus; faults: string[]; age_s: number | null } // v0.16 — APPS 보드 고장
   position: { frame_id: string | null; x_m: number; y_m: number; age_s: number } | null
-  laps: { count: number; current_s: number | null; last_s: number | null; best_s: number | null; basis: string } | null
+  laps: {
+    count: number
+    current_s: number | null
+    last_s: number | null
+    best_s: number | null
+    basis: string
+    rows?: LiveLap[] // v0.16 — 끝난 랩, 앞 랩부터
+    current?: LiveLap | null // 지금 도는 랩 (t_end = 지금)
+    energy_basis?: string
+  } | null
   alerts: { id: string; level: LiveLevel; text: string; value: number | null; since: number | null }[]
-  events: { t: number; kind: string; text: string }[]
+  events: LiveEvent[]
   chart: { t: number[]; series: Record<string, (number | null)[]> }
+}
+
+// 원천 — bms · inverter · pedal 은 10 s 수신률(새 CAN 프레임), gps 는 위치를 잡은 비율 (v0.16)
+export interface LiveSource {
+  id: string
+  label: string
+  status: 'ok' | 'stale' | 'none'
+  age_s: number | null
+  rate_10s?: number | null
+  rate_status?: 'ok' | 'warn' | 'danger' | null
+  fix_10s?: number | null
+}
+
+// 랩 한 줄 (§12-4 laps.rows — 세션 랩 표와 같은 칸 이름). cover < 1 이면 전력 값에 빈 곳이 있어 net_wh 가 작다
+export interface LiveLap {
+  lap: number
+  t_start: number
+  t_end: number
+  lap_time_s: number
+  net_wh: number | null
+  cover: number | null
+  soc_start_pct: number | null
+  soc_end_pct: number | null
+  soc_delta_pct: number | null
+  cell_v_min: number | null
+  cell_t_max_c: number | null
+  speed_max_kmh?: number | null
+}
+
+// 사건 — 최근 것이 앞. source_lost · source_back 은 source 칸에 원천 id, gap_s = 끊겨 있던 초 (있으면)
+export interface LiveEvent {
+  t: number
+  kind: string
+  text: string
+  source?: string
+  gap_s?: number | null
 }
 
 // §12-5 실시간 track() — 경기장 기준선 · 계측선 (get_track 과 같은 좌표계)

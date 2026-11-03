@@ -2,7 +2,7 @@
 // 화면이 스스로 정하는 것은 둘뿐이다: 그래프 창(최근 5분)과, 서버 응답이 끊겼을 때 화면 전체를 낡음으로 돌리는 것.
 
 import { formatValue } from '../overview/model'
-import type { LiveScale, LiveState, LiveStatus, LiveTile } from '../types'
+import type { LiveEvent, LiveScale, LiveSource, LiveState, LiveStatus, LiveTile } from '../types'
 
 export const POLL_MS = 500
 export const WINDOW_S = 300 // 그래프에 보이는 최근 5분
@@ -92,11 +92,12 @@ export function outageText(link: LiveState['link']): string {
   return `끊김 ${link.outages}번${link.longest_s !== null ? ` · 최장 ${Math.round(link.longest_s)} s` : ''}`
 }
 
-export function deviceView(d: LiveState['device']): { text: string; tone: Tone } {
-  if (d.status === 'on') return { text: '장치 켜짐', tone: 'ok' }
+// name = 차의 송신 장치 이름 (25Evo = Monolith). '장치' 만으로는 무엇인지 애매하다 (2026-11-03 사용자 지적)
+export function deviceView(d: LiveState['device'], name = '장치'): { text: string; tone: Tone } {
+  if (d.status === 'on') return { text: `${name} 켜짐`, tone: 'ok' }
   // 브로커가 OFFLINE 을 낸 뒤 메시지 없음 — 전원을 껐는지 휴대전화망이 끊겼는지 모른다 (단정하지 않는다)
-  if (d.status === 'disconnected') return { text: '장치 연결 끊김', tone: 'none' }
-  return { text: '장치 확인 중', tone: 'none' }
+  if (d.status === 'disconnected') return { text: `${name} 연결 끊김`, tone: 'none' }
+  return { text: `${name} 확인 중`, tone: 'none' }
 }
 
 export function receiverView(r: LiveState['receiver']): { text: string; tone: Tone } {
@@ -106,6 +107,71 @@ export function receiverView(r: LiveState['receiver']): { text: string; tone: To
 }
 
 export const onOff = (v: boolean | null): string => (v === null ? '—' : v ? '켜짐' : '꺼짐')
+
+// 원천 상태 낱말 — 서버 응답이 끊기면 정상도 낡음으로
+export function sourceWord(status: LiveSource['status'], frozen: boolean): { text: string; tone: Tone } {
+  if (status === 'none') return { text: '수신 없음', tone: 'none' }
+  if (frozen || status === 'stale') return { text: '낡음', tone: 'stale' }
+  return { text: '정상', tone: 'ok' }
+}
+
+// 0 ~ 1 → "95 %" (없으면 —)
+export const pctText = (r: number | null | undefined): string => (r == null ? '—' : `${Math.round(r * 100)} %`)
+
+// 부호를 붙인 숫자 (SOC 변화처럼 + · − 가 뜻이 있는 값)
+export function signedText(v: number | null | undefined, digits: number): string {
+  if (v == null) return '—'
+  const t = formatValue(Math.abs(v), digits)
+  return v > 0 ? `+${t}` : v < 0 ? `−${t}` : t
+}
+
+export const numText = (v: number | null | undefined, digits: number): string => (v == null ? '—' : formatValue(v, digits))
+
+// ---------------------------------------------------------------- 사건 접기
+
+export interface EventRow extends LiveEvent {
+  count?: number // 접은 줄 — 같은 원천의 no data 가 몇 번
+  longest_s?: number | null
+}
+
+const SOURCE_KINDS = new Set(['source_lost', 'source_back'])
+
+// 같은 원천의 no data / data back 이 되풀이되면 한 줄로 접는다 (2026-11-03 사용자 결정 — GPS 위치가 몇 초씩 자주 빠지면 목록을 다 차지한다).
+// 원천 사건만 이어진 덩어리 안에서 원천마다 모은다: no data 가 두 번 이상이면 「<가장 최근 no data 문구> ×N · 최장 M s」 한 줄을
+// 그 원천의 가장 최근 사건 자리에. 다른 사건(경고 · 수신)이 끼면 덩어리가 끊긴다 — 시간 순서를 흐리지 않게.
+// 최장은 엔진이 준 gap_s 로만 (문구에서 읽지 않는다). 사건은 최근 것이 앞 (계약 §12-4)
+export function foldEvents(events: LiveEvent[]): EventRow[] {
+  const out: EventRow[] = []
+  let i = 0
+  while (i < events.length) {
+    if (!SOURCE_KINDS.has(events[i].kind)) {
+      out.push(events[i++])
+      continue
+    }
+    let j = i
+    while (j < events.length && SOURCE_KINDS.has(events[j].kind)) j++
+    const bySource = new Map<string, LiveEvent[]>()
+    for (const e of events.slice(i, j)) bySource.set(e.source ?? '', [...(bySource.get(e.source ?? '') ?? []), e])
+    const rows: EventRow[] = []
+    for (const group of bySource.values()) {
+      const lost = group.filter((e) => e.kind === 'source_lost')
+      if (lost.length < 2) {
+        rows.push(...group)
+        continue
+      }
+      const gaps = group.map((e) => e.gap_s).filter((g): g is number => typeof g === 'number')
+      // kind 은 source_fold — 마지막이 data back 이어도 초록으로 칠하지 않게 (되풀이된 끊김 자체가 볼 거리)
+      rows.push({ ...group[0], kind: 'source_fold', text: `${lost[0].text} ×${lost.length}`, count: lost.length, longest_s: gaps.length ? Math.max(...gaps) : null })
+    }
+    rows.sort((a, b) => b.t - a.t)
+    out.push(...rows)
+    i = j
+  }
+  return out
+}
+
+export const eventText = (e: EventRow): string =>
+  e.count && e.longest_s != null ? `${e.text} · 최장 ${Math.round(e.longest_s)} s` : e.text
 
 // 랩 시간은 GPS 주기(2 Hz)만큼 틀릴 수 있어 소수 한 자리까지만 (엔진도 0.1 s 로 준다)
 export function lapText(s: number | null): string {
@@ -122,14 +188,39 @@ export const clock = (t: number): string => KST.format(new Date(t * 1000))
 
 export interface PanelSeries {
   id: string
+  label?: string // 이름 (없으면 엔진 타일 이름)
   right?: boolean // 오른쪽 세로축
   color: 0 | 1 | 2 // --trace-<n>
 }
 
-export const PANELS: { key: string; title: string; series: PanelSeries[] }[] = [
-  { key: 'speed', title: '속도', series: [{ id: 'gps.speed_kmh', color: 2 }] },
-  { key: 'power', title: '전력 · 전류', series: [{ id: 'battery.power_kw', color: 0 }, { id: 'battery.current_a', right: true, color: 2 }] },
-  { key: 'temp', title: '온도', series: [{ id: 'bms.temp_max_c', color: 0 }, { id: 'motor.t_motor_c', color: 2 }, { id: 'motor.t_igbt_c', color: 1 }] },
+export interface Panel {
+  key: string
+  title: string
+  series: PanelSeries[]
+}
+
+// 뷰마다 최근 5분 그래프 — 엔진이 그래프 값(chart.series)에 실어 주는 채널만 그려진다 (없으면 "엔진 값 준비 중")
+export const PANELS: Record<'battery' | 'powertrain', Panel[]> = {
+  battery: [
+    { key: 'power', title: '전력 · 전류', series: [{ id: 'battery.power_kw', color: 0 }, { id: 'battery.current_a', right: true, color: 2 }] },
+    { key: 'cellv', title: '셀 최저 전압', series: [{ id: 'bms.cell_min_v', color: 2 }] },
+    { key: 'cellt', title: '셀 온도', series: [{ id: 'bms.temp_max_c', color: 0 }, { id: 'bms.temp_min_c', color: 2 }] },
+  ],
+  powertrain: [
+    { key: 'speed', title: '속도 · RPM', series: [{ id: 'gps.speed_kmh', color: 2 }, { id: 'motor.rpm', right: true, color: 1 }] },
+    { key: 'pedal', title: 'APPS · 토크 명령', series: [{ id: 'pedal.apps_pct', color: 0 }, { id: 'pedal.torque_cmd_pct', color: 2 }] },
+    { key: 'temp', title: '온도', series: [{ id: 'motor.t_motor_c', color: 0 }, { id: 'motor.t_igbt_c', color: 2 }] },
+  ],
+}
+
+// 수신 · DAQ 뷰의 원천별 수신률 그래프 — 다섯 칸 모두 0 ~ 100 %, 선 색은 고정 (상태 색은 % 숫자 · 표 막대에만, 사용자 결정).
+// 그래프 값 이름은 텔레메트리에 부탁한 것 (게시판 #38fa) — 엔진이 다른 이름으로 주면 여기만 고친다
+export const RATE_PANELS: { key: string; title: string; via: string; series: string; source: string | null }[] = [
+  { key: 'link', title: 'Monolith', via: '/d', series: 'rate.link', source: null },
+  { key: 'bms', title: 'BMS', via: 'CAN', series: 'rate.bms', source: 'bms' },
+  { key: 'inverter', title: '인버터', via: 'CAN', series: 'rate.inverter', source: 'inverter' },
+  { key: 'pedal', title: 'APPS', via: 'CAN', series: 'rate.pedal', source: 'pedal' },
+  { key: 'gps', title: 'GPS', via: '위치 잡음', series: 'rate.gps_fix', source: 'gps' },
 ]
 
 // ---------------------------------------------------------------- 수신이 꺼졌을 때의 틀
@@ -141,7 +232,20 @@ const OFF_TILES: [string, string, string, number][] = [
   ['battery.current_a', '배터리 전류', 'A', 0], ['bms.soc_pct', 'SOC', '%', 1], ['bms.cell_min_v', '셀 최저 전압', 'V', 3],
   ['bms.temp_max_c', '셀 최고 온도', '°C', 0], ['motor.t_motor_c', '모터 온도', '°C', 0], ['motor.t_igbt_c', '인버터(IGBT) 온도', '°C', 0],
   ['pedal.apps_pct', '가속페달', '%', 0], ['lv.voltage_v', 'LV 전압 (추정 환산)', 'V', 1],
+  ['bms.temp_min_c', '셀 최저 온도', '°C', 0], ['bms.dcl_kw', '방전 출력 한계 (DCL)', 'kW', 1], ['bms.temp_avg_c', '셀 평균 온도', '°C', 0],
+  ['bms.temp_max_id', '최고 온도 써미스터 번호', '', 0], ['bms.temp_min_id', '최저 온도 써미스터 번호', '', 0],
+  ['bms.bms_heatsink_c', 'BMS 방열판 온도', '°C', 0], ['bms.pack_resistance_ohm', '팩 저항', 'Ω', 3], ['bms.pack_ah', '팩 Ah', 'Ah', 1],
+  ['bms.dod_pct', '방전 깊이 (DoD)', '%', 1], ['motor.vdc_v', 'DC 버스 전압', 'V', 0], ['motor.rpm', '회전수 (로거 환산)', 'rpm', 0],
+  ['pedal.torque_cmd_pct', '토크 명령', '%', 0], ['pedal.apps1_pct', '가속페달 센서 1', '%', 1], ['pedal.apps2_pct', '가속페달 센서 2', '%', 1],
 ]
+const offTile = ([id, label, unit, digits]: [string, string, string, number]): LiveTile =>
+  ({ id, label, unit, sign: '', digits, value: null, age_s: null, status: 'none', alert: null })
+const OFF_BY_ID = new Map(OFF_TILES.map((r) => [r[0], offTile(r)]))
+
+// 뷰가 쓰는 칸 — 엔진이 그 칸을 안 보내면(옛 엔진 · 다른 차) 무수신 칸으로 (이름은 위 표, 없으면 id)
+export function tileOr(tiles: Map<string, LiveTile>, id: string): LiveTile {
+  return tiles.get(id) ?? OFF_BY_ID.get(id) ?? offTile([id, id, '', 0])
+}
 const OFF_SOURCES: [string, string][] = [['bms', 'BMS'], ['inverter', '인버터'], ['pedal', '가속페달'], ['gps', 'GPS'], ['lv', 'LV']]
 
 export function offState(now = Date.now() / 1000): LiveState {
@@ -150,23 +254,18 @@ export function offState(now = Date.now() / 1000): LiveState {
     receiver: { status: 'unknown', since: null },
     device: { status: 'unknown', boot_at: null, firmware: null, boots: 0 },
     link: { status: 'none', age_s: null, period_s: 0.5, rate_10s: null, outages: 0, longest_s: null, since_s: null },
-    sources: OFF_SOURCES.map(([id, label]) => ({ id, label, status: 'none', age_s: null })),
-    tiles: OFF_TILES.map(([id, label, unit, digits]) => ({ id, label, unit, sign: '', digits, value: null, age_s: null, status: 'none', alert: null })),
+    sources: OFF_SOURCES.map(([id, label]) => ({ id, label, status: 'none', age_s: null, rate_10s: null, rate_status: null })),
+    tiles: OFF_TILES.map(offTile),
     inverter: { status: 'none', enabled: null, ready: null, errors: [], warnings: [], age_s: null },
+    pedal: { status: 'none', faults: [], age_s: null },
     position: null, laps: null, alerts: [], events: [], chart: { t: [], series: {} },
   }
 }
 
 // ---------------------------------------------------------------- 타일 모양 (게이지 · 숫자)
 
-// 어느 칸을 어떻게 보일지만 화면이 정한다 — 값 · 상태 · 문턱은 엔진 것. 모르는 칸은 작은 숫자로
-export type TileKind = 'big' | 'gauge' | 'small'
-export const TILE_KIND: Record<string, TileKind> = {
-  'gps.speed_kmh': 'big', 'battery.power_kw': 'big', 'bms.soc_pct': 'big',
-  'bms.temp_max_c': 'gauge', 'bms.cell_min_v': 'gauge', 'pedal.apps_pct': 'gauge',
-  'battery.voltage_v': 'small', 'battery.current_a': 'small', 'motor.t_motor_c': 'small', 'motor.t_igbt_c': 'small', 'lv.voltage_v': 'small',
-}
-export const kindOf = (id: string): TileKind => TILE_KIND[id] ?? 'small'
+// 칸 크기는 뷰가 정한다 (views.tsx) — 값 · 상태 · 문턱은 엔진 것. 게이지는 범위가 있는 칸에만, small 은 숫자만
+export type TileKind = 'big' | 'mid' | 'small'
 
 // 추세선을 붙일 칸 — 한계를 모르는 값은 게이지 대신 최근 흐름을 본다 (그래프 값에 실려 오는 채널만)
 export const SPARK = new Set(['gps.speed_kmh', 'motor.t_motor_c', 'motor.t_igbt_c'])

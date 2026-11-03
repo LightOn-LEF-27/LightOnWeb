@@ -19,7 +19,8 @@ export interface Live {
   frozenFor: number | null
 }
 
-export function useLive(): Live {
+// enabled = 실시간으로 받는 차를 보고 있을 때만 묻는다 (LEF-26 · 27 화면에서는 묻지 않는다)
+export function useLive(enabled = true): Live {
   const [state, setState] = useState<LiveState | null>(null)
   const [buf, setBuf] = useState<ChartBuf>(emptyBuf)
   const [error, setError] = useState<ApiError | null>(null)
@@ -28,6 +29,7 @@ export function useLive(): Live {
   const bufRef = useRef(buf)
 
   useEffect(() => {
+    if (!enabled) return
     let alive = true
     let timer: number | undefined
     let ctl: AbortController | null = null
@@ -78,7 +80,7 @@ export function useLive(): Live {
       document.removeEventListener('visibilitychange', onShow)
       ctl?.abort()
     }
-  }, [])
+  }, [enabled])
 
   return { state, buf, error, frozen: frozenFor !== null && frozenFor > FROZEN_S, frozenFor }
 }

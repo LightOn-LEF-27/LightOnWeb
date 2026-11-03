@@ -59,7 +59,7 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
     setTheme(t)
   }
   const tab = ({ isActive }: { isActive: boolean }) => `tab${isActive ? ' active' : ''}`
-  const live = useLocation().pathname === '/live' // 실시간은 피트에서 폰으로도 본다 — PC 최소 폭을 풀어 준다
+  const live = useLocation().pathname.startsWith('/live') // 실시간은 피트에서 폰으로도 본다 — PC 최소 폭을 풀어 준다
 
   return (
     <div className={`app${live ? ' app-live' : ''}`}>
@@ -111,7 +111,7 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
           <Route path="/sessions/:sid" element={<SessionView />} />
           <Route path="/racing-line" element={<Later what="레이싱 라인" />} />
           <Route path="/analysis" element={<Analysis />} />
-          <Route path="/live" element={<Live />} />
+          <Route path="/live/:car?/:view?" element={<Live />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
         </ThemeContext.Provider>

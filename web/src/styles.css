@@ -1544,19 +1544,65 @@ ul.plain {
   background: var(--warn-band);
   border-bottom: 1px solid var(--warn);
 }
+
+/* 차량 고르기 · 뷰 탭 */
+.live-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  min-height: 38px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+}
+.live-car {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-right: 1px solid var(--line);
+  font-size: 11px;
+}
+.live-car select {
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-strong);
+  background: var(--bg);
+  border: 1px solid var(--line-strong, var(--line));
+}
+.live-views {
+  display: flex;
+  flex-wrap: wrap;
+}
+.live-view-tab {
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  font-size: 13px;
+  color: var(--text-label);
+  text-decoration: none;
+  border-right: 1px solid var(--line);
+}
+.live-view-tab:hover {
+  color: var(--text-strong);
+}
+.live-view-tab.active {
+  color: var(--text-strong);
+  background: var(--raised);
+  box-shadow: inset 0 -2px 0 var(--trace-2);
+}
+
+/* 맨 윗줄 — 수신 상태 */
 .live-top {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 14px;
-  padding: 6px 12px;
+  padding: 5px 12px;
   background: var(--panel-2);
   border-bottom: 1px solid var(--line);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-}
-.live-top .spacer {
-  flex: 1;
 }
 .live-sources {
   display: inline-flex;
@@ -1589,49 +1635,108 @@ ul.plain {
 .live-flag.danger .live-dot {
   background: var(--danger);
 }
-.live-flag.none .live-dot {
+.live-flag.none .live-dot,
+.live-flag.off .live-dot {
   background: transparent;
   box-shadow: inset 0 0 0 1.5px var(--text-muted);
 }
 
-.live-grid {
+/* 켜진 경고 띠 */
+.live-alertband {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.live-alertband.warn {
+  background: var(--warn-band);
+  border-bottom-color: var(--warn);
+}
+.live-alertband.danger {
+  background: color-mix(in srgb, var(--danger) 22%, var(--panel));
+  border-bottom-color: var(--danger);
+}
+.live-alertband .live-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.live-alertband .muted,
+.live-alert-go {
+  font-weight: 400;
+}
+.live-alert .live-dot {
+  align-self: center;
+}
+.live-alert.danger .live-dot {
+  background: var(--danger);
+}
+.live-alert.warn .live-dot {
+  background: var(--warn);
+}
+.live-alert.info .live-dot {
+  background: var(--text-strong); /* 알림 — 판정이 아닌 것 (설계안 §4-2 흰 배지) */
+}
+
+/* 뷰 틀 */
+.lv {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
-  grid-template-rows: auto auto 1fr;
-  grid-template-areas:
-    'tiles side'
-    'charts side'
-    'events side';
-  align-items: start;
   gap: 10px;
   padding: 10px;
+  align-items: start;
 }
-.live-tiles {
-  grid-area: tiles;
+.lv-main {
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+}
+.lv-two {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.lv-col {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  min-width: 0;
 }
-.live-row {
+.lv-tiles {
   display: grid;
   gap: 8px;
 }
-.live-row.big,
-.live-row.gauge {
+.lv-tiles.c2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.lv-tiles.c3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
-.live-row.small {
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+.lv-tiles.c4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
-.live-row:empty {
-  display: none;
+.lv-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
 }
+.live h2.live-h2 {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.live h2.live-h2 a {
+  font-weight: 400;
+}
+
+/* 타일 */
 .live-tile {
   min-height: 72px;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-left: 4px solid var(--line);
   background: var(--panel);
+  min-width: 0;
 }
 .live-tile.ok {
   border-left-color: var(--ok);
@@ -1677,6 +1782,8 @@ ul.plain {
   color: var(--text-strong);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .live-tile-unit {
   margin-left: 4px;
@@ -1685,13 +1792,22 @@ ul.plain {
   color: var(--text-muted);
 }
 .live-tile.big .live-tile-value {
-  font-size: 36px;
+  font-size: 34px;
 }
 .live-tile.small {
   min-height: 0;
 }
 .live-tile.small .live-tile-value {
   font-size: 20px;
+}
+.live-tile-sub {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: pre-wrap;
+}
+.live-tile.stale .live-tile-sub,
+.live-tile.none .live-tile-sub {
+  color: var(--text-muted);
 }
 .live-gauge {
   margin: 4px 0 2px;
@@ -1749,6 +1865,14 @@ ul.plain {
 .live-gauge-scale .mark.warn {
   color: var(--warn);
 }
+.live-gauge-scale .mark.before {
+  transform: translateX(-100%);
+  padding-right: 3px;
+}
+.live-gauge-scale .mark.after {
+  transform: none;
+  padding-left: 3px;
+}
 .live-gauge-scale .mark.danger {
   color: var(--danger);
 }
@@ -1765,7 +1889,7 @@ ul.plain {
   vector-effect: non-scaling-stroke;
 }
 .live-tile.big .live-spark {
-  height: 34px;
+  height: 28px;
 }
 .live-tile.stale .live-spark polyline {
   stroke: var(--text-muted);
@@ -1776,29 +1900,109 @@ ul.plain {
   color: var(--text-muted);
 }
 
+/* 작은 값 묶음 (BMS 기타) */
+.live-factgrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px 12px;
+  padding: 6px 10px 4px;
+}
+.live-fact {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.live-fact-label {
+  font-size: 11px;
+  color: var(--text-label);
+}
+.live-fact-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+.live-fact.stale .live-fact-value,
+.live-fact.none .live-fact-value {
+  color: var(--text-muted);
+}
+
+/* 트랙맵 · 랩 */
 .live-map-canvas {
   display: block;
   width: 100%;
 }
-.live-laps {
+.live-lapstrip {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 12px;
-  padding: 6px 10px 8px;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
+  align-items: baseline;
+  gap: 4px 28px;
+  padding: 8px 14px;
   border-top: 1px solid var(--line-faint);
+  font-variant-numeric: tabular-nums;
 }
-.live-laps strong {
+.live-lapstrip .k {
+  font-size: 11px;
+  color: var(--text-label);
+}
+.live-lapstrip .v {
+  font-size: 26px;
+  font-weight: 600;
   color: var(--text-strong);
 }
-.live-laps-basis {
-  flex-basis: 100%;
-  font-size: 10px;
+.live-lapstrip .v.best {
+  color: var(--best);
 }
-.live-charts {
-  grid-area: charts;
+.live-lapstrip-basis {
+  margin-left: auto;
+  font-size: 11px;
 }
+
+/* 표 (랩 · 원천별) */
+.live-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.live-table th {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  font-weight: 400;
+  text-align: left;
+  color: var(--text-label);
+}
+.live-table td {
+  padding: 3px 10px;
+  border-top: 1px solid var(--line-faint);
+  white-space: nowrap;
+}
+.live-table tr.strong td {
+  font-weight: 700;
+  color: var(--text-strong);
+}
+.live-table td.best {
+  color: var(--best);
+}
+.live-table-scroll {
+  max-height: 210px;
+  overflow-y: auto;
+}
+.live-sources-table td:last-child {
+  white-space: normal;
+}
+.live-part {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--warn);
+}
+.live-note {
+  margin: 0;
+  padding: 4px 10px 6px;
+  font-size: 11px;
+}
+
+/* 그래프 */
 .live-chart {
   padding: 4px 8px 2px;
 }
@@ -1829,24 +2033,94 @@ ul.plain {
 .live-chart-key i.dashed {
   border-top-style: dashed;
 }
+.live-chart-extra {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: auto;
+}
+.live-chart-box {
+  position: relative;
+}
 .live-chart-plot {
   width: 100%;
 }
-.live-side {
-  grid-area: side;
+.live-chart-missing {
+  position: absolute;
+  inset: 0;
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  pointer-events: none;
 }
-.live-events {
-  grid-area: events;
+
+/* 수신률 막대 · 숫자 — 색은 엔진의 rate_status */
+.live-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 110px;
 }
+.live-rate-track {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--raised);
+}
+.live-rate-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 2px;
+  background: var(--text-label);
+}
+.live-rate-fill.ok {
+  background: var(--ok);
+}
+.live-rate-fill.warn {
+  background: var(--warn);
+}
+.live-rate-fill.danger {
+  background: var(--danger);
+}
+.live-rate-fill.stale {
+  background: var(--text-muted);
+}
+.live-rate-num {
+  min-width: 38px;
+  text-align: right;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+.live-rate-num.ok {
+  color: var(--ok);
+}
+.live-rate-num.warn {
+  color: var(--warn);
+}
+.live-rate-num.danger {
+  color: var(--danger);
+}
+.live-rate-num.stale,
+.live-rate-num.none {
+  color: var(--text-muted);
+}
+
+/* 사건 */
 .panel .live-list {
   max-height: 240px;
   overflow-y: auto;
   margin: 0;
   padding: 2px 0;
   list-style: none;
+}
+.panel .live-list.fixed {
+  max-height: none;
+  overflow: visible;
 }
 .live-list li {
   display: flex;
@@ -1856,31 +2130,66 @@ ul.plain {
   font-size: 12px;
   border-bottom: 1px solid var(--line-faint);
 }
+.live-list li:last-child {
+  border-bottom: 0;
+}
 .live-list .mono {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-.live-alert .live-dot {
-  align-self: center;
+.live-link .live-events .live-list {
+  max-height: 360px;
 }
-.live-alert.danger {
-  color: var(--danger);
-  font-weight: 600;
-}
-.live-alert.danger .live-dot {
-  background: var(--danger);
-}
-.live-alert.warn .live-dot {
-  background: var(--warn);
-}
-.live-alert.info .live-dot {
-  background: var(--text-strong); /* 알림 — 판정이 아닌 것 (설계안 §4-2 흰 배지) */
-}
-.live-event.outage {
+.live-event.lost {
   color: var(--danger);
 }
-.live-event.restored {
+.live-event.restored,
+.live-event.source_back {
   color: var(--ok);
+}
+.live-event.source_lost,
+.live-event.source_fold {
+  color: var(--warn);
+}
+
+/* 인버터 */
+.live-invline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.live-lamps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px 10px 4px;
+}
+.live-lamp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.live-lamp strong {
+  margin-left: auto;
+  color: var(--text-strong);
+}
+.live-lamp.ok .live-dot {
+  background: var(--ok);
+}
+.live-lamp.off .live-dot,
+.live-lamp.none .live-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+.live-lamp.none strong {
+  color: var(--text-muted);
 }
 .live-facts {
   display: grid;
@@ -1889,6 +2198,9 @@ ul.plain {
   margin: 0;
   padding: 6px 10px 8px;
   font-size: 12px;
+}
+.live-facts.wide {
+  grid-template-columns: 150px minmax(0, 1fr);
 }
 .live-facts dt {
   color: var(--text-muted);
@@ -1911,6 +2223,30 @@ ul.plain {
   color: var(--warn);
 }
 
+/* 실시간으로 못 받는 차 */
+.live-notlive {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 320px;
+  padding: 24px;
+  text-align: center;
+}
+.live-notlive-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+.live-notlive-plan {
+  font-size: 12px;
+}
+.live-notlive a {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
 @media (max-width: 860px) {
   .app-live .appbar {
     overflow-x: auto;
@@ -1922,20 +2258,28 @@ ul.plain {
   .app-live .statusbar {
     display: none;
   }
-  .live-grid {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: none;
-    grid-template-areas: 'tiles' 'side' 'charts' 'events';
+  .live-view-tab {
+    padding: 8px 12px;
+  }
+  .lv {
     padding: 8px;
   }
-  .live-row.big,
-  .live-row.gauge {
+  .lv-main,
+  .lv-two,
+  .lv-pair {
     grid-template-columns: minmax(0, 1fr);
   }
-  .live-row.small {
+  .lv-tiles.c3,
+  .lv-tiles.c4,
+  .live-factgrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .live-tile.big .live-tile-value {
     font-size: 30px;
+  }
+  .live-table-scroll,
+  .live-sources-table {
+    display: block;
+    overflow-x: auto;
   }
 }
