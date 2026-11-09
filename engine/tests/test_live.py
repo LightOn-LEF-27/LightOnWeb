@@ -279,6 +279,69 @@ def test_status_events_are_english_with_device_name():
     assert live.Live(car="LEF-27").dev_name == "Device" and live.Live(device_name="Gateway").dev_name == "Gateway"
 
 
+def test_device_state_sd_fatal_warns_and_counts_dropped_records():
+    L = live.Live()
+    car = Car(L)
+    car.run(4)
+    junk = bytes([0xA5]) * 8 + bytes(range(16))                       # 머리 없는 칸 (v2.3.0 이 SD 없이 보내는 모양)
+    for _ in range(4):
+        car.dev += 500
+        t = car.dev / 1000 + car.clock + 0.2
+        L.feed(row(t, "d", struct.pack("<II", car.dev, 1 << (3 + 12)) + bytes(24) + junk + junk + bytes(24)))
+    st = L.state(t)
+    assert st["device"]["fatal"] == ["SD"] and st["device"]["errors"] == [] and st["source"]["bad_records"] == 8
+    assert st["alerts"][0]["id"] == "W-DEV" and st["alerts"][0]["text"] == "Monolith 장치 오류 — SD"
+    t = car.run(2)
+    st = L.state(t)
+    assert st["device"]["fatal"] == [] and not st["alerts"] and st["events"][0]["text"] == "Monolith 장치 오류 — 해제"
+    assert not any(a["id"] == "W-DEV" for a in L.state(t + 60)["alerts"]) and live.Live().state(0)["device"]["fatal"] is None
+
+
+def test_temp_spread_only_when_both_fresh():
+    L = live.Live()
+    car = Car(L)
+    t = car.run(3, frames=[(ec.ORION_SUMMARY, summary(tmax=41, tmin=33), 8)])
+    tl = tile(L.state(t), "bms.temp_spread_c")
+    assert tl["value"] == 8.0 and tl["status"] == "ok"
+    assert tile(L.state(t + 5), "bms.temp_spread_c")["status"] == "stale"
+    assert tile(live.Live().state(0), "bms.temp_spread_c")["status"] == "none"
+
+
+def test_gap_seconds_on_back_events():
+    L = live.Live()
+    car = Car(L)
+    pedal = (ec.APPS_RAW, le(0) + le(0) + le(100) + b"\x01\x00", 8)
+    car.run(10, frames=[pedal])
+    car.run(10)
+    car.run(30, skip=True)
+    t = car.run(4, frames=[pedal])
+    ev = {e["kind"]: e for e in L.state(t)["events"]}
+    assert ev["restored"]["gap_s"] == pytest.approx(15.5, abs=0.1)
+    assert ev["source_back"]["source"] == "pedal" and ev["source_back"]["gap_s"] > 15
+
+
+def test_chart_has_view_series_and_rate_history():
+    L = live.Live(venue=VENUE)
+    car = Car(L)
+    pedal = (ec.APPS_RAW, le(0) + le(0) + le(400) + b"\x01\x00", 8)
+    t = car.run(30, frames=[pedal], gps=gps_rec(0, 1, 1, 10, 90))
+    ser = L.state(t)["chart"]["series"]
+    assert set(live.RATE_SERIES) <= set(ser) and {"bms.cell_min_v", "motor.rpm", "pedal.apps_pct"} <= set(ser)
+    assert ser["rate.link"][-1] == 1.0 and ser["rate.pedal"][-1] == 1.0 and ser["rate.bms"][-1] is None
+    assert ser["pedal.apps_pct"][-1] == pytest.approx(40.0)
+    car.run(10, skip=True)
+    t = car.run(2, frames=[pedal])
+    ser = L.state(t)["chart"]["series"]
+    assert None in ser["rate.link"] and ser["rate.link"][-1] < 1.0
+
+
+def test_receiver_carry_sets_status_without_event():
+    L = live.Live()
+    L.feed({"t_ns": 1_000 * 10**9, "event": "connected", "carry": True})
+    st = L.state(1_100)
+    assert st["receiver"] == {"status": "connected", "since": 1000.0} and st["events"] == []
+
+
 def test_restart_is_not_an_outage():
     L = live.Live()
     car = Car(L)
@@ -525,8 +588,10 @@ def test_lap_rows_energy_soc_cell_and_temp():
         assert r["soc_delta_pct"] == pytest.approx(-3.0, abs=0.6) and r["soc_end_pct"] < r["soc_start_pct"]
     assert rows[0]["cell_v_min"] == pytest.approx(3.6) and rows[1]["cell_v_min"] == pytest.approx(3.9)   # 30번째 tick 의 3.6 V 는 첫 랩
     assert rows[0]["cell_t_max_c"] == 41 and rows[1]["cell_t_max_c"] == 42
+    assert rows[0]["speed_max_kmh"] == 40.0 and rows[0]["lap_delta_s"] is None and rows[1]["lap_delta_s"] == pytest.approx(0.0, abs=0.1)
     cur = st["laps"]["current"]
     assert cur["lap"] == 3 and cur["net_wh"] == pytest.approx(36 * cur["lap_time_s"] / 3.6, rel=0.05)
+    assert cur["lap_delta_s"] is None and cur["speed_max_kmh"] == 40.0
     json.dumps(st, allow_nan=False)
 
 
@@ -613,7 +678,7 @@ def test_bad_rows_unknown_topics_and_replay_flag():
     L.feed(row(1, "d/what", b"x"))
     L.feed({**row(2, "d/ver", b"v"), "replay": True})
     st = L.state(3)
-    assert st["source"] == {"replay": True, "bad_rows": 5, "unknown_topics": 1}
+    assert st["source"] == {"replay": True, "bad_rows": 5, "unknown_topics": 1, "bad_records": 0}
 
 
 def test_feed_is_fast_enough_for_a_day_file():

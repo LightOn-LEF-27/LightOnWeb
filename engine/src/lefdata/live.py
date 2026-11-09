@@ -69,7 +69,7 @@ SPACING_MIN_N = 5
 SPACING_MAX_MS = 5000           # 이보다 긴 간격은 끊김이나 장치가 멈춘 것 — 간격 추정에 넣지 않는다
 SPACING_Q = 25                  # 아래쪽 4분위
 # 랩 값 (계약 §12-4 laps.rows)
-LAP_CH = ("battery.power_kw", "bms.soc_pct", "bms.cell_min_v", "bms.temp_max_c")
+LAP_CH = ("battery.power_kw", "bms.soc_pct", "bms.cell_min_v", "bms.temp_max_c", "gps.speed_kmh")
 LAP_KEEP = 4000                 # 채널마다 표본 수 (약 2 Hz 로 30분 넘게) — 랩이 이보다 길면 앞쪽이 빠진다 (cover 로 보인다)
 LAP_SETTLE_S = 3.0
 ENERGY_GAP_S = 2.0              # 전력 표본 사이가 이보다 벌어지면 그 사이는 적분하지 않는다
@@ -99,6 +99,7 @@ CHANNELS = {c.id: c for c in (
     Ch("bms.cell_min_v", "셀 최저 전압", "V", "", 3, source="bms", gauge=(2.5, 4.2)),          # 리튬이온 셀의 일반적인 하한 · 만충
     Ch("bms.temp_max_c", "셀 최고 온도", "°C", "", 0, source="bms", gauge=(0.0, 70.0)),       # 규정 60 °C 위 조금
     Ch("bms.temp_min_c", "셀 최저 온도", "°C", "", 0, source="bms"),
+    Ch("bms.temp_spread_c", "셀 온도 차", "°C", "최고 − 최저", 0, source="bms"),     # 엔진이 낸 값 — 최고 · 최저가 둘 다 새로울 때만
     # 0x6D0 슬롯 — 세션의 bms 블록과 같은 ID (있는 것만). 충전 한도 CCL(슬롯 10)은 세션들에서 Orion 로그와 반쯤만 맞아 내지 않는다
     Ch("bms.dcl_kw", "방전 출력 한계 (DCL)", "kW", "", 1, SLOT_STALE_S, "bms"),
     Ch("bms.temp_avg_c", "셀 평균 온도", "°C", "", 0, SLOT_STALE_S, "bms"),
@@ -127,12 +128,19 @@ CHANNELS = {c.id: c for c in (
 TILES = ("gps.speed_kmh", "battery.power_kw", "battery.voltage_v", "battery.current_a", "bms.soc_pct", "bms.cell_min_v",
          "bms.temp_max_c", "motor.t_motor_c", "motor.t_igbt_c", "pedal.apps_pct", "lv.voltage_v",
          # v0.16 추가 (사이트 #0ae7 — 화면을 뷰로 나눔)
-         "bms.temp_min_c", "bms.dcl_kw", "bms.temp_avg_c", "bms.temp_max_id", "bms.temp_min_id", "bms.bms_heatsink_c",
+         "bms.temp_min_c", "bms.temp_spread_c", "bms.dcl_kw", "bms.temp_avg_c", "bms.temp_max_id", "bms.temp_min_id", "bms.bms_heatsink_c",
          "bms.pack_resistance_ohm", "bms.pack_ah", "bms.dod_pct",
          "motor.vdc_v", "motor.rpm", "motor.enabled", "motor.ready", "motor.error_raw",
          "pedal.torque_cmd_pct", "pedal.apps1_pct", "pedal.apps2_pct", "pedal.fault_raw")
 CHART = ("gps.speed_kmh", "battery.power_kw", "battery.current_a", "bms.temp_max_c", "motor.t_motor_c", "motor.t_igbt_c",
-         "bms.soc_pct", "gps.x_m", "gps.y_m")
+         "bms.soc_pct", "gps.x_m", "gps.y_m",
+         # v0.16 추가 (사이트 #38fa — 뷰마다 최근 5분)
+         "bms.cell_min_v", "bms.temp_min_c", "motor.rpm", "pedal.apps_pct", "pedal.torque_cmd_pct")
+# 수신률 기록 (0 ~ 1) — 격자마다 그 순간의 link.rate_10s · sources[].rate_10s · fix_10s
+RATE_SERIES = ("rate.link", "rate.bms", "rate.inverter", "rate.pedal", "rate.gps_fix")
+# Monolith 상태 비트 (/d 의 u32, 펌웨어 main.h) — 비트 n = 오류, n + 12 = 치명
+DEVICE_COMPONENTS = ("CORE", "NVS", "RTC", "SD", "WIFI", "MQTT", "CAN", "GPS", "ANALOG", "DIGITAL", "GYRO")
+DEVICE_FATAL_SHIFT = 12
 SOURCES = (("bms", "BMS"), ("inverter", "인버터"), ("pedal", "가속페달"), ("gps", "GPS"), ("lv", "LV"))
 # 수신 · 장치 · 원천 사건은 영어 문구 (2026-11-03 사용자 결정, 사이트 #0820 — '장치' 가 무엇인지 애매해서). 값 경고 사건은 경고 띠 문구 그대로
 SOURCE_EVENT_NAMES = {"bms": "BMS", "inverter": "Inverter", "pedal": "APPS", "gps": "GPS"}     # 원천별 사건을 내는 원천 (LV 는 /d 안이라 빼다)
@@ -180,6 +188,8 @@ class Rule:
 DEFAULT_RULES = (
     Rule("W-TB-NOW", "bms.temp_max_c", ">=", 55.0, 60.0, "셀 최고 온도"),
     Rule("W-P80", "battery.power_kw", ">=", None, 80.0, "전력", info=True, note="[참고 — 2 Hz 순간값]"),
+    # 150 V = 사후 분석이 "고전압 켜짐" 을 가르는 선과 같은 값 (lef26_laps.HV_ON_V · motor_runs — 인버터가 본 DC 전압 기준).
+    # 5 km/h 는 HV 를 끈 채 차를 미는 것을 빼려고 정한 값. 둘 다 [정한 값 — 팩 구성이 바뀌면 다시]
     Rule("W-HV-OFF", "motor.vdc_v", "<=", None, 150.0, "주행 중 DC 버스 전압", when_speed_kmh=5.0),
 )
 
@@ -353,6 +363,8 @@ class Live:
         self.offline_at: float | None = None
         self.boots = 0
         self.boot_at: float | None = None
+        self.dev_state: int | None = None                         # /d 의 상태 비트 (마지막 값)
+        self.bad_records = 0                                      # 머리 · 체크섬이 맞지 않아 버린 /d 칸 · CAN 레코드
         # 시계
         self.dev_last: int | None = None
         self.win: deque[tuple[float, float]] = deque()           # (받은 시각, 받은 시각 − 보낸 순간) — 최솟값이 앞
@@ -392,7 +404,7 @@ class Live:
             return
         self.replay = bool(row.get("replay", False))
         if "event" in row:
-            self._receiver(t, row["event"])
+            self._receiver(t, row["event"], carry=bool(row.get("carry")))
             return
         topic, b64 = row.get("topic"), row.get("b64")
         if not isinstance(topic, str) or not isinstance(b64, str):
@@ -417,13 +429,15 @@ class Live:
         else:
             self.unknown += 1
 
-    def _receiver(self, t: float, ev: str) -> None:
+    def _receiver(self, t: float, ev: str, carry: bool = False) -> None:
+        """carry = 전날 파일의 마지막 수신기 사건을 이어 받은 줄 — 상태만 잡고 사건 목록에는 넣지 않는다."""
         status = {"connected": "connected", "disconnected": "disconnected"}.get(ev)
         if status is None:
             self.bad_rows += 1
             return
         self.receiver = (status, t)
-        self._event(t, "receiver", "Receiver connected" if status == "connected" else "Receiver disconnected")
+        if not carry:
+            self._event(t, "receiver", "Receiver connected" if status == "connected" else "Receiver disconnected")
 
     def _boot(self, t: float, p: bytes, retain: bool) -> None:
         if p.startswith(OFFLINE):
@@ -490,7 +504,7 @@ class Live:
                 self._log_lost(lost)                              # 화면이 그동안 묻지 않았어도(파일을 다시 읽을 때) 같은 사건이 남게
                 if not self._restarted:                           # 다시 부팅한 것은 끊김으로 세지 않는다
                     self.outages.append((self.last_rx, t))
-                    self._event(t, "restored", f"{self.dev_name} data back — {gap:.1f} s gap")
+                    self._event(t, "restored", f"{self.dev_name} data back — {gap:.1f} s gap", gap_s=_r(gap, 1))
         self._restarted = False
         self.last_rx = t if self.last_rx is None else max(self.last_rx, t)
         if is_d:
@@ -502,11 +516,14 @@ class Live:
         if len(p) != LOGBUF_SIZE:
             self.bad_rows += 1
             return
-        dev_ms = struct.unpack_from("<I", p, 0)[0]
+        dev_ms, state = struct.unpack_from("<II", p, 0)
         self._clock(t, dev_ms)
         self._periodic(t, True)
+        self._device_state(t, state)
         fix = False
-        for r in _records(p[8:]):
+        recs = _records(p[8:])
+        self.bad_records += sum(1 for k in range(4) if any(p[8 + 24 * k:32 + 24 * k])) - len(recs)   # 빈 칸(0)은 세지 않는다
+        for r in recs:
             ts = int.from_bytes(r[4:8].tobytes(), "little")
             if r[1] == T_GPS and ts != self.gps_ts:
                 self.gps_ts = ts
@@ -524,6 +541,20 @@ class Live:
         self._grid(t)
         self._close_laps(t)
 
+    def _device_state(self, t: float, state: int) -> None:
+        """Monolith 가 스스로 낸 부품 상태. 치명(SD 를 못 씀 등)이면 경고 — v2.3.0 은 SD 가 없으면 실시간 레코드에도 머리를 안 찍어 값이 다 버려진다."""
+        self.dev_state = state
+        fatal = [n for i, n in enumerate(DEVICE_COMPONENTS) if state >> (i + DEVICE_FATAL_SHIFT) & 1]
+        if fatal:
+            text = f"{self.dev_name} 장치 오류 — " + ", ".join(fatal)
+            cur = self.active.get("W-DEV")
+            if cur is None or cur["text"] != text:
+                self.active["W-DEV"] = {"id": "W-DEV", "level": "warn", "text": text, "value": state, "since": t, "channel": None}
+                self._event(t, "alert", text)
+        elif "W-DEV" in self.active:
+            self.active.pop("W-DEV")
+            self._event(t, "alert", f"{self.dev_name} 장치 오류 — 해제")
+
     def _source_events(self, t: float, dev_now: float) -> None:
         """원천이 멈추면 "<원천> no data" — /d 가 이어지는 동안만 본다 (장치가 꺼졌거나 수신이 끊긴 동안은 내지 않는다).
         나이는 이 /d 를 보낸 순간(장치 시각)으로 잰다 — 전달이 늦어져도 원천이 멈춘 것으로 보지 않게."""
@@ -540,7 +571,7 @@ class Live:
         down = self.src_down.get(src)
         if down is not None and ts > down:
             del self.src_down[src]
-            self._event(ts, "source_back", f"{SOURCE_EVENT_NAMES[src]} data back — {ts - down:.1f} s gap", source=src)
+            self._event(ts, "source_back", f"{SOURCE_EVENT_NAMES[src]} data back — {ts - down:.1f} s gap", source=src, gap_s=_r(ts - down, 1))
 
     def _log_lost(self, lost_s: float) -> None:
         """끊김 기준을 넘은 순간의 "<송신 장치> no data" — 끊김 하나에 한 번."""
@@ -574,7 +605,9 @@ class Live:
             self.bad_rows += 1
             return
         self._periodic(t, False)
-        for r in _records(p):
+        recs = _records(p)
+        self.bad_records += len(p) // REC - len(recs)
+        for r in recs:
             if r[1] != T_CAN:
                 continue
             dev = int.from_bytes(r[4:8].tobytes(), "little")
@@ -605,6 +638,11 @@ class Live:
             self.seen[src] = max(self.seen.get(src, ts), ts)
         if ch in self.lap_samples and self.venue is not None:
             self.lap_samples[ch].append((ts, float(v)))
+        if ch in ("bms.temp_max_c", "bms.temp_min_c"):
+            other = self.vals.get("bms.temp_min_c" if ch == "bms.temp_max_c" else "bms.temp_max_c")
+            if other is not None and abs(ts - other[0]) <= CHANNELS["bms.temp_spread_c"].stale_s:
+                hi, lo = (float(v), other[1]) if ch == "bms.temp_max_c" else (other[1], float(v))
+                self._put("bms.temp_spread_c", min(ts, other[0]), hi - lo)     # 더 옛 쪽 시각 — 낡음을 보수적으로
         if ch == "motor.error_raw":
             self._inverter_errors(ts, int(v))
         elif ch == "pedal.fault_raw":
@@ -679,7 +717,10 @@ class Live:
             a, b = self.crossings[i], self.crossings[i + 1]
             if now < b + LAP_SETTLE_S:
                 break
-            self.lap_rows.append({"lap": i + 1, **self._lap_stats(a, b)})
+            row = {"lap": i + 1, **self._lap_stats(a, b)}
+            prev = self.lap_rows[-1]["lap_time_s"] if self.lap_rows else None
+            row["lap_delta_s"] = _r(row["lap_time_s"] - prev, 1) if prev is not None else None
+            self.lap_rows.append(row)
         if len(self.crossings) > len(self.lap_rows):
             keep = self.crossings[len(self.lap_rows)] - max(ENERGY_GAP_S, SOC_NEAR_S)
             for dq in self.lap_samples.values():
@@ -699,10 +740,12 @@ class Live:
         soc0, soc1 = self._near("bms.soc_pct", a), self._near("bms.soc_pct", b)
         cell = [v for t, v in self.lap_samples["bms.cell_min_v"] if a <= t <= b]
         temp = [v for t, v in self.lap_samples["bms.temp_max_c"] if a <= t <= b]
+        speed = [v for t, v in self.lap_samples["gps.speed_kmh"] if a <= t <= b]
         return {"t_start": _r(a, 3), "t_end": _r(b, 3), "lap_time_s": _r(b - a, 1),
                 "net_wh": _r(kws / 3.6, 0) if covered > 0 else None, "cover": _r(covered / (b - a), 2) if b > a else None,
                 "soc_start_pct": soc0, "soc_end_pct": soc1, "soc_delta_pct": _r(soc1 - soc0, 1) if soc0 is not None and soc1 is not None else None,
-                "cell_v_min": _r(min(cell), 3) if cell else None, "cell_t_max_c": _r(max(temp), 0) if temp else None}
+                "cell_v_min": _r(min(cell), 3) if cell else None, "cell_t_max_c": _r(max(temp), 0) if temp else None,
+                "speed_max_kmh": _r(max(speed), 1) if speed else None}
 
     def _near(self, ch: str, at: float) -> float | None:
         """at 에 가장 가까운 표본 (앞쪽 먼저) — SOC_NEAR_S 안에 없으면 None."""
@@ -742,9 +785,10 @@ class Live:
         if g <= self.grid_t:
             return
         steps = int(round((g - self.grid_t) / GRID_S))
+        n = len(CHART) + len(RATE_SERIES)
         for k in range(1, min(steps, self.chart.maxlen)):        # 끊긴 동안의 칸은 비워 둔다 (선을 끊는다)
-            self.chart.append((round(self.grid_t + k * GRID_S, 3), (None,) * len(CHART)))
-        self.chart.append((round(g, 3), tuple(_r(self._fresh(ch, g)) for ch in CHART)))
+            self.chart.append((round(self.grid_t + k * GRID_S, 3), (None,) * n))
+        self.chart.append((round(g, 3), tuple(_r(self._fresh(ch, g)) for ch in CHART) + self._rates_at(g)))
         self.grid_t = g
 
     # ------------------------------------------------------------ 내보내기
@@ -783,6 +827,13 @@ class Live:
         return {"status": status, "age_s": _r(age, 1), "period_s": p, "rate_10s": _r(rate, 2), "outages": len(self.outages),
                 "longest_s": _r(longest, 1), "since_s": _r(age, 1) if status == "lost" else None}
 
+    def _rates_at(self, at: float) -> tuple:
+        """그래프용 수신률 (RATE_SERIES 순서) — 그 순간의 link.rate_10s · 원천별 · GPS 위치 비율."""
+        src = self._source_rates(at)
+        fixes = [f for x, f in self.fix_win if at - RATE_WINDOW_S < x <= at]
+        return (self._link(at)["rate_10s"], src.get("bms"), src.get("inverter"), src.get("pedal"),
+                _r(sum(fixes) / len(fixes), 2) if fixes else None)
+
     def _source_rates(self, now: float) -> dict[str, float]:
         """원천마다 최근 10 s 에 받은 새 CAN 프레임 수 ÷ 와야 할 수 (ID 가 여럿이면 합산)."""
         got: dict[str, float] = defaultdict(float)
@@ -802,7 +853,11 @@ class Live:
             status = "disconnected"
         else:
             status = "unknown"
-        return {"status": status, "boot_at": _r(self.boot_at, 1), "firmware": self.firmware, "boots": self.boots}
+        st = self.dev_state
+        bit = (lambda i, sh: st is not None and st >> (i + sh) & 1)
+        return {"status": status, "boot_at": _r(self.boot_at, 1), "firmware": self.firmware, "boots": self.boots,
+                "errors": [n for i, n in enumerate(DEVICE_COMPONENTS) if bit(i, 0)] if st is not None else None,
+                "fatal": [n for i, n in enumerate(DEVICE_COMPONENTS) if bit(i, DEVICE_FATAL_SHIFT)] if st is not None else None}
 
     def state(self, now: float, since: float | None = None) -> dict:
         link = self._link(now)
@@ -829,7 +884,8 @@ class Live:
                 s["fix_10s"] = _r(sum(fixes) / len(fixes), 2) if fixes else None
             sources.append(s)
 
-        alerts = [a for a in self.active.values() if self._fresh(a["channel"], now) is not None]
+        alerts = [a for a in self.active.values()
+                  if (self._fresh(a["channel"], now) is not None if a["channel"] else link["status"] in ("ok", "late"))]   # 장치 경고는 받는 동안만
         if link["status"] in ("late", "lost") and device["status"] != "disconnected":
             lv = "warn" if link["status"] == "late" else "danger"
             alerts.append({"id": "W-LINK", "level": lv, "text": f"수신 {'늦음' if lv == 'warn' else '끊김'} — {link['age_s']:.0f} s",
@@ -867,16 +923,16 @@ class Live:
                     "last_s": _r(done[-1], 1) if len(done) else None, "best_s": _r(done.min(), 1) if len(done) else None,
                     "basis": "GPS 계측선 통과 — GPS 주기만큼 오차",
                     "rows": list(self.lap_rows),
-                    "current": {"lap": len(self.crossings), **self._lap_stats(a, max(a, now))},
+                    "current": {"lap": len(self.crossings), **self._lap_stats(a, max(a, now)), "lap_delta_s": None},
                     "energy_basis": "배터리 전력(Orion 요약, 약 2 Hz 순간값)을 이어 적분 — 랩마다 몇 % 오차. "
                                     "cover = 전력 값이 이어진 시간의 비율 (1 보다 작으면 빈 곳이 있어 에너지가 작게 나옴)"}
 
         lo = since if since is not None else now - CHART_DEFAULT_S
         rows = [r for r in self.chart if r[0] > lo]
-        chart = {"t": [r[0] for r in rows], "series": {ch: [r[1][i] for r in rows] for i, ch in enumerate(CHART)}}
+        chart = {"t": [r[0] for r in rows], "series": {ch: [r[1][i] for r in rows] for i, ch in enumerate(CHART + RATE_SERIES)}}
 
         return {"contract": CONTRACT, "now": _r(now, 3), "car": self.car,
-                "source": {"replay": self.replay, "bad_rows": self.bad_rows, "unknown_topics": self.unknown},
+                "source": {"replay": self.replay, "bad_rows": self.bad_rows, "unknown_topics": self.unknown, "bad_records": self.bad_records},
                 "receiver": {"status": self.receiver[0], "since": _r(self.receiver[1], 3)},
                 "device": device, "link": link, "sources": sources, "tiles": tiles, "inverter": inverter, "pedal": pedal,
                 "position": position, "laps": laps, "alerts": [{k: v for k, v in a.items() if k != "channel"} for a in alerts],

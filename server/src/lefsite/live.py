@@ -46,12 +46,45 @@ class LiveFeed:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    def _fresh(self, day: str):
+        """새 상태 — 오늘 파일보다 앞선 파일의 마지막 수신기 사건을 이어 받는다 (수신기는 날이 바뀌어도 붙어 있는데
+        연결 사건은 붙은 날 파일에만 있어서, 그대로 두면 다음 날 화면이 '확인 중' 이 된다)."""
+        live = self.make()
+        last = self._last_receiver_event(day)
+        if last is not None:
+            live.feed({**last, "carry": True})
+        return live
+
+    def _last_receiver_event(self, day: str) -> dict | None:
+        try:
+            older = sorted(p for p in self.dir.glob("*.jsonl") if p.stem < day)
+        except OSError:
+            return None
+        for path in reversed(older):
+            last = None
+            try:
+                with open(path, "rb") as f:
+                    for line in f:
+                        if b'"event"' in line:
+                            try:
+                                row = json.loads(line)
+                            except ValueError:
+                                continue
+                            if "event" in row and "t_ns" in row:
+                                last = {"t_ns": row["t_ns"], "event": row["event"]}
+            except OSError:
+                continue
+            if last is not None:
+                return last
+        return None
+
     def poll(self) -> int:
         """새 줄을 읽어 넘긴다 → 넘긴 줄 수."""
         day = day_of(self.clock())
         if day != self.day:
+            live = self._fresh(day)
             with self.lock:
-                self.live = self.make()
+                self.live = live
             self.day, self.pos, self.buf = day, 0, b""
         path = self.dir / f"{day}.jsonl"
         try:
@@ -59,8 +92,9 @@ class LiveFeed:
         except FileNotFoundError:
             return 0
         if size < self.pos:                       # 파일이 새로 만들어졌다 — 처음부터
+            live = self._fresh(day)
             with self.lock:
-                self.live = self.make()
+                self.live = live
             self.pos, self.buf = 0, b""
         if size == self.pos:
             return 0

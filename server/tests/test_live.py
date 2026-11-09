@@ -115,6 +115,22 @@ def test_next_day_starts_empty(live_client):
     assert c.get("/api/live/state").json()["link"]["status"] == "none"
 
 
+def test_receiver_status_carries_over_to_the_next_day(live_client):
+    c, feed = live_client()
+    t0 = int((NOW - 86_400 * 2) * 1e9)                        # 이틀 전에 붙고, 어제 파일에는 사건이 없다
+    (feed.dir / f"{day_of(NOW - 86_400 * 2)}.jsonl").write_bytes(
+        json.dumps({"t_ns": t0, "event": "connected"}).encode() + b"\n")
+    (feed.dir / f"{day_of(NOW - 86_400)}.jsonl").write_bytes(b"")
+    feed.poll()
+    st = c.get("/api/live/state").json()
+    assert st["receiver"] == {"status": "connected", "since": pytest.approx(t0 / 1e9, abs=1e-3)} and st["events"] == []
+    write(feed, [json.dumps({"t_ns": int(NOW * 1e9), "event": "disconnected"}).encode() + b"\n"])
+    feed.poll()
+    feed.clock = lambda: NOW + 86_400                          # 다음 날 — 오늘 끊긴 것이 이어진다
+    feed.poll()
+    assert c.get("/api/live/state").json()["receiver"]["status"] == "disconnected"
+
+
 def test_track_needs_a_venue(live_client, tmp_path):
     c, _ = live_client()
     assert c.get("/api/live/track").json()["error"]["code"] == "no_venue"
