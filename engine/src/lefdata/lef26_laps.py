@@ -148,7 +148,7 @@ def read_video(rec_dir: Path) -> Video:
 def read_logger(rec_dir: Path, cm: lc.ClockMap | None, win_true: np.ndarray) -> Logger:
     imu = pq.read_table(rec_dir / "imu.parquet", columns=["t_rel_ms", "ax_lat_g", "ay_long_g", "yaw_dps"]).to_pandas()
     lin = pq.read_table(rec_dir / "lin.parquet", columns=["t_rel_ms", "lin_rl_mm", "lin_rr_mm"]).to_pandas()
-    bms = pq.read_table(rec_dir / "bms.parquet", columns=["t_rel_ms", "valid", "cell_max_v", "cell_min_v", "soc_pct"]).to_pandas()
+    bms = pq.read_table(rec_dir / "bms.parquet", columns=["t_rel_ms", "valid", "cell_max_v", "cell_min_v", "soc_pct", "temp_c"]).to_pandas()
     bms = bms[bms["valid"] & (bms["cell_min_v"] >= 2.0) & (bms["cell_max_v"] <= 4.3)].copy()      # 약한 체크섬 보완
     therm = pq.read_table(rec_dir / "thermistor.parquet",
                           columns=["t_rel_ms", "source", "lowest_c", "highest_c", "average_c", "hottest_id"]).to_pandas()

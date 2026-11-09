@@ -691,3 +691,13 @@ def test_race_quality_findings_golden():
     assert total(q2["em_dropped_samples"]) == E.approx("s2.dropped_total_s")
     assert total(q2["imu_time_uncalibrated"]) == E.approx("s2.imu_uncalibrated_s")
     assert q2["imu_time_uncalibrated"]["t_ranges"][-1][1] == E.approx("s2.imu_uncalibrated_end_s")
+
+
+def test_lef26_logger_sessions_carry_the_bms_temperature():
+    """LEF-26 로거가 있는 세션의 BMS 블록에 BMS 온도 채널이 있다 — 로거를 읽을 때 `temp_c` 열을 빠뜨리면 채널이 늘 비었다."""
+    found = [json.loads(f.read_text(encoding="utf-8")) for f in sorted(store.DEFAULT_ROOT.glob("LEF-26_*/session.json"))]
+    found = [s for s in found if '"bms.cell_min_v"' in json.dumps(s, ensure_ascii=False)]
+    if not found:
+        pytest.skip("LEF-26 로거 세션 없음 (lefdata sessions 를 돌려야 함)")
+    have = [s for s in found if '"bms.temp_c"' in json.dumps(s, ensure_ascii=False)]
+    assert len(have) >= 0.9 * len(found)
