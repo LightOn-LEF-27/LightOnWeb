@@ -104,7 +104,6 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("catalog", help="주행 데이터 카탈로그: 세션 페이지 → derived/catalog/, 첫 페이지 · 코드 페이지 → 07_데이터/_catalog/")
     p.add_argument("--event", type=Path, action="append", help="이벤트 폴더 (여러 번 지정 가능). 없으면 catalog_notes.toml 이 있는 이벤트 전부")
-    p.add_argument("--notion", type=Path, help="노션용 마크다운도 쓴다 — 업로드 ID · 페이지 주소를 적은 JSON (→ _catalog/notion/)")
 
     p = sub.add_parser("sessions", help="분석 엔진(사이트용)이 읽는 세션 저장소 → 07_데이터/_sessions/<세션 ID>/")
     p.add_argument("--event", type=Path, action="append", help="이벤트 폴더 (여러 번 지정 가능). 없으면 catalog_notes.toml 이 있는 이벤트 전부")
@@ -344,8 +343,6 @@ def main(argv: list[str] | None = None) -> None:
         print(f"[lef26-laps] derived/lap_logger.csv · accel_logger.csv · skidpad_logger.csv, {time.perf_counter()-t0:.1f}s")
 
     elif args.cmd == "catalog":
-        import json
-
         from . import catalog_build
         event_dirs = args.event or sorted(p.parent for p in paths.DATA_ROOT.glob(f"*/*/{catalog_build.NOTES_NAME}"))
         for ev in event_dirs:
@@ -355,9 +352,6 @@ def main(argv: list[str] | None = None) -> None:
                       f"있는 데이터 {len(row['have']) + len(row['warn'])}종 · 찾는 데이터 {len(row['seek'])}종 · 그림 · 파일 {len(row['uploads'])}개")
         done = catalog_build.write_root(paths.DATA_ROOT)
         print(f"  세션 {len(done['sessions'])}개 · 변환된 레코딩 {done['recordings']}개 · 코드 페이지 {len(catalog_build.CODE_PAGES)}개 → {done['root']}")
-        if args.notion:
-            files = catalog_build.write_notion(paths.DATA_ROOT, json.loads(args.notion.read_text(encoding="utf-8")))
-            print(f"  노션용 마크다운 {len(files)}개 → {files[0].parent}")
         print(f"[catalog] {time.perf_counter()-t0:.1f}s")
 
     elif args.cmd == "sessions":

@@ -78,19 +78,6 @@ def test_a_session_with_nothing_still_gets_a_page(tmp_path):
     assert "찾는 데이터" in doc and "그림 1." not in doc and row["have"] == [] and row["uploads"] == []
 
 
-def test_notion_copy_is_made_from_the_same_blocks(tmp_path):
-    """노션용 마크다운: 뜻이 있는 글자를 막고, 그림 · 파일은 업로드 ID 로, 코드는 페이지 주소로 바꾼다."""
-    s = hand_filled_session(tmp_path)
-    cat.write_session(s, tmp_path / "out")
-    blocks = json.loads((tmp_path / "out" / "page.json").read_text(encoding="utf-8"))["blocks"]
-    text = cat.to_notion(blocks, {"figures/gps_time.png": "UP1", "files/gps.csv": "UP2"}, {"laps": "https://example.invalid/laps"})
-    assert '<image src="file-upload://UP1">' in text and '<file src="file-upload://UP2">' in text
-    assert '<mention-page url="https://example.invalid/laps">GPS → 랩</mention-page>' in text
-    assert "(그림 없음: 그림 2." in text                          # 올리지 못한 그림은 빼지 않고 글로 남긴다
-    assert r"50 \~ 70 사이 \| 표" in text and "<table header-row=\"true\">" in text
-    assert "~" not in text.replace(r"\~", "")                    # 막지 않은 물결표가 없다 (노션에서 취소선이 된다)
-
-
 @pytest.mark.parametrize("mod", ["catalog", "catalog_charts"])
 def test_catalog_layer_does_not_know_the_car(mod):
     """문서와 그림은 차량 · 폴더 구조를 아는 코드를 import 하지 않는다 — LEF-27 에서 그대로 쓰려면 지켜야 한다."""

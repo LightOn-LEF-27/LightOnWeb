@@ -52,7 +52,7 @@ import pyarrow.parquet as pq
 
 from . import em_laps, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
 from .catalog import (HAVE, NONE, SEEK, WARN, Channel, CodeRef, DataBlock, Export, FileRef, LapColumn, Missing, Session, code_html,
-                      size_text, to_markdown, to_notion, write_session)
+                      size_text, to_markdown, write_session)
 
 G = 9.80665
 TZ = "Asia/Seoul"
@@ -2103,25 +2103,3 @@ def write_root(data_root: Path) -> dict:
     (root / "pages.json").write_text(json.dumps(pages, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
     return {"sessions": rows, "recordings": len(inv), "root": root}
 
-
-def write_notion(data_root: Path, mapping: dict) -> list[Path]:
-    """노션에 올릴 마크다운을 쓴다 (사본). mapping = {"pages": {코드 key: 주소}, "uploads": {세션 폴더: {파일: 업로드 ID}}}.
-
-    → _catalog/notion/<이름>.md. 그림 · 파일은 업로드 ID 로, 코드 링크는 페이지 주소로 바뀐다.
-    """
-    root = data_root / ROOT_NAME
-    out = root / "notion"
-    out.mkdir(parents=True, exist_ok=True)
-    pages = {k.removeprefix("code/"): v for k, v in mapping.get("pages", {}).items()}
-    for name, page in json.loads((root / "pages.json").read_text(encoding="utf-8")).items():
-        blocks = [b for b in page["blocks"] if not (name == "README" and b["t"] == "table" and b["head"][0] == "세션")]
-        path = out / f"{name.replace('/', '_')}.md"
-        path.write_text(to_notion(blocks, mapping.get("uploads", {}).get(name, {}), pages), encoding="utf-8", newline="\n")
-        done.append(path)
-    for index in sorted(data_root.glob("*/*/derived/catalog/index.json")):
-        for row in json.loads(index.read_text(encoding="utf-8")):
-            page = json.loads((data_root / row["dir"] / "page.json").read_text(encoding="utf-8"))
-            path = out / f"{row['sid']}.md"
-            path.write_text(to_notion(page["blocks"], mapping.get("uploads", {}).get(row["sid"], {}), pages), encoding="utf-8", newline="\n")
-            done.append(path)
-    return done

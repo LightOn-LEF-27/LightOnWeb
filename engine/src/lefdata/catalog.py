@@ -27,7 +27,6 @@ import numpy as np
 import pandas as pd
 
 HAVE, WARN, SEEK, NONE = "있음", "있음 (주의)", "찾는 중", "기록 안 됨"
-NOTION_FILE_TYPES = (".csv", ".png", ".html", ".pdf", ".zip", ".json", ".txt")   # 노션이 그대로 받는 형식 (쓰는 것만)
 ATTACH_MAX_BYTES = 5 * 1024 * 1024     # 이보다 큰 파일은 페이지에 붙이지 않고 있는 곳만 적는다 (노션 무료 요금제의 파일 한도)
 
 
@@ -332,66 +331,6 @@ def _file_line(f: dict, name) -> str:
     bits = [x for x in (f["label"], f["size"], f["note"]) if x]
     tail = f" · 있는 곳: {f['where']}" if f["where"] else ""
     return f"{name(f)} — " + " · ".join(bits) + tail
-
-
-# ---------------------------------------------------------------- 노션용 마크다운 (사본)
-
-_ESCAPE = str.maketrans({c: "\\" + c for c in "~$[]<>{}|^"})
-
-
-def notion_text(text: str) -> str:
-    """노션 마크다운에서 뜻이 있는 글자를 막는다. 굵게(**) 와 코드(`) 는 의도한 것이라 그대로 두고, 코드 안은 건드리지 않는다."""
-    parts = str(text).split("`")
-    return "`".join(p if i % 2 else p.translate(_ESCAPE) for i, p in enumerate(parts))
-
-
-def to_notion(blocks: list[dict], uploads: dict[str, str] | None = None, pages: dict[str, str] | None = None) -> str:
-    """블록 목록 → 노션용 마크다운. uploads = {파일 상대 경로: 업로드 ID}, pages = {코드 key: 노션 페이지 주소}.
-
-    짝이 없는 그림 · 파일 · 코드는 빼지 않고 글로 남긴다 (무엇이 빠졌는지 페이지에서 보이게).
-    """
-    uploads, pages, x = uploads or {}, pages or {}, notion_text
-    out: list[str] = []
-    for b in blocks:
-        t = b["t"]
-        if t == "h":
-            out.append(f"{'#' * b['level']} {x(b['text'])}")
-        elif t == "p":
-            out.append(x(b["text"]))
-        elif t == "ul":
-            out += [f"- {x(i)}" for i in b["items"]]
-        elif t in ("kv", "table"):
-            head = [] if t == "kv" else [b["head"]]
-            attrs = 'header-column="true"' if t == "kv" else 'header-row="true"'
-            out.append(f"<table {attrs}>")
-            for r in head + [list(r) for r in b["rows"]]:
-                out.append("\t<tr>\n" + "\n".join(f"\t\t<td>{x(c)}</td>" for c in r) + "\n\t</tr>")
-            out.append("</table>")
-        elif t == "image":
-            up = uploads.get(b["file"])
-            out.append(f'<image src="file-upload://{up}">{x(b["caption"])}</image>' if up else x(f"(그림 없음: {b['caption']})"))
-        elif t == "files":
-            out.append(f"**{x(b['title'])}**")
-            for f in b["files"]:
-                up = uploads.get(f["file"]) if f["file"] else None
-                line = _file_line(f, lambda f: f"`{f['name']}`")
-                if up and not f["name"].lower().endswith(NOTION_FILE_TYPES):
-                    line += " · zip 으로 묶어 붙임"            # 노션이 받지 않는 형식(.log 등)은 묶어서 올린다
-                out.append(f'<file src="file-upload://{up}">{x(line)}</file>' if up else f"- {x(line)}")
-        elif t == "codes":
-            out.append(f"**{x(b['title'])}**")
-            for c in b["codes"]:
-                link = f'<mention-page url="{pages[c["key"]]}">{x(c["title"])}</mention-page>' if c["key"] in pages else x(c["title"])
-                out.append(f"- {link}" + (f" — {x(c['role'])}" if c["role"] else ""))
-        elif t == "code":
-            view, src = uploads.get(b.get("html", "")), uploads.get(b.get("file", ""))
-            if view:                                            # 올려 둔 HTML 을 페이지 안에 끼워 보여 준다 (코드를 다시 옮겨 적지 않는다)
-                out.append(f'<embed src="file-upload://{view}">{x(b["file"])}</embed>')
-            else:                                               # 코드 블록 안은 글자 그대로 (막지 않는다)
-                out += [f"```{b['lang']}", b["text"].rstrip(), "```"]
-            if src:
-                out.append(f'<file src="file-upload://{src}">{x(b["file"])} (원본 파일)</file>')
-    return "\n".join(out) + "\n"
 
 
 # ---------------------------------------------------------------- 코드 보기 (HTML)
