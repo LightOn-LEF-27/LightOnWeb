@@ -94,6 +94,9 @@ SESSION_COLS = ["sid", "title", "car", "day", "start", "event_kind", "discipline
                 "laps", "best_lap_s", "have", "warn", "seek", "none"]
 
 
+ROT_ABS = "절대값 — 방향 없이 크기만 (기록은 전진할 때 −)"
+
+
 def _read(path: Path) -> pd.DataFrame | None:
     """CSV → 표. 없거나 비었으면(열도 없이 쓴 빈 표 — 스키드패드를 안 한 날의 skidpad_laps.csv 등) None."""
     try:
@@ -583,8 +586,8 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
     # 모터 · 인버터 (BAMOCAR 0x181)
     sig = {k: _gather(r, logs, _motor_signal(k))[:2] for k in ("n_act_pct", "iq_act_a", "iq_cmd_a", "vdc_v", "t_igbt_c", "t_motor_c")}
     series = []
-    spec = (("n_act_pct", "rpm", "모터 회전수", "rpm", lambda v: v / 100 * lef26.N_MAX_RPM, "전진할 때 − (컨트롤러가 보는 회전 방향 그대로)", 0,
-             [f"컨트롤러 설정값 N-100 % = {lef26.N_MAX_RPM:.0f} rpm 기준으로 바꾼 값", sparse]),
+    spec = (("n_act_pct", "rpm", "모터 회전수", "rpm", lambda v: np.abs(v) / 100 * lef26.N_MAX_RPM, "", 0,
+             [f"컨트롤러 설정값 N-100 % = {lef26.N_MAX_RPM:.0f} rpm 기준으로 바꾼 값", ROT_ABS, sparse]),
             ("iq_act_a", "iq_a", "토크 전류", "A", None, "", 1, ["모터 상전류(교류)의 토크 성분 — 배터리 전류 아님", sparse]),
             ("iq_cmd_a", "iq_cmd_a", "토크 전류 지령", "A", None, "", 1, [sparse]),
             ("vdc_v", "vdc_v", "DC 버스 전압", "V", None, "", 1, [sparse]),
@@ -594,7 +597,7 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
         t, v = sig[src]
         if len(t):
             series.append(Channel(key, label, unit, t, conv(v) if conv else v, sign=sign, derived=conv is not None,
-                                  derivation="n_act_pct ÷ 100 × 설정 최대 회전수" if conv else "", cautions=cautions, source=", ".join(used), digits=d))
+                                  derivation="|n_act_pct| ÷ 100 × 설정 최대 회전수" if conv else "", cautions=cautions, source=", ".join(used), digits=d))
     if series:
         keys = {c.key for c in series}
         cols = []
@@ -893,10 +896,10 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
                                     checks=[clock], cautions=extra + ["BMS 가 보고한 셀 최고 · 최저 (셀 하나하나의 값은 없음)"], series=cell))
     if mot is not None and "motor" not in skip:
         t = mot["t_s"].to_numpy()
-        series = [Channel(k, label, unit, t, mot[k].to_numpy(), cautions=extra + [slow], source=src, digits=d)
+        series = [Channel(k, label, unit, t, np.abs(mot[k].to_numpy(float)) if k == "rpm" else mot[k].to_numpy(), cautions=extra + [slow], source=src, digits=d)
                   for k, label, unit, d, extra in (("t_igbt_c", "인버터(IGBT) 온도", "°C", 1, ["NTC 값을 컨트롤러 제조사 표로 바꾼 값 (새 형식 로그에만 있음)"]),
                                                    ("t_motor_c", "모터 온도", "°C", 1, []), ("vdc_v", "DC 버스 전압", "V", 1, []),
-                                                   ("rpm", "회전수 (로거 환산)", "rpm", 0, ["로거가 상수 기준으로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음"]))
+                                                   ("rpm", "회전수 (로거 환산)", "rpm", 0, ["로거가 상수 기준으로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음", ROT_ABS]))
                   if k in mot and mot[k].notna().any()]
         if series:
             cols = []
@@ -1020,13 +1023,14 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
     sig = evo_can.bamocar_signals(bam)
     src, every = r.rec, "모터 컨트롤러가 CAN 으로 보낸 값 (레지스터마다 10 Hz)"
     on_off = [{"value": 0, "label": "꺼짐"}, {"value": 1, "label": "켜짐"}]
+    sig = {**sig, "rpm": (sig["rpm"][0], np.abs(sig["rpm"][1]))} if "rpm" in sig else sig
     series = [Channel(k, label, unit, *sig[k], sign=sign, derived=bool(how), derivation=how, cautions=[every] + extra, source=src, digits=dg, levels=levels)
               for k, label, unit, sign, how, extra, dg, levels in (
                   ("t_igbt_c", "인버터(IGBT) 온도", "°C", "", "", ["NTC 값을 컨트롤러 제조사 표로 바꾼 값"], 1, []),
                   ("t_motor_c", "모터 온도", "°C", "", "", ["KTY81 값을 컨트롤러 제조사 표로 바꾼 값"], 1, []),
                   ("vdc_v", "DC 버스 전압", "V", "", "", ["컨트롤러 안쪽(DC 링크) 값 — 전원 차단 때는 배터리와 다를 수 있음. 짧은 순간의 최고값은 표본 사이에 있을 수 있음"], 1, []),
-                  ("rpm", "회전수 (로거 환산)", "rpm", "전진할 때 −", f"컨트롤러 값 ÷ {evo_can.RPM_FULL_SCALE} × {evo_can.LOGGER_N100_RPM:.0f} (STM32 백업 로거와 같은 기준)",
-                   ["로거와 같은 상수로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음"], 0, []),
+                  ("rpm", "회전수 (로거 환산)", "rpm", "", f"|컨트롤러 값| ÷ {evo_can.RPM_FULL_SCALE} × {evo_can.LOGGER_N100_RPM:.0f} (STM32 백업 로거와 같은 기준)",
+                   ["로거와 같은 상수로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음", ROT_ABS], 0, []),
                   ("enabled", "구동 허용 (Ena)", "", "", "", ["상태 레지스터의 Ena 비트"], 0, on_off),
                   ("ready", "운전 준비 (Rdy)", "", "", "", ["상태 레지스터의 Rdy 비트 — 오류가 나면 꺼짐"], 0, on_off))
               if k in sig]

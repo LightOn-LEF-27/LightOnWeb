@@ -70,7 +70,7 @@ def test_lef26_logger_blocks_are_on_the_session_clock(s26):
             checked += 1
     assert checked >= 3
     rpm = next(_channel(s, "motor", "rpm") for s in s26 if _channel(s, "motor", "rpm") is not None)
-    assert rpm.sign.startswith("전진할 때 −")                                   # 전진에서 음수로 기록된다 (GPS 속도와 반대 부호로 상관)
+    assert rpm.sign == "" and np.nanmin(rpm.v) >= 0 and any("절대값" in c for c in rpm.cautions)   # 기록은 전진할 때 − — 크기만 낸다
 
 
 @need26
