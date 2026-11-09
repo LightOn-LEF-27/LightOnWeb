@@ -140,7 +140,7 @@ def test_motor_block_uses_the_same_channel_names_as_the_backup_logger():
     b = cb._can_motor_block(r, _motor_table(), oc)
     assert b.key == "motor" and not b.findings and {c.key for c in b.channels} == {"t_igbt_c", "t_motor_c", "vdc_v", "rpm", "enabled", "ready"}
     rpm = next(c for c in b.channels if c.key == "rpm")
-    assert rpm.v.min() >= 0 and rpm.v.max() > 0 and rpm.sign == "" and "로거" in rpm.derivation          # 절대값 · 실제 rpm 이라고 하지 않는다
+    assert rpm.v.max() > 0 and rpm.sign == "전진 +" and "로거" in rpm.derivation          # 기록 부호를 뒤집어 전진 + · 실제 rpm 이라고 하지 않는다
     assert next(c for c in b.channels if c.key == "ready").levels == [{"value": 0, "label": "꺼짐"}, {"value": 1, "label": "켜짐"}]
     assert r.laps["motor_t_max_c"].iloc[0] == pytest.approx(30.0) and "inverter_t_max_c" in r.laps
     assert "오류: 없음" in b.facts[-1] and "GPS 를 +0.0 s" in b.checks[0]

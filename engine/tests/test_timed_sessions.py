@@ -135,7 +135,7 @@ def test_devices_are_moved_to_the_reference_clock_and_cut(tmp_path):
     amp = _ch(first, "battery", "current_a")
     assert amp.t_s[np.argmax(amp.v)] == pytest.approx(SPIKE_S, abs=0.02)           # 에너지미터 시계 −180 s 로 옮긴 자리
     rpm = _ch(first, "motor", "rpm")
-    assert rpm.v.min() >= 0 and rpm.t_s[np.argmax(rpm.v)] == pytest.approx(SPIKE_S, abs=0.5)            # STM32 도 에너지미터 시계를 따른다
+    assert rpm.sign == "전진 +" and rpm.t_s[np.argmax(rpm.v)] == pytest.approx(SPIKE_S, abs=0.5)            # STM32 도 에너지미터 시계를 따른다
     soc = _ch(first, "bms", "soc_pct")
     assert np.isnan(soc.v[0]) and soc.v[1] == pytest.approx(90 - 1 / 60)           # 켠 직후의 0 은 비운다
     t = np.arange(0.0, 250.0, 0.01)
