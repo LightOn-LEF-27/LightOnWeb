@@ -36,7 +36,7 @@ export const VIEW_TILES: Record<ViewKey, string[]> = {
   ],
   battery: [
     'bms.soc_pct', 'battery.power_kw', 'battery.voltage_v', 'battery.current_a', 'bms.dcl_kw', 'bms.cell_min_v', 'bms.temp_max_id',
-    'bms.temp_min_id', 'bms.temp_avg_c', 'bms.temp_max_c', 'bms.temp_min_c', 'bms.bms_heatsink_c', 'bms.pack_resistance_ohm',
+    'bms.temp_min_id', 'bms.temp_avg_c', 'bms.temp_max_c', 'bms.temp_min_c', 'bms.temp_spread_c', 'bms.bms_heatsink_c', 'bms.pack_resistance_ohm',
     'bms.pack_ah', 'bms.dod_pct',
   ],
   powertrain: [
@@ -46,8 +46,8 @@ export const VIEW_TILES: Record<ViewKey, string[]> = {
   link: ['lv.voltage_v'],
 }
 
-// 칸이 없는 경고 (id 로) — 수신 늦음 · 끊김, 원천 낡음은 수신 · DAQ 뷰
-const ALERT_VIEW: [string, ViewKey][] = [['W-LINK', 'link'], ['W-SRC', 'link']]
+// 칸이 없는 경고 (id 로) — 수신 늦음 · 끊김, 원천 낡음, 장치 오류는 수신 · DAQ 뷰
+const ALERT_VIEW: [string, ViewKey][] = [['W-LINK', 'link'], ['W-SRC', 'link'], ['W-DEV', 'link']]
 
 // 경고를 자세히 볼 뷰 — 지금 뷰면 null. tileId = 그 경고가 물들인 칸 (tiles[].alert 로 찾는다)
 export function alertView(alertId: string, tileId: string | null, current: ViewKey, views: ViewKey[]): ViewKey | null {

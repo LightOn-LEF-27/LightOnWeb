@@ -262,6 +262,7 @@ export function RecentLaps({ laps }: { laps: LiveState['laps'] }) {
             <tr>
               <th>랩</th>
               <th>시간</th>
+              <th>Last 대비</th>
               <th>최고 속도</th>
               <th>셀 최고 온도</th>
               <th>SOC 끝</th>
@@ -272,6 +273,7 @@ export function RecentLaps({ laps }: { laps: LiveState['laps'] }) {
               <tr key={l.lap}>
                 <td>{l.lap}</td>
                 <td className={isBest(l, laps) ? 'best' : ''}>{lapText(l.lap_time_s)}</td>
+                <td>{l.lap_delta_s == null ? '—' : `${signedText(l.lap_delta_s, 1)} s`}</td>
                 <td>{l.speed_max_kmh == null ? '—' : `${formatValue(l.speed_max_kmh, 0)} km/h`}</td>
                 <td>{l.cell_t_max_c == null ? '—' : `${formatValue(l.cell_t_max_c, 0)} °C`}</td>
                 <td>{l.soc_end_pct == null ? '—' : `${formatValue(l.soc_end_pct, 1)} %`}</td>

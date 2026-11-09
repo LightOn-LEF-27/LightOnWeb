@@ -98,8 +98,11 @@ export function BatteryView({ c }: { c: ViewCtx }) {
         <div className="lv-tiles c2">
           {T('bms.cell_min_v')}
           <ThermTile c={c} />
+        </div>
+        <div className="lv-tiles c3">
           {T('bms.temp_max_c')}
           {T('bms.temp_min_c')}
+          {T('bms.temp_spread_c')}
         </div>
         <section className="panel">
           <h2>BMS 기타</h2>
@@ -317,6 +320,10 @@ function DevicePanel({ c }: { c: ViewCtx }) {
         </dd>
         <dt>펌웨어</dt>
         <dd>{s.device.firmware ?? '—'}</dd>
+        <dt>부품 상태</dt>
+        <dd>
+          <PartsState errors={s.device.errors} fatal={s.device.fatal} tone={tone} />
+        </dd>
         <dt>수신기</dt>
         <dd>
           <span className={`live-flag ${tone(s.receiver.status === 'connected' ? 'ok' : s.receiver.status === 'disconnected' ? 'danger' : 'none')}`}>
@@ -324,12 +331,26 @@ function DevicePanel({ c }: { c: ViewCtx }) {
             {rx}
           </span>
         </dd>
-        <dt>깨진 줄 · 모르는 토픽</dt>
+        <dt>깨진 줄 · 버린 레코드 · 모르는 토픽</dt>
         <dd>
-          {s.source.bad_rows ?? 0} · {s.source.unknown_topics ?? 0}
+          {s.source.bad_rows ?? 0} · {s.source.bad_records ?? 0} · {s.source.unknown_topics ?? 0}
         </dd>
       </dl>
     </section>
+  )
+}
+
+// Monolith 가 /d 에 실어 보내는 부품 상태 — 치명(예: SD)이면 값이 다 버려질 수 있다 (엔진 경고 W-DEV). /d 전엔 null
+function PartsState({ errors, fatal, tone }: { errors?: string[] | null; fatal?: string[] | null; tone: (t: string) => string }) {
+  if (fatal == null && errors == null) return <>—</>
+  const f = fatal ?? [], e = (errors ?? []).filter((n) => !f.includes(n))
+  if (!f.length && !e.length) return <span className={`live-flag ${tone('ok')}`}><span className="live-dot" aria-hidden="true" />이상 없음</span>
+  return (
+    <>
+      {f.length > 0 && <span className={`live-flag ${tone('warn')}`}><span className="live-dot" aria-hidden="true" />치명 {f.join(' · ')}</span>}
+      {f.length > 0 && e.length > 0 && ' · '}
+      {e.length > 0 && `오류 ${e.join(' · ')}`}
+    </>
   )
 }
 

@@ -261,9 +261,12 @@ export interface LiveState {
   contract: string
   now: number // 서버 시계 (epoch s)
   car: string
-  source: { replay: boolean; bad_rows?: number; unknown_topics?: number }
+  source: { replay: boolean; bad_rows?: number; unknown_topics?: number; bad_records?: number } // bad_records (v0.16) = 머리 · 체크섬이 안 맞아 버린 레코드
   receiver: { status: 'connected' | 'disconnected' | 'unknown'; since: number | null }
-  device: { status: 'on' | 'off' | 'disconnected' | 'unknown'; boot_at: number | null; firmware: string | null; boots: number }
+  device: {
+    status: 'on' | 'off' | 'disconnected' | 'unknown'; boot_at: number | null; firmware: string | null; boots: number
+    errors?: string[] | null; fatal?: string[] | null // v0.16 — Monolith 부품 상태 비트 이름, /d 를 받기 전엔 null
+  }
   link: { status: 'ok' | 'late' | 'lost' | 'none'; age_s: number | null; period_s: number; rate_10s: number | null; outages: number; longest_s: number | null; since_s: number | null }
   sources: LiveSource[]
   tiles: LiveTile[]
@@ -310,6 +313,7 @@ export interface LiveLap {
   cell_v_min: number | null
   cell_t_max_c: number | null
   speed_max_kmh?: number | null
+  lap_delta_s?: number | null // 그 랩 − 바로 앞 랩, 빠르면 −. 첫 랩 · 도는 랩은 null (v0.16)
 }
 
 // 사건 — 최근 것이 앞. source_lost · source_back 은 source 칸에 원천 id, gap_s = 끊겨 있던 초 (있으면)

@@ -105,6 +105,7 @@ describe('차량 · 뷰', () => {
     expect(alertView('W-HV-OFF', 'motor.vdc_v', 'battery', v)).toBe('powertrain')
     expect(alertView('W-LINK', null, 'main', v)).toBe('link')
     expect(alertView('W-SRC-gps', null, 'link', v)).toBeNull()
+    expect(alertView('W-DEV', null, 'main', v)).toBe('link') // Monolith 부품 치명 — 수신 · DAQ 뷰의 부품 상태
     expect(alertView('W-P80', null, 'main', v)).toBeNull() // 칸을 모르면 링크 없음
   })
 })
