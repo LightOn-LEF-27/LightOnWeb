@@ -21,6 +21,11 @@ Orion 스트림(0x6D0)은 값마다 몇 초 ~ 몇 분씩 빈다 — 그래서 �
 랩 값: 계측선을 지난 뒤 LAP_SETTLE_S 가 지나면 그 랩의 에너지 · SOC · 셀 최저 전압 · 셀 최고 온도를 굳힌다 (CAN 묶음이 GPS 보다 늦게 올 수 있어서).
 에너지는 Orion 요약(0x446)의 전력을 장치 시각으로 이어 적분한다 — 거른 뒤 약 2 Hz 순간값이라 랩마다 몇 % 오차가 있다.
 
+달린 궤적: 콘으로 그때그때 까는 코스는 경기장 기준선과 다를 수 있다. 그래서 그날 달린 위치를 PATH_STEP_M 마다 한 점씩 모아
+track() 에 같이 준다 (주행 중 — 사후 분석의 MOVING_KMH 를 넘을 때만, 서 있을 때 GPS 가 흔들려 점이 쌓이지 않게).
+기준선 위를 달리는지는 최근 (기준선 길이 × COURSE_WINDOW) 만큼 달린 궤적이 기준선 COURSE_TOL_M 안에 드는 비율로 본다 (사후 분석과 같은 문턱).
+이건 "같은 코스" 가 아니다 — 좁은 터에서는 다른 콘 코스도 기준선 20 m 안에 들어 맞음으로 나온다. 기준선에서 멀리 벗어났을 때 알려 주는 정도다.
+
 시계: 장치 시각(부팅 뒤 ms)은 `/d` 의 "받은 시각 − 보낸 순간" 의 최솟값(최근 10분)으로 서버 시계에 옮긴다. 가장 빨리 도착한
 메시지가 시계 차이에 가장 가깝다 (가장 빠른 전달 시간만큼 이르게 잡힌다). `boot_epoch` 는 초 단위이고 동기화 전 RTC 값이라 쓰지 않는다.
 
@@ -42,7 +47,7 @@ import numpy as np
 from . import evo_can as ec
 from . import venue as venue_mod
 from .evo_stm32 import RPM_FULL_SCALE, motor_temp_c
-from .laps import MIN_LAP_S, Gate, gate_crossings, to_local_m
+from .laps import COURSE_SHARE, COURSE_TOL_M, MIN_LAP_S, MOVING_KMH, Gate, distance_to_line, gate_crossings, to_local_m
 from .lef26 import BAMOCAR_VDC_V_PER_NUM, igbt_temp_c
 from .monolith import T_ANALOG, T_CAN, T_GPS, checksum_ok, nmea_to_deg
 
@@ -74,6 +79,12 @@ LAP_KEEP = 4000                 # 채널마다 표본 수 (약 2 Hz 로 30분 �
 LAP_SETTLE_S = 3.0
 ENERGY_GAP_S = 2.0              # 전력 표본 사이가 이보다 벌어지면 그 사이는 적분하지 않는다
 SOC_NEAR_S = 2.0                # 랩 시작 · 끝의 SOC 는 이 안의 표본으로
+# 달린 궤적 (계약 §12-5 path · course)
+PATH_STEP_M = 3.0               # 마지막 점에서 이만큼 떨어지면 한 점 [정한 값 — 1 km 코스면 한 바퀴 약 330점]
+PATH_KEEP = 2000                # 점 개수 상한 (그런 코스면 약 6바퀴) — 넘으면 오래된 점부터 빠진다
+PATH_GAP_S = 5.0                # 앞 주행 표본과 이보다 벌어지면 (끊김 · 정지 뒤) 선을 잇지 않는다
+PATH_JUMP_M = 100.0             # 앞 점과 이보다 멀면 (위치 튐) 선을 잇지 않는다
+COURSE_WINDOW = 2.0             # 기준선 위를 달리는지는 최근 (기준선 길이 × 이 값) 만큼 달린 궤적으로 본다
 
 
 @dataclass(frozen=True)
@@ -114,7 +125,7 @@ CHANNELS = {c.id: c for c in (
     Ch("motor.t_motor_c", "모터 온도", "°C", "", 0, 40.0, "inverter"),
     Ch("motor.t_igbt_c", "인버터(IGBT) 온도", "°C", "", 0, 20.0, "inverter"),
     Ch("motor.vdc_v", "DC 버스 전압", "V", "", 0, 40.0, "inverter"),
-    Ch("motor.rpm", "회전수 (로거 환산)", "rpm", "전진할 때 −", 0, 5.0, "inverter"),
+    Ch("motor.rpm", "회전수 (로거 환산)", "rpm", "전진 +", 0, 5.0, "inverter"),     # 기록은 전진할 때 − — 엔진 세션 값처럼 뒤집는다
     Ch("motor.enabled", "구동 허용 (Ena)", "", "", 0, 180.0, "inverter"),
     Ch("motor.ready", "운전 준비 (Rdy)", "", "", 0, 180.0, "inverter"),
     Ch("motor.error_raw", "오류 · 경고 비트", "", "", 0, 75.0, "inverter"),
@@ -276,7 +287,7 @@ def decode_frame(can_id: int, dlc: int, d: bytes) -> list[tuple[str, float]]:
         else:
             return out
         if reg == ec.REG_SPEED:
-            out.append(("motor.rpm", raw / RPM_FULL_SCALE * ec.LOGGER_N100_RPM))
+            out.append(("motor.rpm", 0.0 - raw / RPM_FULL_SCALE * ec.LOGGER_N100_RPM))     # 부호를 뒤집어 전진 +
         elif reg == ec.REG_VDC:
             out.append(("motor.vdc_v", raw * BAMOCAR_VDC_V_PER_NUM))
         elif reg == ec.REG_T_IGBT:
@@ -387,6 +398,13 @@ class Live:
         self.crossings: list[float] = []
         self.lap_samples = {ch: deque(maxlen=LAP_KEEP) for ch in LAP_CH}
         self.lap_rows: list[dict] = []
+        self.path: deque[tuple[float | None, float | None]] = deque(maxlen=PATH_KEEP)   # (x, y) · (None, None) = 선 끊김
+        self.path_rev = 0                                         # 지금까지 더한 점 수 (줄지 않는다 — 화면이 track 을 다시 받을 때를 안다)
+        self.path_last: tuple[float, float] | None = None         # 마지막으로 더한 점
+        self.path_seen: float | None = None                       # 마지막 주행 표본의 장치 시각 (서버 시계)
+        self.course_at: tuple[int, dict] | None = None            # (path_rev, _course 결과) — 궤적이 그대로면 다시 재지 않는다
+        line = venue["line"] if venue else None
+        self.line_m = float(np.hypot(np.diff(line["x_m"]), np.diff(line["y_m"])).sum()) if line and len(line["x_m"]) > 1 else None
         # 경고 · 사건 · 그래프
         self.pending: dict[str, tuple[str, float]] = {}
         self.active: dict[str, dict] = {}
@@ -592,6 +610,7 @@ class Live:
         x, y = (float(a) for a in to_local_m(lat, lon, self.venue["origin"]["lat0"], self.venue["origin"]["lon0"]))
         self._put("gps.x_m", ts, x)
         self._put("gps.y_m", ts, y)
+        self._path(ts, x, y, v)
         if self.prev_pt is not None and ts > self.prev_pt[0]:
             t0, x0, y0, c0 = self.prev_pt
             hit = gate_crossings(np.array([t0, ts]), np.array([x0, x]), np.array([y0, y]), np.array([c0, course]), self.gate)
@@ -935,12 +954,60 @@ class Live:
                 "source": {"replay": self.replay, "bad_rows": self.bad_rows, "unknown_topics": self.unknown, "bad_records": self.bad_records},
                 "receiver": {"status": self.receiver[0], "since": _r(self.receiver[1], 3)},
                 "device": device, "link": link, "sources": sources, "tiles": tiles, "inverter": inverter, "pedal": pedal,
-                "position": position, "laps": laps, "alerts": [{k: v for k, v in a.items() if k != "channel"} for a in alerts],
+                "position": position, "track_rev": self.path_rev if self.venue is not None else None, "laps": laps, "alerts": [{k: v for k, v in a.items() if k != "channel"} for a in alerts],
                 "events": list(reversed(self.events)), "chart": chart}
+
+    def _path(self, ts: float, x: float, y: float, kmh: float) -> None:
+        """주행 중인 GPS 점을 PATH_STEP_M 마다 하나씩 모은다. 오래 비었거나 위치가 튀면 선을 끊는다."""
+        if kmh <= MOVING_KMH or (self.path_seen is not None and ts < self.path_seen):
+            return
+        gap = self.path_seen is None or ts - self.path_seen > PATH_GAP_S
+        self.path_seen = ts
+        if self.path_last is not None:
+            d = math.hypot(x - self.path_last[0], y - self.path_last[1])
+            if not gap and d < PATH_STEP_M:
+                return
+            if gap or d > PATH_JUMP_M:
+                self.path.append((None, None))
+        self.path.append((x, y))
+        self.path_last = (x, y)
+        self.path_rev += 1
+
+    def _course(self, pts: list) -> dict:
+        """최근 달린 궤적이 경기장 기준선 위인가 — 짧으면 판단하지 않는다 (share · on_line = None)."""
+        if self.course_at is not None and self.course_at[0] == self.path_rev:
+            return dict(self.course_at[1])
+        need = self.line_m * COURSE_WINDOW if self.line_m else None
+        out = {"share": None, "on_line": None, "tol_m": COURSE_TOL_M, "need": COURSE_SHARE, "window_m": _r(need, 0)}
+        self.course_at = (self.path_rev, out)
+        if not need:
+            return dict(out)
+        xs, ys, run, prev = [], [], 0.0, None
+        for x, y in reversed(pts):
+            if x is None:
+                prev = None
+                continue
+            if prev is not None:
+                run += math.hypot(x - prev[0], y - prev[1])
+            xs.append(x)
+            ys.append(y)
+            prev = (x, y)
+            if run >= need:
+                break
+        if run < need:
+            return dict(out)
+        line = self.venue["line"]
+        share = float(np.mean(distance_to_line(np.array(xs), np.array(ys), line["x_m"], line["y_m"]) <= COURSE_TOL_M))
+        out.update(share=_r(share, 2), on_line=share >= COURSE_SHARE)
+        return dict(out)
 
     def track(self) -> dict | None:
         if self.venue is None:
             return None
         v = self.venue
+        pts = list(self.path)
         return {"frame_id": v.get("frame_id"), "line": {"x_m": list(v["line"]["x_m"]), "y_m": list(v["line"]["y_m"])},
-                "gate": {**v["gate"], "half_width_m": v.get("half_width_m")}}
+                "gate": {**v["gate"], "half_width_m": v.get("half_width_m")},
+                "path": {"x_m": [_r(x, 1) for x, _ in pts], "y_m": [_r(y, 1) for _, y in pts], "rev": self.path_rev,
+                         "step_m": PATH_STEP_M, "min_kmh": MOVING_KMH},
+                "course": self._course(pts)}

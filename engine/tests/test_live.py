@@ -159,7 +159,8 @@ def test_bamocar_and_pedal_match_evo_can():
             r, x, n = rows[int(ti)]
             got = dict(live.decode_frame(ec.BAMOCAR, n, bytes(d[int(ti)])))
             if np.isfinite(want):
-                assert got[names[name]] == pytest.approx(float(want))
+                flip = -1.0 if name == "rpm" else 1.0             # 실시간 회전수는 세션 값처럼 부호를 뒤집어 전진 +
+                assert got[names[name]] == pytest.approx(flip * float(want))
             else:
                 assert names[name] not in got                     # 표 밖 온도는 값을 만들지 않는다
     raw = 1234
@@ -567,6 +568,65 @@ def test_position_and_laps_from_gate_crossings():
     assert st["position"]["x_m"] == pytest.approx(58, abs=0.5) and st["position"]["frame_id"] == "venue/test"
     assert tile(st, "gps.speed_kmh")["value"] == pytest.approx(40)
     assert L.track()["gate"]["half_width_m"] == 30.0 and live.Live().track() is None
+
+
+def drive(car, pts, speed=36.0, course=90.0):
+    """(x, y) 점마다 0.5 s 한 번씩 GPS 를 보낸다."""
+    t = None
+    for x, y in pts:
+        t = car.tick(gps=gps_rec(car.dev + 500 - 50, x, y, speed, course))
+    return t
+
+
+def path_pts(tr):
+    return [(x, y) for x, y in zip(tr["path"]["x_m"], tr["path"]["y_m"])]
+
+
+def test_path_keeps_moving_points_every_few_metres_and_breaks_on_gaps():
+    L = live.Live(venue=VENUE)
+    car = Car(L)
+    drive(car, [((k % 3) * 4.0, 200.0) for k in range(10)], speed=3.0)       # 서 있음 — GPS 가 흔들려도 점이 안 쌓인다
+    assert L.track()["path"]["rev"] == 0 and L.track()["path"]["x_m"] == []
+    drive(car, [(k * 2.5, 200.0) for k in range(20)], speed=18.0)            # 0.5 s 에 2.5 m — 3 m 마다 한 점이라 한 칸 걸러
+    car.run(12, skip=True)                                                   # 6 s 끊김 → 선을 잇지 않는다
+    t = drive(car, [(100.0 + k * 5.0, 200.0) for k in range(5)])
+    t = drive(car, [(500.0, 200.0), (505.0, 200.0)])                         # 위치가 400 m 튐 → 선을 잇지 않는다
+    tr = L.track()
+    pts = path_pts(tr)
+    assert sum(1 for x, _ in pts if x is None) == 2
+    for a, b in zip(pts, pts[1:]):
+        if a[0] is not None and b[0] is not None:
+            assert 3.0 <= math.hypot(b[0] - a[0], b[1] - a[1]) <= 100.0
+    assert tr["path"]["rev"] == len(pts) - 2 == 10 + 5 + 2
+    assert L.state(t)["track_rev"] == tr["path"]["rev"] and live.Live().state(t)["track_rev"] is None
+    assert tr["path"]["step_m"] == live.PATH_STEP_M and tr["path"]["min_kmh"] == live.MOVING_KMH
+
+
+def test_path_keeps_only_the_latest_points(monkeypatch):
+    monkeypatch.setattr(live, "PATH_KEEP", 10)
+    L = live.Live(venue=VENUE)
+    drive(Car(L), [(k * 5.0, 200.0) for k in range(30)])
+    tr = L.track()
+    assert len(tr["path"]["x_m"]) == 10 and tr["path"]["rev"] == 30 and tr["path"]["x_m"][-1] == 145.0
+
+
+def test_on_line_only_after_enough_driving_near_the_line():
+    L = live.Live(venue=VENUE)                                                # 기준선 100 m → 최근 200 m 로 본다
+    car = Car(L)
+    east = [(-50.0 + k * 5.0, 1.0) for k in range(21)]
+    west = [(50.0 - k * 5.0, 1.0) for k in range(1, 21)]
+    drive(car, east)
+    c = L.track()["course"]
+    assert c["share"] is None and c["on_line"] is None and c["window_m"] == 200 and c["tol_m"] == live.COURSE_TOL_M
+    drive(car, west, course=270.0)
+    drive(car, east[1:])
+    c = L.track()["course"]
+    assert c["share"] == 1.0 and c["on_line"] is True and L.track()["course"] == c   # 두 번째는 저장해 둔 값
+
+    other = live.Live(venue=VENUE)                                            # 기준선에서 300 m 떨어진 곳
+    drive(Car(other), [(k * 5.0, 300.0) for k in range(60)])
+    c = other.track()["course"]
+    assert c["share"] == 0.0 and c["on_line"] is False
 
 
 def test_lap_rows_energy_soc_cell_and_temp():
