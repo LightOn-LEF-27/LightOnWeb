@@ -76,7 +76,14 @@ export function MainView({ c }: { c: ViewCtx }) {
 function MapBox({ c, height }: { c: ViewCtx; height: number }) {
   const pos = c.s.position
   if (!c.track) return <p className="panel-msg muted" style={{ minHeight: 60 }}>{c.trackMsg}</p>
-  return <LiveMap track={c.track} trail={c.path} position={pos} fresh={!c.frozen && !!pos && pos.age_s <= 2} theme={c.theme} height={height} />
+  // on_line false = 최근 달린 궤적이 기준선에서 멀리 벗어남 (콘 코스가 다름) → 기준선을 흐리게, 달린 궤적이 바탕. 같은 코스 판정은 아님
+  const off = c.track.course?.on_line === false
+  return (
+    <div className="live-map-box">
+      <LiveMap track={c.track} trail={c.path} position={pos} fresh={!c.frozen && !!pos && pos.age_s <= 2} dimLine={off} theme={c.theme} height={height} />
+      {off && <span className="live-map-note">기준선에서 벗어남 · 달린 궤적 기준</span>}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------- ② 배터리 팩

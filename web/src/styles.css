@@ -1932,6 +1932,19 @@ ul.plain {
   display: block;
   width: 100%;
 }
+.live-map-box {
+  position: relative;
+}
+.live-map-note {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--warn);
+  background: var(--panel);
+  border: 1px solid var(--warn);
+}
 .live-lapstrip {
   display: flex;
   flex-wrap: wrap;

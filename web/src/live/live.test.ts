@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import type { LiveEvent, LiveState } from '../types'
+import type { LiveEvent, LiveState, LiveTrack } from '../types'
 import { alertView, carOf, CARS, VIEW_TILES } from './cars'
 import {
-  ageText, clock, deviceView, emptyBuf, eventText, foldEvents, gaugePos, lapText, linkView, mergeChart, offState, outageText, pctText, rateText,
-  scaleOf, shownStatus, signedText, sinceOf, sourceWord, sparkPoints, tileOr, trail,
+  ageText, clock, deviceView, emptyBuf, eventText, foldEvents, gaugePos, lapText, linkView, mapBounds, mergeChart, offState, outageText, pathRuns,
+  pctText, rateText, scaleOf, shownStatus, signedText, sinceOf, sourceWord, sparkPoints, tileOr, TRACK_MIN_MS, trackWait, trail,
 } from './model'
 
 const chart = (t: number[], speed: (number | null)[], extra: Record<string, (number | null)[]> = {}): LiveState['chart'] => ({
@@ -171,5 +171,37 @@ describe('게이지 · 추세선', () => {
     expect(deviceView({ status: 'disconnected', boot_at: null, firmware: null, boots: 0 }).text).toBe('장치 연결 끊김')
     expect(deviceView({ status: 'unknown', boot_at: null, firmware: null, boots: 0 }, 'Monolith').text).toBe('Monolith 확인 중')
     expect(deviceView({ status: 'on', boot_at: null, firmware: null, boots: 0 }, 'Monolith').text).toBe('Monolith 켜짐')
+  })
+})
+
+describe('트랙맵 — 달린 궤적 · 다시 받기 · 범위', () => {
+  const trk = (rev: number | null): LiveTrack => ({
+    frame_id: 'venue/x', line: { x_m: [0, 10], y_m: [0, 0] }, gate: { x: 0, y: 0, heading_deg: 90, half_width_m: 30 },
+    ...(rev === null ? {} : { path: { x_m: [], y_m: [], rev, step_m: 3, min_kmh: 10 } }),
+  })
+
+  it('처음엔 바로, 못 받았으면 간격마다 다시 받는다', () => {
+    expect(trackWait(5, null, null, 1000)).toBe(0)
+    expect(trackWait(5, null, 1000, 4000)).toBe(TRACK_MIN_MS - 3000)
+    expect(trackWait(null, null, 1000, 1000 + TRACK_MIN_MS + 5)).toBe(0)
+  })
+
+  it('track_rev 가 받은 궤적과 다를 때만, 10 s 에 한 번까지 다시 받는다', () => {
+    expect(trackWait(7, trk(7), 0, 60000)).toBeNull() // 그대로
+    expect(trackWait(8, trk(7), 0, 3000)).toBe(TRACK_MIN_MS - 3000) // 늘었지만 간격 전
+    expect(trackWait(8, trk(7), 0, 60000)).toBe(0)
+    expect(trackWait(null, trk(7), 0, 60000)).toBeNull() // 경기장 없음
+    expect(trackWait(undefined, trk(null), 0, 60000)).toBeNull() // 옛 엔진 — track_rev · path 없음
+  })
+
+  it('달린 궤적은 null 에서 끊고, 점 하나짜리 조각은 뺀다', () => {
+    const p = { x_m: [0, 1, null, 5, null, 7, 8, 9], y_m: [0, 1, null, 5, null, 7, 8, 9], rev: 6, step_m: 3, min_kmh: 10 }
+    expect(pathRuns(p)).toEqual([[[0, 0], [1, 1]], [[7, 7], [8, 8], [9, 9]]])
+    expect(pathRuns(undefined)).toEqual([])
+  })
+
+  it('범위는 기준선 밖의 궤적 · 지금 위치까지 담는다', () => {
+    expect(mapBounds([[0, 0], [10, 0], [-40, 25], [3, -8]])).toEqual({ minX: -40, maxX: 10, minY: -8, maxY: 25 })
+    expect(mapBounds([[Number.NaN, 1]])).toBeNull()
   })
 })

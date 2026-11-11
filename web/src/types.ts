@@ -273,6 +273,7 @@ export interface LiveState {
   inverter: { status: LiveStatus; enabled: boolean | null; ready: boolean | null; errors: string[]; warnings: string[]; age_s: number | null }
   pedal?: { status: LiveStatus; faults: string[]; age_s: number | null } // v0.16 — APPS 보드 고장
   position: { frame_id: string | null; x_m: number; y_m: number; age_s: number } | null
+  track_rev?: number | null // v0.16 (11-11) — 달린 궤적에 더한 점 수, 늘기만 한다. 바뀌면 /api/live/track 을 다시 받는다. 경기장이 없으면 null
   laps: {
     count: number
     current_s: number | null
@@ -330,4 +331,7 @@ export interface LiveTrack {
   frame_id: string | null
   line: { x_m: number[]; y_m: number[] }
   gate: { x: number; y: number; heading_deg: number; half_width_m: number | null }
+  // v0.16 (11-11) — 그날 달린 궤적 (주행 중만 3 m 마다, null = 선 끊김) · 기준선 근처를 달리는지 (같은 코스 판정 아님)
+  path?: { x_m: (number | null)[]; y_m: (number | null)[]; rev: number; step_m: number; min_kmh: number }
+  course?: { share: number | null; on_line: boolean | null; tol_m: number; need: number; window_m: number | null }
 }

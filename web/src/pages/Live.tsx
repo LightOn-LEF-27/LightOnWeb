@@ -5,14 +5,13 @@
 import { type JSX, useContext, useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, NavLink, useNavigate, useParams } from 'react-router-dom'
 
-import { useApi } from '../api'
 import { CARS, carOf, DEFAULT_CAR, type LiveCar, VIEW_NAMES, type ViewKey } from '../live/cars'
 import { foldEvents, offState, SPARK, sparkPoints, tileOr, trail } from '../live/model'
 import { AlertBand, StatusStrip } from '../live/parts'
 import { useLive } from '../live/useLive'
+import { useLiveTrack } from '../live/useLiveTrack'
 import { BatteryView, LinkView, MainView, PowertrainView, type ViewCtx } from '../live/views'
 import { ThemeContext } from '../themeContext'
-import type { LiveTrack } from '../types'
 
 const VIEWS: Record<ViewKey, (p: { c: ViewCtx }) => JSX.Element> = {
   main: MainView,
@@ -44,7 +43,7 @@ export default function Live() {
   const off = !live.state && error?.code === 'live_off'
   const state = useMemo(() => live.state ?? (off ? offState() : null), [live.state, off])
   const frozen = live.frozen && !off
-  const track = useApi<LiveTrack>(live.state ? '/api/live/track' : null)
+  const track = useLiveTrack(!!live.state, live.state?.track_rev) // 달린 궤적이 늘면 다시 받는다 (10 s 에 한 번까지)
   const tiles = useMemo(() => new Map((state?.tiles ?? []).map((t) => [t.id, t])), [state])
   const path = useMemo(() => (state ? trail(buf, state.now) : []), [buf, state])
   const events = useMemo(() => foldEvents(state?.events ?? []), [state])

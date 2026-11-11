@@ -2,7 +2,7 @@
 // 화면이 스스로 정하는 것은 둘뿐이다: 그래프 창(최근 5분)과, 서버 응답이 끊겼을 때 화면 전체를 낡음으로 돌리는 것.
 
 import { formatValue } from '../overview/model'
-import type { LiveEvent, LiveScale, LiveSource, LiveState, LiveStatus, LiveTile } from '../types'
+import type { LiveEvent, LiveScale, LiveSource, LiveState, LiveStatus, LiveTile, LiveTrack } from '../types'
 
 export const POLL_MS = 500
 export const WINDOW_S = 300 // 그래프에 보이는 최근 5분
@@ -51,6 +51,50 @@ export function trail(buf: ChartBuf, now: number, span = TRAIL_S): [number, numb
     if (t >= now - span && x != null && y != null) out.push([x, y])
   })
   return out
+}
+
+// ---------------------------------------------------------------- 트랙맵
+
+// 트랙(기준선 · 달린 궤적)을 다시 받을 간격 — 궤적이 늘 때마다 받지 않게 (계약 §12-4 track_rev, 10 s 에 한 번까지)
+export const TRACK_MIN_MS = 10000
+
+// 트랙을 언제 다시 받나 — 기다릴 ms, 받을 필요 없으면 null.
+// 처음이면 바로. 못 받았으면(오류) 간격마다 다시. 받은 뒤엔 track_rev 가 받은 궤적의 rev 와 다를 때만
+export function trackWait(rev: number | null | undefined, got: LiveTrack | null, lastAt: number | null, now: number): number | null {
+  if (lastAt === null) return 0
+  const wait = Math.max(0, lastAt + TRACK_MIN_MS - now)
+  if (!got) return wait
+  if (rev == null || rev === got.path?.rev) return null
+  return wait
+}
+
+// 달린 궤적 → 끊긴 곳(null)마다 나눈 선들. 점 하나짜리 조각은 뺀다
+export function pathRuns(path: LiveTrack['path']): [number, number][][] {
+  if (!path) return []
+  const runs: [number, number][][] = []
+  let cur: [number, number][] = []
+  path.x_m.forEach((x, i) => {
+    const y = path.y_m[i]
+    if (x == null || y == null) {
+      if (cur.length > 1) runs.push(cur)
+      cur = []
+    } else cur.push([x, y])
+  })
+  if (cur.length > 1) runs.push(cur)
+  return runs
+}
+
+// 지도 범위 — 기준선 + 달린 궤적 + 최근 꼬리 + 지금 위치를 다 담는다 (콘 코스가 기준선 밖이어도 화면 안에)
+export function mapBounds(pts: Iterable<[number, number]>): { minX: number; maxX: number; minY: number; maxY: number } | null {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (const [x, y] of pts) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  return minX === Infinity ? null : { minX, maxX, minY, maxY }
 }
 
 // ---------------------------------------------------------------- 표시
