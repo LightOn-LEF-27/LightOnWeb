@@ -1,15 +1,17 @@
-// 25Evo 실시간 뷰 넷 — 메인 · 배터리 · 인버터 · 모터 · 수신 · DAQ (와이어프레임 v21, 2026-11-03 사용자 확정).
+// 25Evo 실시간 뷰 — 계기판 · 그래프 · 배터리 · 인버터 · 모터 · 수신 · DAQ (실시간화면_v1.md §6, 2026-11-12 개편 — 계기판 · 그래프를 나눔).
 // 칸 배치만 여기서 정한다 (어느 칸이 어느 뷰인지는 cars.ts VIEW_TILES 와 같게). 값 · 상태 · 문구는 엔진 것
 
+import { type ReactNode, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import type { LiveSource, LiveState, LiveTile, LiveTrack } from '../types'
 import { type LiveCar } from './cars'
-import LiveChart from './LiveChart'
+import { GaugeTile, LapMini, TimeMini } from './gauge'
+import LiveChart, { type Limit } from './LiveChart'
 import LiveMap from './LiveMap'
 import {
-  ageText, type ChartBuf, clock, deviceView, type EventRow, PANELS, pctText, RATE_PANELS, shownStatus, sourceWord,
-  tileValue,
+  ageText, type ChartBuf, clock, deviceView, eventText, type EventRow, gapBands, GRAPH_GROUPS, GRAPH_PANELS, GRAPH_RANGES, type GraphGroup,
+  hasLapValues, lampOf, lapPoints, miniRange, pctText, RATE_PANELS, scaleOf, shownStatus, sourceWord, tileValue,
 } from './model'
 import {
   AppsDetail, BatteryLaps, EventList, Facts, InverterLine, InverterPanel, LapEnergy, LapStrip, RateBar, RecentLaps, Tile, TileAge,
@@ -32,43 +34,128 @@ export interface ViewCtx {
   path: [number, number][]
 }
 
-// ---------------------------------------------------------------- ① 메인 — 드라이버와 소통
+// 칸의 한도 · 주의 (tiles[].scale — 엔진 문턱, 없으면 정해진 규정 한도)
+function limitsOf(t: LiveTile): Limit[] {
+  const s = scaleOf(t)
+  const out: Limit[] = []
+  if (s?.warn != null) out.push({ v: s.warn, kind: 'warn' })
+  if (s?.danger != null) out.push({ v: s.danger, kind: 'danger' })
+  return out
+}
+
+// 받은 값이 없을 때 작은 그래프 세로 범위 = 게이지 범위
+const spanOf = (t: LiveTile): [number, number] | null => {
+  const s = scaleOf(t)
+  return s ? [s.min, s.max] : null
+}
+
+// 상태 → 작은 그래프 · 꼭짓점 색 (정상은 색 없이)
+const TONE_COLOR: Record<string, string> = { ok: 'var(--gauge-fill)', warn: 'var(--warn)', danger: 'var(--danger)', stale: 'var(--text-muted)', none: 'var(--text-muted)' }
+
+// ---------------------------------------------------------------- ① 계기판 — 원형 게이지 + 아래 작은 그래프 (§6-1)
+
+const MINI_S = 60 // 게이지 아래 시간축 그래프 — 최근 1분
+const LAP_FALLBACK_S = 300 // 랩 값이 없으면 시간축 선으로 (사용자 결정 11-12) — 온도는 느리게 변해 5분
 
 export function MainView({ c }: { c: ViewCtx }) {
-  const T = (id: string, kind: 'big' | 'mid' | 'small' = 'mid') => <Tile key={id} t={c.tile(id)} kind={kind} frozen={c.frozen} spark={c.spark(id)} />
+  const lamp = (id: string) => lampOf(c.s, id, c.frozen, c.off)
+  const G = (id: string, size: 'big' | 'mid', mini?: ReactNode) => (
+    <GaugeTile key={id} t={c.tile(id)} size={size} frozen={c.frozen} lamp={lamp(id)}>
+      {mini}
+    </GaugeTile>
+  )
+  const N = (id: string, extra: Partial<Parameters<typeof Tile>[0]> = {}) => <Tile key={id} t={c.tile(id)} kind="small" frozen={c.frozen} {...extra} />
+  const win = (id: string) => {
+    const vs = c.buf.series[id] ?? []
+    return vs.filter((_, i) => c.buf.t[i] >= c.s.now - MINI_S)
+  }
+  const now = c.s.now
+
+  // 속도 아래 — 가속(초록) · 브레이크(빨강). 25Evo 실시간엔 브레이크 값이 없어 가속만 (LEF-27 채널이 생기면 lines 에 더한다)
+  const apps = c.tile('pedal.apps_pct')
+  const speedMini = (
+    <TimeMini buf={c.buf} now={now} span={MINI_S} lines={[{ id: 'pedal.apps_pct', color: 'var(--ok)' }]} ax={{ lo: 0, hi: 100, digits: 0 }} unit="%"
+      limits={[]} legend={[{ color: 'var(--ok)', text: '가속' }]} label={`${apps.label}, 최근 1분`} />
+  )
+  const timeMini = (id: string) => {
+    const t = c.tile(id)
+    const lim = limitsOf(t)
+    return (
+      <TimeMini buf={c.buf} now={now} span={MINI_S} lines={[{ id, color: TONE_COLOR.ok }]}
+        ax={miniRange(win(id), lim.map((l) => l.v), id === 'battery.power_kw', spanOf(t))}
+        unit={t.unit} limits={lim} label={`${t.label}, 최근 1분`} />
+    )
+  }
+  // 셀 최고 온도 아래 — 랩마다 꼭짓점 (엔진 laps.rows[].cell_t_max_c), 랩 값이 없으면 최근 5분 선
+  const tmax = c.tile('bms.temp_max_c')
+  const tlim = limitsOf(tmax)
+  const tpts = lapPoints(c.s.laps, 'cell_t_max_c')
+  const tempMini =
+    tpts.done.length || tpts.cur ? (
+      <LapMini pts={tpts} ax={miniRange([...tpts.done.map((d) => d.v), tpts.cur?.v ?? null], tlim.map((l) => l.v), false, spanOf(tmax))} unit={tmax.unit} limits={tlim}
+        color={TONE_COLOR.ok} curColor={TONE_COLOR[shownStatus(tmax.status, c.frozen)]} label={`${tmax.label}, 랩마다 최고`} />
+    ) : (
+      <TimeMini buf={c.buf} now={now} span={LAP_FALLBACK_S} lines={[{ id: 'bms.temp_max_c', color: TONE_COLOR.ok }]}
+        ax={miniRange((c.buf.series['bms.temp_max_c'] ?? []).filter((_, i) => c.buf.t[i] >= now - LAP_FALLBACK_S), tlim.map((l) => l.v), false, spanOf(tmax))}
+        unit={tmax.unit} limits={tlim} label={`${tmax.label}, 최근 5분`} />
+    )
+
   return (
     <div className="lv lv-main">
-      <div className="lv-col">
+      <div className="lv-col lv-mapcol">
         <section className="panel live-map">
           <h2>트랙맵</h2>
-          <MapBox c={c} height={c.narrow ? 260 : 380} />
+          <MapBox c={c} height={c.narrow ? 260 : 360} />
           <LapStrip laps={c.s.laps} />
         </section>
         <RecentLaps laps={c.s.laps} />
       </div>
-      <div className="lv-col">
-        <div className="lv-tiles c2">
-          {T('gps.speed_kmh', 'big')}
-          {T('battery.power_kw', 'big')}
-          {T('bms.soc_pct', 'big')}
-          {T('bms.temp_max_c', 'big')}
+      <div className="lv-col lv-gaugecol">
+        <div className="lv-gauges big">
+          {G('gps.speed_kmh', 'big', speedMini)}
+          {G('battery.power_kw', 'big', timeMini('battery.power_kw'))}
+          {G('bms.cell_min_v', 'big', timeMini('bms.cell_min_v'))}
+          {G('bms.temp_max_c', 'big', tempMini)}
         </div>
-        <div className="lv-tiles c2">
-          {T('motor.t_motor_c')}
-          {T('motor.t_igbt_c')}
+        <div className="lv-gauges mid">
+          {G('motor.t_motor_c', 'mid')}
+          {G('motor.t_igbt_c', 'mid')}
+          {G('pedal.apps_pct', 'mid')}
+          {G('bms.soc_pct', 'mid')}
         </div>
         <div className="lv-tiles c4">
-          {T('bms.cell_min_v')}
-          {T('bms.dcl_kw')}
-          {T('pedal.apps_pct')}
-          {T('lv.voltage_v')}
+          {N('bms.dcl_kw')}
+          {N('bms.temp_spread_c')}
+          {N('motor.rpm', { sign: true })}
+          {N('lv.voltage_v')}
         </div>
         <div className="lv-pair">
           <LapEnergy laps={c.s.laps} />
           <InverterLine inv={c.s.inverter} frozen={c.frozen} />
         </div>
-        <EventList rows={c.events} limit={5} more={<Link to={`/live/${c.car.id}/link`}>전체 — 수신 · DAQ 뷰</Link>} />
+        <EventLine rows={c.events} car={c.car} />
       </div>
+    </div>
+  )
+}
+
+// 사건 — 계기판에선 한 줄 (마지막 사건). 전체는 수신 · DAQ 뷰 (사용자 결정 11-11 — 사건은 DAQ 가 본다)
+function EventLine({ rows, car }: { rows: EventRow[]; car: LiveCar }) {
+  const e = rows[0]
+  return (
+    <div className="live-eventline">
+      <span className="muted">마지막 사건</span>
+      {e ? (
+        <>
+          <span className="mono muted">{clock(e.t)}</span>
+          <span className={`live-event ${e.kind}`}>{eventText(e)}</span>
+        </>
+      ) : (
+        <span className="muted">오늘 사건 없음</span>
+      )}
+      <Link className="live-eventline-go" to={`/live/${car.id}/link`}>
+        전체 — 수신 · DAQ 뷰
+      </Link>
     </div>
   )
 }
@@ -86,7 +173,83 @@ function MapBox({ c, height }: { c: ViewCtx; height: number }) {
   )
 }
 
-// ---------------------------------------------------------------- ② 배터리 팩
+// ---------------------------------------------------------------- ② 그래프 — 한 시간축에 칸을 쌓는다 (§6-1)
+
+export function GraphView({ c }: { c: ViewCtx }) {
+  const [range, setRange] = useState(300)
+  const [group, setGroup] = useState<GraphGroup>('all')
+  const [cursor, setCursor] = useState<number | null>(null)
+  const panels = GRAPH_PANELS.filter((p) => group === 'all' || p.groups.includes(group))
+  const now = c.s.now
+  const bands = useMemo(() => gapBands(c.buf, now - range), [c.buf, now, range])
+  // 칸마다 랩 꼭짓점 — 칸의 채널이 모두 랩 값을 받을 때만 (아니면 시간축 선)
+  const lapsOf = useMemo(() => {
+    const out: Record<string, Record<string, ReturnType<typeof lapPoints>> | null> = {}
+    for (const p of GRAPH_PANELS) {
+      if (!p.laps) continue
+      const keys = p.series.map((x) => p.laps![x.id])
+      out[p.key] = keys.every((k) => k && hasLapValues(c.s.laps, k))
+        ? Object.fromEntries(p.series.map((x) => [x.id, lapPoints(c.s.laps, p.laps![x.id], 1000)]))
+        : null
+    }
+    return out
+  }, [c.s.laps])
+  const limitsOfPanel = useMemo(() => {
+    const out: Record<string, Limit[]> = {}
+    for (const p of GRAPH_PANELS) out[p.key] = p.limits ? limitsOf(c.tile(p.limits)) : []
+    return out
+  }, [c.s.tiles])
+  const h = c.narrow ? 110 : 120
+
+  return (
+    <div className="lv lv-graph">
+      <div className="live-graphbar">
+        <div className="live-seg" role="group" aria-label="구간">
+          <span className="muted">구간</span>
+          {GRAPH_RANGES.map(([s, name]) => (
+            <button key={s} type="button" className={range === s ? 'on' : ''} aria-pressed={range === s} onClick={() => setRange(s)}>
+              {name}
+            </button>
+          ))}
+        </div>
+        <div className="live-seg" role="group" aria-label="묶음">
+          <span className="muted">묶음</span>
+          {GRAPH_GROUPS.map(([g, name]) => (
+            <button key={g} type="button" className={group === g ? 'on' : ''} aria-pressed={group === g} onClick={() => setGroup(g)}>
+              {name}
+            </button>
+          ))}
+        </div>
+        <span className="live-graphbar-cursor muted">{cursor !== null ? `커서 ${clock(cursor)}` : '지금 값'}</span>
+      </div>
+      <section className="panel live-charts live-graphs">
+        {panels.map((p, i) => (
+          <LiveChart
+            key={p.key}
+            title={p.title}
+            series={p.series}
+            buf={c.buf}
+            now={now}
+            tiles={c.tiles}
+            theme={c.theme}
+            height={h}
+            windowS={range}
+            sync="live-graph"
+            bands={bands}
+            limits={limitsOfPanel[p.key]}
+            laps={lapsOf[p.key] ?? null}
+            xAxis={i === panels.length - 1}
+            side
+            cursor={cursor}
+            onCursor={setCursor}
+          />
+        ))}
+      </section>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------- ③ 배터리 팩
 
 export function BatteryView({ c }: { c: ViewCtx }) {
   const T = (id: string, kind: 'big' | 'mid' | 'small' = 'mid') => <Tile key={id} t={c.tile(id)} kind={kind} frozen={c.frozen} spark={c.spark(id)} />
@@ -117,10 +280,19 @@ export function BatteryView({ c }: { c: ViewCtx }) {
         </section>
       </div>
       <div className="lv-col">
-        <Charts c={c} panels={PANELS.battery} />
         <BatteryLaps laps={c.s.laps} />
+        <GraphLink c={c} what="전력 · 셀 전압 · 셀 온도" />
       </div>
     </div>
+  )
+}
+
+// 그래프는 그래프 뷰로 모았다 (§6-1)
+function GraphLink({ c, what }: { c: ViewCtx; what: string }) {
+  return (
+    <p className="live-graphlink muted">
+      {what} 그래프 — <Link to={`/live/${c.car.id}/graph`}>그래프 뷰</Link>
+    </p>
   )
 }
 
@@ -146,18 +318,7 @@ function ThermTile({ c }: { c: ViewCtx }) {
   )
 }
 
-function Charts({ c, panels }: { c: ViewCtx; panels: (typeof PANELS)['battery'] }) {
-  return (
-    <section className="panel live-charts">
-      <h2>최근 5분</h2>
-      {panels.map((p) => (
-        <LiveChart key={p.key} title={p.title} series={p.series} buf={c.buf} now={c.s.now} tiles={c.tiles} theme={c.theme} height={c.narrow ? 110 : 130} />
-      ))}
-    </section>
-  )
-}
-
-// ---------------------------------------------------------------- ③ 인버터 · 모터
+// ---------------------------------------------------------------- ④ 인버터 · 모터
 
 export function PowertrainView({ c }: { c: ViewCtx }) {
   const T = (id: string, extra: Partial<Parameters<typeof Tile>[0]> = {}) => (
@@ -176,16 +337,16 @@ export function PowertrainView({ c }: { c: ViewCtx }) {
           {T('pedal.apps_pct', { children: <AppsDetail s1={c.tile('pedal.apps1_pct')} s2={c.tile('pedal.apps2_pct')} pedal={c.s.pedal} frozen={c.frozen} /> })}
           {T('pedal.torque_cmd_pct', { sign: true })}
         </div>
-        <InverterPanel inv={c.s.inverter} frozen={c.frozen} />
       </div>
       <div className="lv-col">
-        <Charts c={c} panels={PANELS.powertrain} />
+        <InverterPanel inv={c.s.inverter} frozen={c.frozen} />
+        <GraphLink c={c} what="속도 · 회전수 · 가속페달 · 온도" />
       </div>
     </div>
   )
 }
 
-// ---------------------------------------------------------------- ④ 수신 · DAQ
+// ---------------------------------------------------------------- ⑤ 수신 · DAQ
 
 const LINK_WORD: Record<LiveState['link']['status'], [string, string]> = {
   ok: ['정상', 'ok'], late: ['늦음', 'warn'], lost: ['끊김', 'danger'], none: ['수신 없음', 'none'],

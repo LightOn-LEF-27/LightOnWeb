@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { ApiError, getJson } from '../api'
 import type { LiveState } from '../types'
-import { type ChartBuf, emptyBuf, FROZEN_S, mergeChart, POLL_MS, sinceOf } from './model'
+import { type ChartBuf, emptyBuf, FROZEN_S, KEEP_S, mergeChart, POLL_MS, sinceOf } from './model'
 
 const TIMEOUT_MS = 5000 // 응답이 이보다 늦으면 끊고 다시 묻는다
 const STOP = new Set(['login_required', 'forbidden'])
@@ -45,9 +45,10 @@ export function useLive(enabled = true): Live {
       const kill = window.setTimeout(() => ctl?.abort(), TIMEOUT_MS)
       const since = sinceOf(bufRef.current)
       try {
-        const s = await getJson<LiveState>(`/api/live/state${since !== null ? `?since=${since}` : ''}`, ctl.signal)
+        // 처음엔 since=0 — 엔진이 가진 그래프 값(10분)을 다 받는다 (그래프 뷰의 10분). 그 뒤로는 새 줄만
+        const s = await getJson<LiveState>(`/api/live/state?since=${since ?? 0}`, ctl.signal)
         if (!alive) return
-        bufRef.current = mergeChart(bufRef.current, s.chart, s.now)
+        bufRef.current = mergeChart(bufRef.current, s.chart, s.now, KEEP_S)
         setBuf(bufRef.current)
         setState(s)
         setError(null)

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import type { LiveEvent, LiveState, LiveTrack } from '../types'
+import type { LiveEvent, LiveLap, LiveState, LiveTrack } from '../types'
 import { alertView, carOf, CARS, VIEW_TILES } from './cars'
 import {
-  ageText, clock, deviceView, emptyBuf, eventText, foldEvents, gaugePos, lapText, linkView, mapBounds, mergeChart, offState, outageText, pathRuns,
-  pctText, rateText, scaleOf, shownStatus, signedText, sinceOf, sourceWord, sparkPoints, tileOr, TRACK_MIN_MS, trackWait, trail,
+  ageText, clock, deviceView, emptyBuf, eventText, foldEvents, gapBands, gaugePos, hasLapValues, lampOf, lapPoints, lapText, linkView, mapBounds,
+  mergeChart, miniRange, niceAxis, offState, outageText, pathRuns, pctText, rateText, scaleOf, shownStatus, signedText, sinceOf, sourceWord,
+  sparkPoints, tileOr, tileSource, TRACK_MIN_MS, trackWait, trail, valueAt,
 } from './model'
 
 const chart = (t: number[], speed: (number | null)[], extra: Record<string, (number | null)[]> = {}): LiveState['chart'] => ({
@@ -91,8 +92,8 @@ describe('수신이 꺼졌을 때의 틀', () => {
 })
 
 describe('차량 · 뷰', () => {
-  it('25Evo 만 실시간 뷰 넷 — LEF-26 송출 불가 · LEF-27 구현 중', () => {
-    expect(carOf('LEF-25evo')?.views).toEqual(['main', 'battery', 'powertrain', 'link'])
+  it('25Evo 만 실시간 뷰 다섯 (계기판 · 그래프 · 배터리 · 인버터 · 모터 · 수신 · DAQ) — LEF-26 송출 불가 · LEF-27 구현 중', () => {
+    expect(carOf('LEF-25evo')?.views).toEqual(['main', 'graph', 'battery', 'powertrain', 'link'])
     expect(carOf('LEF-26')?.live).toBe('none')
     expect(carOf('LEF-27')?.live).toBe('building')
     expect(carOf('LEF-99')).toBeNull()
@@ -107,6 +108,7 @@ describe('차량 · 뷰', () => {
     expect(alertView('W-SRC-gps', null, 'link', v)).toBeNull()
     expect(alertView('W-DEV', null, 'main', v)).toBe('link') // Monolith 부품 치명 — 수신 · DAQ 뷰의 부품 상태
     expect(alertView('W-P80', null, 'main', v)).toBeNull() // 칸을 모르면 링크 없음
+    expect(alertView('W-TB-NOW', 'bms.temp_max_c', 'graph', v)).toBe('main') // 그래프 뷰엔 칸이 없어 계기판으로
   })
 })
 
@@ -203,5 +205,83 @@ describe('트랙맵 — 달린 궤적 · 다시 받기 · 범위', () => {
   it('범위는 기준선 밖의 궤적 · 지금 위치까지 담는다', () => {
     expect(mapBounds([[0, 0], [10, 0], [-40, 25], [3, -8]])).toEqual({ minX: -40, maxX: 10, minY: -8, maxY: 25 })
     expect(mapBounds([[Number.NaN, 1]])).toBeNull()
+  })
+})
+
+describe('계기판 — 연결 불 · 작은 그래프 축 · 랩 꼭짓점 (§6-1)', () => {
+  const state = (over: Partial<LiveState> = {}): LiveState => ({
+    ...offState(100),
+    link: link(),
+    sources: [
+      { id: 'bms', label: 'BMS', status: 'ok', age_s: 0.2, rate_10s: 0.95, rate_status: 'ok' },
+      { id: 'inverter', label: '인버터', status: 'ok', age_s: 0.2, rate_10s: 0.6, rate_status: 'warn' },
+      { id: 'pedal', label: '가속페달', status: 'none', age_s: null, rate_10s: null, rate_status: null },
+      { id: 'gps', label: 'GPS', status: 'stale', age_s: 4, rate_10s: null, rate_status: null, fix_10s: 0.4 },
+      { id: 'lv', label: 'LV', status: 'ok', age_s: 0.2, rate_10s: null, rate_status: null },
+    ],
+    ...over,
+  })
+
+  it('칸 → 원천은 채널 이름 앞부분으로', () => {
+    expect(['gps.speed_kmh', 'battery.power_kw', 'bms.soc_pct', 'motor.t_igbt_c', 'pedal.apps_pct', 'lv.voltage_v', 'x.y'].map(tileSource))
+      .toEqual(['gps', 'bms', 'bms', 'inverter', 'pedal', 'lv', null])
+  })
+
+  it('연결 불 — 원천 수신률 상태 그대로, 없으면 원천 상태, LV 는 장치 수신, 멈춤은 회색 · 꺼짐은 빈 불', () => {
+    const s = state()
+    expect(lampOf(s, 'battery.power_kw', false, false).tone).toBe('ok')
+    expect(lampOf(s, 'motor.t_motor_c', false, false).tone).toBe('warn')
+    expect(lampOf(s, 'pedal.apps_pct', false, false).tone).toBe('danger') // 받은 적 없음 = 빨강
+    expect(lampOf(s, 'gps.speed_kmh', false, false)).toEqual({ tone: 'warn', text: 'GPS 위치 잡음 40 %' })
+    expect(lampOf(s, 'lv.voltage_v', false, false).tone).toBe('ok')
+    expect(lampOf(state({ link: link({ status: 'lost' }) }), 'lv.voltage_v', false, false).tone).toBe('danger')
+    expect(lampOf(s, 'battery.power_kw', true, false).tone).toBe('stale')
+    expect(lampOf(s, 'battery.power_kw', false, true).tone).toBe('none')
+  })
+
+  it('속도 게이지는 0 ~ 120 km/h 눈금만 (문턱 없음)', () => {
+    const t = tileOr(new Map(), 'gps.speed_kmh')
+    expect(scaleOf(t)).toEqual({ min: 0, max: 120, warn: null, danger: null, dir: '>=' })
+  })
+
+  it('축 — 위 · 가운데 · 아래가 읽기 좋은 수, 한도 선 · 0 을 담는다', () => {
+    expect(niceAxis(3.41, 3.78)).toEqual({ lo: 3.4, hi: 3.8, digits: 1 })
+    expect(niceAxis(0, 83)).toEqual({ lo: 0, hi: 100, digits: 0 })
+    expect(niceAxis(50, 50).lo).toBeLessThan(50)
+    expect(miniRange([12, 40, null], [80], true)).toEqual({ lo: 0, hi: 80, digits: 0 })
+    expect(miniRange([3.6, 3.7], [3.0, 2.8])).toEqual({ lo: 2.8, hi: 4, digits: 1 }) // 2.8 · 3.4 · 4.0
+    expect(miniRange([-8, 60], [80], true)).toEqual({ lo: -20, hi: 100, digits: 0 }) // 회생(−) 이 있으면 0 아래로
+    expect(miniRange([null], [])).toEqual({ lo: 0, hi: 1, digits: 1 }) // 0 · 0.5 · 1
+    expect(miniRange([null], [3.0, 2.8], false, [2.5, 4.2])).toEqual({ lo: 2.5, hi: 4.5, digits: 1 }) // 받은 값이 없으면 게이지 범위로 (2.5 · 3.5 · 4.5)
+  })
+
+  const lap = (n: number, over: Partial<LiveLap> = {}): LiveLap => ({
+    lap: n, t_start: n * 60, t_end: n * 60 + 60, lap_time_s: 60, net_wh: null, cover: null, soc_start_pct: null, soc_end_pct: null,
+    soc_delta_pct: null, cell_v_min: null, cell_t_max_c: 40 + n, ...over,
+  })
+  const laps = (rows: LiveLap[], current: LiveLap | null): LiveState['laps'] => ({ count: rows.length, current_s: null, last_s: null, best_s: null, basis: '', rows, current })
+
+  it('랩 꼭짓점 — 값이 있는 끝난 랩(끝난 시각) + 이번 랩, 최근 keep 랩만', () => {
+    const l = laps([lap(1), lap(2, { cell_t_max_c: null }), lap(3)], lap(4, { cell_t_max_c: 47 }))
+    expect(lapPoints(l, 'cell_t_max_c')).toEqual({ done: [{ lap: 1, t: 120, v: 41 }, { lap: 3, t: 240, v: 43 }], cur: { lap: 4, v: 47 } })
+    expect(lapPoints(l, 'cell_t_max_c', 1).done).toEqual([{ lap: 3, t: 240, v: 43 }])
+    expect(hasLapValues(l, 'cell_t_max_c')).toBe(true)
+    expect(hasLapValues(l, 'motor_t_max_c')).toBe(false) // 엔진이 아직 안 줌 → 시간축 선
+    expect(lapPoints(null, 'cell_t_max_c')).toEqual({ done: [], cur: null })
+  })
+
+  it('끊긴 띠 — 모든 시리즈가 빈 줄이 이어진 구간 (앞 줄부터 다시 받은 줄까지), 2 s 보다 짧으면 뺀다', () => {
+    const b = mergeChart(emptyBuf(), chart([0, 1, 2, 3, 4, 5], [5, null, null, 6, null, null], { 'bms.soc_pct': [60, null, null, 60, 60, null] }), 5, 600)
+    expect(gapBands(b, 0)).toEqual([[0, 3]])
+    expect(gapBands(b, 0, 0)).toEqual([[0, 3], [4, 5]])
+    expect(gapBands(b, 3.5, 0)).toEqual([[4, 5]])
+  })
+
+  it('커서 값 — 가장 가까운 줄', () => {
+    const b = mergeChart(emptyBuf(), chart([0, 1, 2, 3], [5, 6, null, 8]), 3, 600)
+    expect(valueAt(b, 'gps.speed_kmh', 0.9)).toBe(6)
+    expect(valueAt(b, 'gps.speed_kmh', 2.2)).toBeNull()
+    expect(valueAt(b, 'gps.speed_kmh', 99)).toBe(8)
+    expect(valueAt(b, 'none', 1)).toBeNull()
   })
 })

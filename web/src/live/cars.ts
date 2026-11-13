@@ -1,10 +1,11 @@
-// 실시간 화면의 차량 · 뷰 (실시간화면_v1.md §5, 와이어프레임 v21 — 2026-11-03 사용자 확정).
+// 실시간 화면의 차량 · 뷰 (실시간화면_v1.md §5 · §6, 2026-11-12 개편 — 계기판 · 그래프를 나눔).
 // 차마다 받을 수 있는 값이 달라 뷰도 차마다 다르다 (있는 것 위주). 어느 칸을 어느 뷰에 둘지만 화면이 정한다 — 값 · 상태 · 문구는 엔진 것
 
-export type ViewKey = 'main' | 'battery' | 'powertrain' | 'link'
+export type ViewKey = 'main' | 'graph' | 'battery' | 'powertrain' | 'link'
 
 export const VIEW_NAMES: Record<ViewKey, string> = {
-  main: '메인',
+  main: '계기판',
+  graph: '그래프',
   battery: '배터리',
   powertrain: '인버터 · 모터',
   link: '수신 · DAQ',
@@ -19,7 +20,7 @@ export interface LiveCar {
 }
 
 export const CARS: LiveCar[] = [
-  { id: 'LEF-25evo', live: 'on', device: 'Monolith', views: ['main', 'battery', 'powertrain', 'link'] },
+  { id: 'LEF-25evo', live: 'on', device: 'Monolith', views: ['main', 'graph', 'battery', 'powertrain', 'link'] },
   { id: 'LEF-26', live: 'none' }, // 로거가 송출하지 않는다
   { id: 'LEF-27', live: 'building', plan: '메인 · 배터리 · 인버터 · 모터 · 섀시 · 타이어 · 수신 · DAQ' },
 ]
@@ -31,9 +32,10 @@ export const carOf = (id: string | undefined): LiveCar | null => CARS.find((c) =
 // 뷰마다 보이는 칸 — 경고 띠에서 그 경고의 칸이 지금 뷰에 없으면 "어느 뷰에서 자세히" 를 고를 때 쓴다 (views.tsx 의 배치와 같게)
 export const VIEW_TILES: Record<ViewKey, string[]> = {
   main: [
-    'gps.speed_kmh', 'battery.power_kw', 'bms.soc_pct', 'bms.temp_max_c', 'motor.t_motor_c', 'motor.t_igbt_c',
-    'bms.cell_min_v', 'bms.dcl_kw', 'pedal.apps_pct', 'lv.voltage_v',
+    'gps.speed_kmh', 'battery.power_kw', 'bms.cell_min_v', 'bms.temp_max_c', 'motor.t_motor_c', 'motor.t_igbt_c',
+    'pedal.apps_pct', 'bms.soc_pct', 'bms.dcl_kw', 'bms.temp_spread_c', 'motor.rpm', 'lv.voltage_v',
   ],
+  graph: [], // 그래프만 — 경고 띠는 칸이 있는 뷰로 보낸다
   battery: [
     'bms.soc_pct', 'battery.power_kw', 'battery.voltage_v', 'battery.current_a', 'bms.dcl_kw', 'bms.cell_min_v', 'bms.temp_max_id',
     'bms.temp_min_id', 'bms.temp_avg_c', 'bms.temp_max_c', 'bms.temp_min_c', 'bms.temp_spread_c', 'bms.bms_heatsink_c', 'bms.pack_resistance_ohm',

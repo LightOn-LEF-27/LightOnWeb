@@ -2,10 +2,11 @@
 // 화면이 스스로 정하는 것은 둘뿐이다: 그래프 창(최근 5분)과, 서버 응답이 끊겼을 때 화면 전체를 낡음으로 돌리는 것.
 
 import { formatValue } from '../overview/model'
-import type { LiveEvent, LiveScale, LiveSource, LiveState, LiveStatus, LiveTile, LiveTrack } from '../types'
+import type { LiveEvent, LiveLap, LiveScale, LiveSource, LiveState, LiveStatus, LiveTile, LiveTrack } from '../types'
 
 export const POLL_MS = 500
 export const WINDOW_S = 300 // 그래프에 보이는 최근 5분
+export const KEEP_S = 600 // 화면이 들고 있는 그래프 값 — 그래프 뷰의 10분 (엔진도 10분까지 준다, CHART_KEEP_S)
 export const TRAIL_S = 30 // 트랙맵의 최근 궤적
 export const FROZEN_S = 3 // 서버 응답이 이만큼 없으면 화면의 값이 전부 그 전 값 — 색을 빼고 띠를 띄운다
 
@@ -243,19 +244,33 @@ export interface Panel {
   series: PanelSeries[]
 }
 
-// 뷰마다 최근 5분 그래프 — 엔진이 그래프 값(chart.series)에 실어 주는 채널만 그려진다 (없으면 "엔진 값 준비 중")
-export const PANELS: Record<'battery' | 'powertrain', Panel[]> = {
-  battery: [
-    { key: 'power', title: '전력 · 전류', series: [{ id: 'battery.power_kw', color: 0 }, { id: 'battery.current_a', right: true, color: 2 }] },
-    { key: 'cellv', title: '셀 최저 전압', series: [{ id: 'bms.cell_min_v', color: 2 }] },
-    { key: 'cellt', title: '셀 온도', series: [{ id: 'bms.temp_max_c', color: 0 }, { id: 'bms.temp_min_c', color: 2 }] },
-  ],
-  powertrain: [
-    { key: 'speed', title: '속도 · RPM', series: [{ id: 'gps.speed_kmh', color: 2 }, { id: 'motor.rpm', right: true, color: 1 }] },
-    { key: 'pedal', title: 'APPS · 토크 명령', series: [{ id: 'pedal.apps_pct', color: 0 }, { id: 'pedal.torque_cmd_pct', color: 2 }] },
-    { key: 'temp', title: '온도', series: [{ id: 'motor.t_motor_c', color: 0 }, { id: 'motor.t_igbt_c', color: 2 }] },
-  ],
+// 그래프 뷰 (§6-1, 2026-11-12) — 한 시간축에 칸을 쌓는다. 엔진이 그래프 값(chart.series)에 실어 주는 채널만 그려진다 (없으면 "엔진 값 준비 중").
+// laps = 그 채널의 랩 값 칸 이름 (계약 §12-4 laps.rows — 세션 랩 표와 같은 이름). 칸의 채널이 모두 랩 값을 받으면 랩마다 꼭짓점, 아니면 시간축 선 (사용자 결정 11-12)
+// limits = 한도 · 주의 선을 그 칸(tiles[].scale)에서 가져온다
+export type GraphGroup = 'all' | 'drive' | 'battery' | 'powertrain'
+export const GRAPH_GROUPS: [GraphGroup, string][] = [['all', '전체'], ['drive', '주행'], ['battery', '배터리'], ['powertrain', '인버터 · 모터']]
+export const GRAPH_RANGES: [number, string][] = [[60, '1분'], [300, '5분'], [600, '10분']]
+
+export interface GraphPanel extends Panel {
+  groups: GraphGroup[]
+  laps?: Record<string, string>
+  limits?: string
 }
+
+export const GRAPH_PANELS: GraphPanel[] = [
+  { key: 'speed', title: '속도 · 회전수', groups: ['drive', 'powertrain'], series: [{ id: 'gps.speed_kmh', color: 2 }, { id: 'motor.rpm', right: true, color: 1 }] },
+  { key: 'pedal', title: '가속페달 · 토크 명령', groups: ['drive', 'powertrain'], series: [{ id: 'pedal.apps_pct', color: 0 }, { id: 'pedal.torque_cmd_pct', color: 2 }] },
+  { key: 'power', title: '전력 · 전류', groups: ['battery'], series: [{ id: 'battery.power_kw', color: 0 }, { id: 'battery.current_a', right: true, color: 2 }], limits: 'battery.power_kw' },
+  { key: 'cellv', title: '셀 최저 전압', groups: ['battery'], series: [{ id: 'bms.cell_min_v', color: 2 }], limits: 'bms.cell_min_v' },
+  {
+    key: 'cellt', title: '셀 온도', groups: ['battery'], series: [{ id: 'bms.temp_max_c', color: 0 }, { id: 'bms.temp_min_c', color: 2 }],
+    laps: { 'bms.temp_max_c': 'cell_t_max_c', 'bms.temp_min_c': 'cell_t_min_c' }, limits: 'bms.temp_max_c',
+  },
+  {
+    key: 'temp', title: '모터 · 인버터(IGBT) 온도', groups: ['powertrain'], series: [{ id: 'motor.t_motor_c', color: 0 }, { id: 'motor.t_igbt_c', color: 2 }],
+    laps: { 'motor.t_motor_c': 'motor_t_max_c', 'motor.t_igbt_c': 'inverter_t_max_c' },
+  },
+]
 
 // 수신 · DAQ 뷰의 원천별 수신률 그래프 — 다섯 칸 모두 0 ~ 100 %, 선 색은 고정 (상태 색은 % 숫자 · 표 막대에만, 사용자 결정).
 // 그래프 값 이름은 텔레메트리에 부탁한 것 (게시판 #38fa) — 엔진이 다른 이름으로 주면 여기만 고친다
@@ -318,6 +333,7 @@ export const SPARK_S = 60
 // 엔진이 범위 · 문턱(tiles[].scale)을 주기 전까지 쓰는 정해진 값 — 범위가 뻔한 것과 규정 한도만.
 // 가정 문턱(셀 최고 55 °C · 셀 최저 3.0 / 2.8 V 등)은 엔진 문턱 파일에만 있으므로 여기 적지 않는다
 const FIXED_SCALE: Record<string, LiveScale> = {
+  'gps.speed_kmh': { min: 0, max: 120, warn: null, danger: null, dir: '>=' }, // 원형 게이지 눈금만 — 문턱 없음 (Formula 차 속도 범위)
   'bms.soc_pct': { min: 0, max: 100, warn: null, danger: null, dir: '<=' },
   'pedal.apps_pct': { min: 0, max: 100, warn: null, danger: null, dir: '>=' },
   'battery.power_kw': { min: -20, max: 90, warn: null, danger: 80, dir: '>=' }, // 규정 80 kW ([기술] 제68조)
@@ -340,4 +356,147 @@ export function sparkPoints(buf: ChartBuf, id: string, now: number, span = SPARK
   if (ok.length < 2) return []
   const lo = Math.min(...ok), hi = Math.max(...ok)
   return rows.map(([t, v]) => (v === null ? null : [(t - (now - span)) / span, hi > lo ? (v - lo) / (hi - lo) : 0.5]))
+}
+
+// ---------------------------------------------------------------- 연결 불 (게이지 칸 오른쪽 위, §6-1)
+
+// 칸 → 그 값이 오는 원천 (엔진 lefdata.live 의 Ch.source 와 같게 — 채널 이름 앞부분으로)
+export function tileSource(id: string): string | null {
+  if (id.startsWith('gps.')) return 'gps'
+  if (id.startsWith('battery.') || id.startsWith('bms.')) return 'bms'
+  if (id.startsWith('motor.')) return 'inverter'
+  if (id.startsWith('pedal.')) return 'pedal'
+  if (id.startsWith('lv.')) return 'lv'
+  return null
+}
+
+export type LampTone = 'ok' | 'warn' | 'danger' | 'stale' | 'none'
+
+// 원천의 10 s 수신률 상태(rate_status, 80 / 50 %)를 그대로 (사용자 결정 11-12). 수신률을 안 주는 원천(GPS)은 원천 상태로,
+// LV 는 송신 장치 값이라 장치 수신 상태로. 서버 응답이 끊기면 회색, 수신이 꺼진 틀이면 빈 불
+export function lampOf(s: LiveState, tileId: string, frozen: boolean, off: boolean): { tone: LampTone; text: string } {
+  if (off) return { tone: 'none', text: '수신 꺼짐' }
+  const id = tileSource(tileId)
+  const src = id ? s.sources.find((x) => x.id === id) : undefined
+  let tone: LampTone
+  let text: string
+  if (id === 'lv') {
+    const st = s.link.status
+    tone = st === 'ok' ? 'ok' : st === 'late' ? 'warn' : 'danger'
+    text = `장치 수신 ${rateText(s.link)}`
+  } else if (!src) {
+    return { tone: 'none', text: '원천 모름' }
+  } else if (src.rate_status) {
+    tone = src.rate_status
+    text = `${src.label} 10 s 수신률 ${pctText(src.rate_10s)}`
+  } else {
+    tone = src.status === 'ok' ? 'ok' : src.status === 'stale' ? 'warn' : 'danger'
+    text = src.id === 'gps' ? `GPS 위치 잡음 ${pctText(src.fix_10s)}` : `${src.label} ${sourceWord(src.status, false).text}`
+  }
+  return frozen ? { tone: 'stale', text: `${text} (화면 갱신 멈춤)` } : { tone, text }
+}
+
+// ---------------------------------------------------------------- 그래프 손질 (축 · 랩 꼭짓점 · 끊긴 띠)
+
+// 축 눈금 — 위 · 가운데 · 아래 세 값이 모두 읽기 좋은 수(간격의 배수)가 되게 범위를 넓힌다 (값은 그대로, 보이는 범위만).
+// 간격 후보 1 · 2 · 2.5 · 4 · 5 × 10^k 중 칸 수가 짝수(가운데가 눈금) · 6 칸 이하이고 범위가 가장 좁은 것. 소수 자리가 늘어나는 후보(0.25 등)는 뺀다
+const decimals = (x: number): number => {
+  for (let d = 0; d <= 6; d++) if (Math.abs(x * 10 ** d - Math.round(x * 10 ** d)) < 1e-9) return d
+  return 6
+}
+export function niceAxis(lo: number, hi: number): { lo: number; hi: number; digits: number } {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { lo: 0, hi: 1, digits: 0 }
+  if (hi - lo < 1e-9) {
+    const pad = Math.abs(hi) > 1 ? Math.abs(hi) * 0.05 : 0.5
+    lo -= pad
+    hi += pad
+  }
+  const mag0 = 10 ** Math.floor(Math.log10((hi - lo) / 4))
+  let best: { lo: number; hi: number; digits: number } | null = null
+  for (const mag of [mag0, mag0 * 10, mag0 * 100]) {
+    for (const m of [1, 2, 2.5, 4, 5]) {
+      const step = m * mag
+      const d = decimals(step)
+      if (d > Math.max(0, decimals(mag))) continue
+      const a = Math.floor(lo / step + 1e-9)
+      let b = Math.ceil(hi / step - 1e-9)
+      if ((b - a) % 2) b += 1
+      if (b - a > 6) continue
+      const r = { lo: Number((a * step).toFixed(d)), hi: Number((b * step).toFixed(d)), digits: d }
+      if (!best || r.hi - r.lo < best.hi - best.lo - 1e-9) best = r
+    }
+  }
+  return best ?? { lo, hi, digits: 2 }
+}
+
+// 작은 그래프의 세로 범위 — 받은 값 + 한도 · 주의 선(+ 0)을 다 담는다. 받은 값이 없으면 게이지 범위(span)로
+export function miniRange(
+  values: (number | null)[], marks: (number | null | undefined)[], zero = false, span: [number, number] | null = null,
+): { lo: number; hi: number; digits: number } {
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+  const data = values.filter(num)
+  const xs = [...data, ...marks.filter(num)]
+  if (!data.length && span) xs.push(...span)
+  if (zero) xs.push(0)
+  if (!xs.length) return niceAxis(0, 1)
+  return niceAxis(Math.min(...xs), Math.max(...xs))
+}
+
+// 랩 꼭짓점 — 끝난 랩(t_end, 그 랩 값)과 이번 랩(지금까지의 값). 값이 없는 랩은 건너뛴다. 최근 keep 랩만
+export interface LapPoints {
+  done: { lap: number; t: number; v: number }[]
+  cur: { lap: number; v: number } | null
+}
+export function lapPoints(laps: LiveState['laps'], key: string, keep = 8): LapPoints {
+  const val = (l: LiveLap | null | undefined) => {
+    const v = l ? (l as unknown as Record<string, unknown>)[key] : null
+    return typeof v === 'number' && Number.isFinite(v) ? v : null
+  }
+  const done: LapPoints['done'] = []
+  for (const l of laps?.rows ?? []) {
+    const v = val(l)
+    if (v !== null) done.push({ lap: l.lap, t: l.t_end, v })
+  }
+  const cv = val(laps?.current)
+  return { done: done.slice(-keep), cur: cv !== null && laps?.current ? { lap: laps.current.lap, v: cv } : null }
+}
+
+// 엔진이 랩 값을 주는 채널인가 — 끝난 랩 중 하나라도 값이 있으면
+export const hasLapValues = (laps: LiveState['laps'], key: string): boolean => lapPoints(laps, key).done.length > 0
+
+// 수신이 끊긴 띠 — 모든 시리즈가 비어 있는 줄이 이어진 구간 (엔진은 끊긴 동안의 격자 칸을 빈 값으로 채운다). from 이후만.
+// minS 보다 짧은 빈칸(격자 한두 칸 — 메시지가 조금 늦게 온 것)은 띠로 그리지 않는다 (선은 그대로 끊긴다)
+export function gapBands(buf: ChartBuf, from: number, minS = 2): [number, number][] {
+  const keys = Object.keys(buf.series)
+  if (!keys.length) return []
+  const out: [number, number][] = []
+  let start: number | null = null
+  let prev: number | null = null
+  buf.t.forEach((t, i) => {
+    const empty = keys.every((k) => buf.series[k][i] == null)
+    if (empty && t >= from) {
+      if (start === null) start = prev ?? t
+    } else if (start !== null) {
+      out.push([start, t])
+      start = null
+    }
+    prev = t
+  })
+  if (start !== null && prev !== null) out.push([start, prev])
+  return out.filter(([a, b]) => b - a >= minS)
+}
+
+// 커서 시각의 값 — 가장 가까운 줄 (계산이 아니라 찾기). 그 줄이 비었으면 null
+export function valueAt(buf: ChartBuf, id: string, t: number): number | null {
+  const ts = buf.t
+  if (!ts.length || !buf.series[id]) return null
+  let lo = 0
+  let hi = ts.length - 1
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (ts[mid] < t) lo = mid
+    else hi = mid
+  }
+  const i = Math.abs(ts[lo] - t) <= Math.abs(ts[hi] - t) ? lo : hi
+  return buf.series[id][i] ?? null
 }

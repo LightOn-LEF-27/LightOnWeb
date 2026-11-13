@@ -315,6 +315,10 @@ export interface LiveLap {
   cell_t_max_c: number | null
   speed_max_kmh?: number | null
   lap_delta_s?: number | null // 그 랩 − 바로 앞 랩, 빠르면 −. 첫 랩 · 도는 랩은 null (v0.16)
+  // 그래프 뷰의 랩 꼭짓점용 (텔레메트리에 요청, 11-11 — 세션 랩 표와 같은 이름). 엔진이 주기 전엔 없음 → 시간축 선
+  cell_t_min_c?: number | null
+  motor_t_max_c?: number | null
+  inverter_t_max_c?: number | null
 }
 
 // 사건 — 최근 것이 앞. source_lost · source_back 은 source 칸에 원천 id, gap_s = 끊겨 있던 초 (있으면)
