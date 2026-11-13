@@ -466,7 +466,23 @@ export const hasLapValues = (laps: LiveState['laps'], key: string): boolean => l
 
 // 수신이 끊긴 띠 — 모든 시리즈가 비어 있는 줄이 이어진 구간 (엔진은 끊긴 동안의 격자 칸을 빈 값으로 채운다). from 이후만.
 // minS 보다 짧은 빈칸(격자 한두 칸 — 메시지가 조금 늦게 온 것)은 띠로 그리지 않는다 (선은 그대로 끊긴다)
-export function gapBands(buf: ChartBuf, from: number, minS = 2): [number, number][] {
+// 끊김으로 치는 길이 (s). 장치는 0.5 s 마다 보내고 엔진 격자도 0.5 s 라, 전달이 조금만 밀려도 한 칸씩 빈다.
+// 그보다 짧은 빈 칸은 선을 잇고(그림만 — 값을 만들지 않는다), 이 길이 넘게 빈 곳만 끊고 어두운 띠를 깐다
+export const GAP_S = 2
+
+// 시리즈 하나의 빈 칸 중 앞뒤 받은 값 사이가 maxS 보다 짧은 것은 undefined (uPlot 이 건너 잇는다), 긴 것은 null (끊는다)
+export function bridgeShort(t: number[], vs: (number | null)[], maxS = GAP_S): (number | null | undefined)[] {
+  const out: (number | null | undefined)[] = vs.slice()
+  let prev = -1
+  for (let i = 0; i < vs.length; i++) {
+    if (vs[i] == null) continue
+    if (prev >= 0 && i - prev > 1 && t[i] - t[prev] < maxS) for (let k = prev + 1; k < i; k++) out[k] = undefined
+    prev = i
+  }
+  return out
+}
+
+export function gapBands(buf: ChartBuf, from: number, minS = GAP_S): [number, number][] {
   const keys = Object.keys(buf.series)
   if (!keys.length) return []
   const out: [number, number][] = []

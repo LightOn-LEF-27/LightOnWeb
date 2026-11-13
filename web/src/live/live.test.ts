@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { LiveEvent, LiveLap, LiveState, LiveTrack } from '../types'
 import { alertView, carOf, CARS, VIEW_TILES } from './cars'
 import {
-  ageText, clock, deviceView, emptyBuf, eventText, foldEvents, gapBands, gaugePos, hasLapValues, lampOf, lapPoints, lapText, linkView, mapBounds,
+  ageText, bridgeShort, clock, deviceView, emptyBuf, eventText, foldEvents, gapBands, gaugePos, hasLapValues, lampOf, lapPoints, lapText, linkView, mapBounds,
   mergeChart, miniRange, niceAxis, offState, outageText, pathRuns, pctText, rateText, scaleOf, shownStatus, signedText, sinceOf, sourceWord,
   sparkPoints, tileOr, tileSource, TRACK_MIN_MS, trackWait, trail, valueAt,
 } from './model'
@@ -275,6 +275,14 @@ describe('계기판 — 연결 불 · 작은 그래프 축 · 랩 꼭짓점 (§6
     expect(gapBands(b, 0)).toEqual([[0, 3]])
     expect(gapBands(b, 0, 0)).toEqual([[0, 3], [4, 5]])
     expect(gapBands(b, 3.5, 0)).toEqual([[4, 5]])
+  })
+
+  it('짧은 빈 칸은 잇는다 — 앞뒤 받은 값 사이가 2 s 보다 짧으면 undefined, 길면 null (끊음), 처음 · 끝 빈 칸은 그대로', () => {
+    const t = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]
+    const v = [null, 1, null, 2, null, null, null, null, 3, 4, null]
+    expect(bridgeShort(t, v)).toEqual([null, 1, undefined, 2, null, null, null, null, 3, 4, null])
+    expect(bridgeShort(t, v, 3)).toEqual([null, 1, undefined, 2, undefined, undefined, undefined, undefined, 3, 4, null])
+    expect(bridgeShort([0, 0.5, 1], [1, 2, 3])).toEqual([1, 2, 3])
   })
 
   it('커서 값 — 가장 가까운 줄', () => {

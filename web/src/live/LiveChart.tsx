@@ -8,7 +8,7 @@ import uPlot from 'uplot'
 
 import { formatValue } from '../overview/model'
 import type { LiveTile } from '../types'
-import { type ChartBuf, clock, type LapPoints, type PanelSeries, valueAt, WINDOW_S } from './model'
+import { bridgeShort, type ChartBuf, clock, type LapPoints, type PanelSeries, valueAt, WINDOW_S } from './model'
 
 export interface Limit {
   v: number
@@ -255,10 +255,10 @@ function cursorValue(p: Props, id: string, t: number): number | null {
   return lp.done.find((d) => d.t >= t)?.v ?? lp.cur?.v ?? null
 }
 
-// uPlot 에 줄 값 — 시간축이면 받은 그래프 값 그대로. 랩 꼭짓점이면 x = 끝난 랩 시각들 + 지금
+// uPlot 에 줄 값 — 시간축이면 받은 그래프 값 (GAP_S 보다 짧은 빈 칸은 잇는다). 랩 꼭짓점이면 x = 끝난 랩 시각들 + 지금
 function chartData(p: Props): uPlot.AlignedData {
   const { buf, series } = p
-  if (!p.laps) return [buf.t, ...series.map((s) => buf.series[s.id] ?? buf.t.map(() => null))]
+  if (!p.laps) return [buf.t, ...series.map((s) => bridgeShort(buf.t, buf.series[s.id] ?? buf.t.map(() => null)))]
   const laps = p.laps
   const ends = [...new Set(series.flatMap((s) => laps[s.id]?.done.map((d) => d.t) ?? []))].sort((a, b) => a - b)
   const xs = [...ends, p.now]

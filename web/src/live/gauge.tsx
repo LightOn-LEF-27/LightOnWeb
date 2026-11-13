@@ -6,7 +6,7 @@ import type { ReactNode } from 'react'
 import { formatValue } from '../overview/model'
 import type { LiveScale, LiveStatus, LiveTile } from '../types'
 import type { Limit } from './LiveChart'
-import { type ChartBuf, gaugePos, type LampTone, type LapPoints, scaleOf, shownStatus, STATUS_WORD, tileValue } from './model'
+import { bridgeShort, type ChartBuf, gaugePos, type LampTone, type LapPoints, scaleOf, shownStatus, STATUS_WORD, tileValue } from './model'
 import { TileAge } from './parts'
 
 // ---------------------------------------------------------------- 연결 불
@@ -162,7 +162,7 @@ function LimitLines({ limits, ax }: { limits: Limit[]; ax: Axis }) {
   )
 }
 
-// 시간축 — 최근 span 초. 끊긴 곳(null)은 잇지 않는다
+// 시간축 — 최근 span 초. GAP_S 넘게 빈 곳만 끊는다 (짧은 빈 칸은 잇는다)
 export function TimeMini({ buf, now, span, lines, ax, unit, limits, legend, label }: {
   buf: ChartBuf
   now: number
@@ -176,13 +176,13 @@ export function TimeMini({ buf, now, span, lines, ax, unit, limits, legend, labe
 }) {
   const from = now - span
   const runs = (id: string): string[] => {
-    const vs = buf.series[id] ?? []
+    const vs = bridgeShort(buf.t, buf.series[id] ?? buf.t.map(() => null))
     const out: string[] = []
     let cur: string[] = []
     buf.t.forEach((t, i) => {
       const v = vs[i]
-      if (t < from) return
-      if (v == null) {
+      if (t < from || v === undefined) return
+      if (v === null) {
         if (cur.length > 1) out.push(cur.join(' '))
         cur = []
       } else cur.push(`${(((t - from) / span) * W).toFixed(1)},${yOf(v, ax).toFixed(1)}`)
