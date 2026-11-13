@@ -33,7 +33,7 @@ export const carOf = (id: string | undefined): LiveCar | null => CARS.find((c) =
 export const VIEW_TILES: Record<ViewKey, string[]> = {
   main: [
     'gps.speed_kmh', 'battery.power_kw', 'bms.cell_min_v', 'bms.temp_max_c', 'motor.t_motor_c', 'motor.t_igbt_c',
-    'pedal.apps_pct', 'bms.soc_pct', 'bms.dcl_kw', 'bms.temp_spread_c', 'motor.rpm', 'lv.voltage_v',
+    'pedal.apps_pct', 'brake.ain1_v', 'bms.soc_pct', 'bms.dcl_kw', 'bms.temp_spread_c', 'motor.rpm', 'lv.voltage_v',
   ],
   graph: [], // 그래프만 — 경고 띠는 칸이 있는 뷰로 보낸다
   battery: [

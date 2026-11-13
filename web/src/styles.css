@@ -2237,6 +2237,51 @@ ul.plain {
 }
 
 /* 게이지 아래 작은 그래프 — 왼쪽 세로 눈금 · 아래 가로 눈금 · 한도 점선 */
+/* 페달 — 왼쪽 반원 브레이크 · 오른쪽 반원 가속 (11-13) */
+.live-pg-side.accel .live-rg-fill {
+  stroke: var(--ok);
+}
+.live-pg-side.brake .live-rg-fill {
+  stroke: var(--danger);
+}
+.live-pg-side.warn .live-rg-fill {
+  stroke: var(--warn);
+}
+.live-pg-side.stale .live-rg-fill {
+  stroke: var(--text-muted);
+  opacity: 0.6;
+}
+.live-pg-side.none .live-rg-track {
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+.live-pg-line {
+  text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+.live-pg-name {
+  font-size: 9px;
+}
+.live-pg-line.accel .live-pg-name {
+  fill: var(--ok);
+}
+.live-pg-line.brake .live-pg-name {
+  fill: var(--danger);
+}
+.live-pg-value {
+  fill: var(--text-strong);
+  font-size: 17px;
+  font-weight: 600;
+}
+.live-pg-unit {
+  fill: var(--text-muted);
+  font-size: 9px;
+}
+.live-pg-line.stale .live-pg-value,
+.live-pg-line.none .live-pg-value {
+  fill: var(--text-muted);
+}
 .live-mini {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2258,6 +2303,12 @@ ul.plain {
   text-align: right;
   line-height: 1;
   white-space: nowrap;
+}
+.live-mini.r2 {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+.live-mini-y.right {
+  text-align: left;
 }
 .live-mini-plot {
   display: block;

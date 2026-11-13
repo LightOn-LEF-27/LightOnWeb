@@ -5,7 +5,7 @@ import { alertView, carOf, CARS, VIEW_TILES } from './cars'
 import {
   ageText, bridgeShort, clock, deviceView, emptyBuf, eventText, foldEvents, gapBands, gaugePos, hasLapValues, lampOf, lapPoints, lapText, linkView, mapBounds,
   mergeChart, miniRange, niceAxis, offState, outageText, pathRuns, pctText, rateText, scaleOf, shownStatus, signedText, sinceOf, sourceWord,
-  sparkPoints, tileOr, tileSource, TRACK_MIN_MS, trackWait, trail, valueAt,
+  sparkPoints, tileOr, tileSource, TRACK_MIN_MS, trackWait, trail, valueAt, worstLamp,
 } from './model'
 
 const chart = (t: number[], speed: (number | null)[], extra: Record<string, (number | null)[]> = {}): LiveState['chart'] => ({
@@ -223,8 +223,24 @@ describe('계기판 — 연결 불 · 작은 그래프 축 · 랩 꼭짓점 (§6
   })
 
   it('칸 → 원천은 채널 이름 앞부분으로', () => {
-    expect(['gps.speed_kmh', 'battery.power_kw', 'bms.soc_pct', 'motor.t_igbt_c', 'pedal.apps_pct', 'lv.voltage_v', 'x.y'].map(tileSource))
-      .toEqual(['gps', 'bms', 'bms', 'inverter', 'pedal', 'lv', null])
+    expect(['gps.speed_kmh', 'battery.power_kw', 'bms.soc_pct', 'motor.t_igbt_c', 'pedal.apps_pct', 'lv.voltage_v', 'brake.ain1_v', 'x.y'].map(tileSource))
+      .toEqual(['gps', 'bms', 'bms', 'inverter', 'pedal', 'lv', 'lv', null])
+  })
+
+  it('페달 칸 불 — 가속 · 브레이크 중 나쁜 쪽 색, 글은 둘 다 (같은 글은 한 번)', () => {
+    const s = state()
+    const l = worstLamp(lampOf(s, 'pedal.apps_pct', false, false), lampOf(s, 'brake.ain1_v', false, false))
+    expect(l.tone).toBe('danger')
+    expect(l.text).toContain(' · ')
+    expect(worstLamp({ tone: 'ok', text: 'a' }, { tone: 'stale', text: 'a' })).toEqual({ tone: 'stale', text: 'a' })
+    expect(worstLamp({ tone: 'warn', text: 'a' }, { tone: 'none', text: 'b' }).tone).toBe('warn')
+  })
+
+  it('브레이크 칸 — 엔진이 안 보내면 무수신 칸 (이름 있음), 눈금은 0 ~ ADC 끝', () => {
+    const t = tileOr(new Map(), 'brake.ain1_v')
+    expect(t.status).toBe('none')
+    expect(t.unit).toBe('V')
+    expect(scaleOf(t)).toMatchObject({ min: 0, max: 4.096 })
   })
 
   it('연결 불 — 원천 수신률 상태 그대로, 없으면 원천 상태, LV 는 장치 수신, 멈춤은 회색 · 꺼짐은 빈 불', () => {

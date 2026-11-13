@@ -6,12 +6,12 @@ import { Link } from 'react-router-dom'
 
 import type { LiveSource, LiveState, LiveTile, LiveTrack } from '../types'
 import { type LiveCar } from './cars'
-import { GaugeTile, LapMini, TimeMini } from './gauge'
+import { GaugeTile, LapMini, PedalTile, TimeMini } from './gauge'
 import LiveChart, { type Limit } from './LiveChart'
 import LiveMap from './LiveMap'
 import {
   ageText, type ChartBuf, clock, deviceView, eventText, type EventRow, gapBands, GRAPH_GROUPS, GRAPH_PANELS, GRAPH_RANGES, type GraphGroup,
-  hasLapValues, lampOf, lapPoints, miniRange, pctText, RATE_PANELS, scaleOf, shownStatus, sourceWord, tileValue,
+  hasLapValues, lampOf, lapPoints, worstLamp, miniRange, pctText, RATE_PANELS, scaleOf, shownStatus, sourceWord, tileValue,
 } from './model'
 import {
   AppsDetail, BatteryLaps, EventList, Facts, InverterLine, InverterPanel, LapEnergy, LapStrip, RateBar, RecentLaps, Tile, TileAge,
@@ -71,11 +71,13 @@ export function MainView({ c }: { c: ViewCtx }) {
   }
   const now = c.s.now
 
-  // 속도 아래 — 가속(초록) · 브레이크(빨강). 25Evo 실시간엔 브레이크 값이 없어 가속만 (LEF-27 채널이 생기면 lines 에 더한다)
+  // 속도 아래 — 가속(초록, 왼쪽 축 %) · 브레이크(빨강, 오른쪽 축 V — 25Evo 는 압력 센서 전압까지만, 11-13 사용자 결정)
   const apps = c.tile('pedal.apps_pct')
+  const brake = c.tile('brake.ain1_v')
   const speedMini = (
     <TimeMini buf={c.buf} now={now} span={MINI_S} lines={[{ id: 'pedal.apps_pct', color: 'var(--ok)' }]} ax={{ lo: 0, hi: 100, digits: 0 }} unit="%"
-      limits={[]} legend={[{ color: 'var(--ok)', text: '가속' }]} label={`${apps.label}, 최근 1분`} />
+      right={{ id: 'brake.ain1_v', color: 'var(--danger)', ax: miniRange(win('brake.ain1_v'), [], true, spanOf(brake)), unit: brake.unit || 'V' }}
+      limits={[]} legend={[{ color: 'var(--ok)', text: '가속' }, { color: 'var(--danger)', text: '브레이크' }]} label={`${apps.label} · ${brake.label}, 최근 1분`} />
   )
   const timeMini = (id: string) => {
     const t = c.tile(id)
@@ -120,7 +122,7 @@ export function MainView({ c }: { c: ViewCtx }) {
         <div className="lv-gauges mid">
           {G('motor.t_motor_c', 'mid')}
           {G('motor.t_igbt_c', 'mid')}
-          {G('pedal.apps_pct', 'mid')}
+          <PedalTile accel={apps} brake={brake} frozen={c.frozen} lamp={worstLamp(lamp('pedal.apps_pct'), lamp('brake.ain1_v'))} />
           {G('bms.soc_pct', 'mid')}
         </div>
         <div className="lv-tiles c4">

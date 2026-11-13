@@ -290,7 +290,7 @@ const OFF_TILES: [string, string, string, number][] = [
   ['gps.speed_kmh', '속도', 'km/h', 0], ['battery.power_kw', '전력', 'kW', 1], ['battery.voltage_v', '팩 전압', 'V', 1],
   ['battery.current_a', '배터리 전류', 'A', 0], ['bms.soc_pct', 'SOC', '%', 1], ['bms.cell_min_v', '셀 최저 전압', 'V', 3],
   ['bms.temp_max_c', '셀 최고 온도', '°C', 0], ['motor.t_motor_c', '모터 온도', '°C', 0], ['motor.t_igbt_c', '인버터(IGBT) 온도', '°C', 0],
-  ['pedal.apps_pct', '가속페달', '%', 0], ['lv.voltage_v', 'LV 전압 (추정 환산)', 'V', 1],
+  ['pedal.apps_pct', '가속페달', '%', 0], ['lv.voltage_v', 'LV 전압 (추정 환산)', 'V', 1], ['brake.ain1_v', '브레이크 압력 센서 (AIN1 전압)', 'V', 2],
   ['bms.temp_min_c', '셀 최저 온도', '°C', 0], ['bms.temp_spread_c', '셀 온도 차', '°C', 0], ['bms.dcl_kw', '방전 출력 한계 (DCL)', 'kW', 1], ['bms.temp_avg_c', '셀 평균 온도', '°C', 0],
   ['bms.temp_max_id', '최고 온도 써미스터 번호', '', 0], ['bms.temp_min_id', '최저 온도 써미스터 번호', '', 0],
   ['bms.bms_heatsink_c', 'BMS 방열판 온도', '°C', 0], ['bms.pack_resistance_ohm', '팩 저항', 'Ω', 3], ['bms.pack_ah', '팩 Ah', 'Ah', 1],
@@ -336,6 +336,7 @@ const FIXED_SCALE: Record<string, LiveScale> = {
   'gps.speed_kmh': { min: 0, max: 120, warn: null, danger: null, dir: '>=' }, // 원형 게이지 눈금만 — 문턱 없음 (Formula 차 속도 범위)
   'bms.soc_pct': { min: 0, max: 100, warn: null, danger: null, dir: '<=' },
   'pedal.apps_pct': { min: 0, max: 100, warn: null, danger: null, dir: '>=' },
+  'brake.ain1_v': { min: 0, max: 4.096, warn: null, danger: null, dir: '>=' }, // 전압까지만 — 끝은 로거 ADC 끝 (계약 §12-3). 환산식이 오면 bar
   'battery.power_kw': { min: -20, max: 90, warn: null, danger: 80, dir: '>=' }, // 규정 80 kW ([기술] 제68조)
   'bms.temp_max_c': { min: 0, max: 70, warn: null, danger: 60, dir: '>=' }, // 규정 60 °C ([기술] 제62조)
 }
@@ -366,7 +367,7 @@ export function tileSource(id: string): string | null {
   if (id.startsWith('battery.') || id.startsWith('bms.')) return 'bms'
   if (id.startsWith('motor.')) return 'inverter'
   if (id.startsWith('pedal.')) return 'pedal'
-  if (id.startsWith('lv.')) return 'lv'
+  if (id.startsWith('lv.') || id.startsWith('brake.')) return 'lv' // 25Evo 브레이크는 Monolith AIN1 (계약 §12-3 source=lv)
   return null
 }
 
@@ -394,6 +395,13 @@ export function lampOf(s: LiveState, tileId: string, frozen: boolean, off: boole
     text = src.id === 'gps' ? `GPS 위치 잡음 ${pctText(src.fix_10s)}` : `${src.label} ${sourceWord(src.status, false).text}`
   }
   return frozen ? { tone: 'stale', text: `${text} (화면 갱신 멈춤)` } : { tone, text }
+}
+
+// 두 칸이 한 불을 나눠 쓸 때 (페달 = 가속 + 브레이크) — 더 나쁜 쪽 색, 글은 둘 다
+const LAMP_RANK: Record<LampTone, number> = { ok: 0, none: 1, stale: 2, warn: 3, danger: 4 }
+export function worstLamp(...ls: { tone: LampTone; text: string }[]): { tone: LampTone; text: string } {
+  const tone = ls.reduce<LampTone>((a, l) => (LAMP_RANK[l.tone] > LAMP_RANK[a] ? l.tone : a), 'ok')
+  return { tone, text: [...new Set(ls.map((l) => l.text))].join(' · ') }
 }
 
 // ---------------------------------------------------------------- 그래프 손질 (축 · 랩 꼭짓점 · 끊긴 띠)

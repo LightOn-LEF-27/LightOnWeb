@@ -97,6 +97,73 @@ export function GaugeTile({ t, size, frozen, lamp, children }: {
   )
 }
 
+// ---------------------------------------------------------------- 페달 (2026-11-13 사용자 결정)
+// 원을 반으로 — 왼쪽 반원 = 브레이크(빨강), 오른쪽 반원 = 가속(초록). 둘 다 아래에서 위로 찬다
+
+const GAP = 9 // 위 · 아래 틈 (도)
+const pt = (deg: number): string => {
+  const a = (deg * Math.PI) / 180
+  return `${(CX + R * Math.cos(a)).toFixed(2)} ${(CY + R * Math.sin(a)).toFixed(2)}`
+}
+const HALF = {
+  right: `M ${pt(90 - GAP)} A ${R} ${R} 0 0 0 ${pt(-90 + GAP)}`, // 아래 → 오른쪽 → 위
+  left: `M ${pt(90 + GAP)} A ${R} ${R} 0 0 1 ${pt(270 - GAP)}`, // 아래 → 왼쪽 → 위
+}
+
+function Half({ side, t, s, st }: { side: 'left' | 'right'; t: LiveTile; s: LiveScale | null; st: LiveStatus }) {
+  const p = t.value === null || !s ? null : gaugePos(t.value, s)
+  return (
+    <g className={`live-pg-side ${side === 'left' ? 'brake' : 'accel'} ${st}`}>
+      <path className="live-rg-track" d={HALF[side]} />
+      {p !== null && p > 0.001 && <path className="live-rg-fill" d={HALF[side]} pathLength={1} strokeDasharray={`${p.toFixed(4)} 1`} />}
+    </g>
+  )
+}
+
+// 가운데 — 이름(반원 색) 위, 값 아래
+function PedalLine({ y, name, side, t, st }: { y: number; name: string; side: 'accel' | 'brake'; t: LiveTile; st: LiveStatus }) {
+  return (
+    <g className={`live-pg-line ${side} ${st}`}>
+      <text className="live-pg-name" x={CX} y={y - 15}>{name}</text>
+      <text x={CX} y={y}>
+        <tspan className="live-pg-value">{tileValue(t)}</tspan>
+        {t.value !== null && <tspan className="live-pg-unit" dx={2}>{t.unit}</tspan>}
+      </text>
+    </g>
+  )
+}
+
+// 페달 칸 — 이름 「페달」, 불은 두 원천 중 나쁜 쪽, 상태 낱말 · 지난 초는 가속 기준 (APPS 고장이 여기로 온다)
+export function PedalTile({ accel, brake, frozen, lamp }: {
+  accel: LiveTile
+  brake: LiveTile
+  frozen: boolean
+  lamp: { tone: LampTone; text: string }
+}) {
+  const sa = shownStatus(accel.status, frozen)
+  const sb = shownStatus(brake.status, frozen)
+  const word = STATUS_WORD[sa]
+  const sca = scaleOf(accel)
+  const scb = scaleOf(brake)
+  const fmt = (t: LiveTile) => (t.value === null ? '값 없음' : `${tileValue(t)} ${t.unit}`)
+  return (
+    <div className={`live-gtile mid ${sa}`} title={`${accel.id} · ${brake.id}`}>
+      <div className="live-gtile-label">
+        <span className="name">페달</span>
+        {word && <span className="live-tile-word">{word}</span>}
+        <Lamp tone={lamp.tone} text={lamp.text} />
+      </div>
+      <svg className="live-rg live-pg" viewBox="0 0 120 114" role="img" aria-label={`페달, 가속 ${fmt(accel)}, 브레이크 ${fmt(brake)}`}>
+        <Half side="left" t={brake} s={scb} st={sb} />
+        <Half side="right" t={accel} s={sca} st={sa} />
+        <PedalLine y={54} name="가속" side="accel" t={accel} st={sa} />
+        <PedalLine y={88} name="브레이크" side="brake" t={brake} st={sb} />
+      </svg>
+      <TileAge st={sa} age={accel.age_s} frozen={frozen} />
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------- 게이지 아래 작은 그래프
 
 export interface Axis {
@@ -110,17 +177,19 @@ const H = 60
 const yOf = (v: number, ax: Axis) => H - 2 - ((v - ax.lo) / (ax.hi - ax.lo || 1)) * (H - 4)
 
 // 틀 — 왼쪽 세로 눈금(위 · 가운데 · 아래, 맨 위에 단위), 그림, 아래 가로 눈금, 범례
-function MiniFrame({ ax, unit, xLabels, legend, label, children }: {
+function MiniFrame({ ax, unit, xLabels, legend, label, right, children }: {
   ax: Axis
   unit: string
   xLabels: string[]
   legend?: { color: string; text: string; dashed?: boolean }[]
   label: string
+  right?: { ax: Axis; unit: string; color: string } // 오른쪽 세로 눈금 (단위가 다른 선 하나)
   children: ReactNode
 }) {
   const f = (v: number) => formatValue(v, ax.digits)
+  const fr = (v: number) => formatValue(v, right?.ax.digits ?? 0)
   return (
-    <div className="live-mini">
+    <div className={`live-mini${right ? ' r2' : ''}`}>
       <div className="live-mini-y" aria-hidden="true">
         <span>
           {f(ax.hi)}
@@ -133,6 +202,16 @@ function MiniFrame({ ax, unit, xLabels, legend, label, children }: {
         <line className="live-mini-grid" x1={0} y1={H / 2} x2={W} y2={H / 2} />
         {children}
       </svg>
+      {right && (
+        <div className="live-mini-y right" aria-hidden="true" style={{ color: right.color }}>
+          <span>
+            {fr(right.ax.hi)}
+            {right.unit && ` ${right.unit}`}
+          </span>
+          <span>{fr((right.ax.lo + right.ax.hi) / 2)}</span>
+          <span>{fr(right.ax.lo)}</span>
+        </div>
+      )}
       <div className="live-mini-x" aria-hidden="true">
         {xLabels.map((x, i) => (
           <span key={i}>{x}</span>
@@ -163,7 +242,7 @@ function LimitLines({ limits, ax }: { limits: Limit[]; ax: Axis }) {
 }
 
 // 시간축 — 최근 span 초. GAP_S 넘게 빈 곳만 끊는다 (짧은 빈 칸은 잇는다)
-export function TimeMini({ buf, now, span, lines, ax, unit, limits, legend, label }: {
+export function TimeMini({ buf, now, span, lines, ax, unit, limits, legend, label, right }: {
   buf: ChartBuf
   now: number
   span: number
@@ -173,9 +252,10 @@ export function TimeMini({ buf, now, span, lines, ax, unit, limits, legend, labe
   limits: Limit[]
   legend?: { color: string; text: string }[]
   label: string
+  right?: { id: string; color: string; ax: Axis; unit: string } // 오른쪽 축에 그리는 선 (단위가 다를 때)
 }) {
   const from = now - span
-  const runs = (id: string): string[] => {
+  const runs = (id: string, a: Axis = ax): string[] => {
     const vs = bridgeShort(buf.t, buf.series[id] ?? buf.t.map(() => null))
     const out: string[] = []
     let cur: string[] = []
@@ -185,7 +265,7 @@ export function TimeMini({ buf, now, span, lines, ax, unit, limits, legend, labe
       if (v === null) {
         if (cur.length > 1) out.push(cur.join(' '))
         cur = []
-      } else cur.push(`${(((t - from) / span) * W).toFixed(1)},${yOf(v, ax).toFixed(1)}`)
+      } else cur.push(`${(((t - from) / span) * W).toFixed(1)},${yOf(v, a).toFixed(1)}`)
     })
     if (cur.length > 1) out.push(cur.join(' '))
     return out
@@ -193,9 +273,10 @@ export function TimeMini({ buf, now, span, lines, ax, unit, limits, legend, labe
   const half = (x: number) => (Number.isInteger(x) ? String(x) : x.toFixed(1))
   const xl = span >= 120 ? [`−${half(span / 60)}분`, `−${half(span / 120)}`, '지금'] : [`−${span} s`, `−${half(span / 2)}`, '지금']
   return (
-    <MiniFrame ax={ax} unit={unit} xLabels={xl} legend={legend} label={label}>
+    <MiniFrame ax={ax} unit={unit} xLabels={xl} legend={legend} label={label} right={right && { ax: right.ax, unit: right.unit, color: right.color }}>
       <LimitLines limits={limits} ax={ax} />
       {lines.map((l) => runs(l.id).map((r, i) => <polyline key={`${l.id}${i}`} className="live-mini-line" points={r} style={{ stroke: l.color }} />))}
+      {right && runs(right.id, right.ax).map((r, i) => <polyline key={`r${i}`} className="live-mini-line" points={r} style={{ stroke: right.color }} />)}
     </MiniFrame>
   )
 }
