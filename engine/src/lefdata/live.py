@@ -49,7 +49,7 @@ from . import venue as venue_mod
 from .evo_stm32 import RPM_FULL_SCALE, motor_temp_c
 from .laps import COURSE_SHARE, COURSE_TOL_M, MIN_LAP_S, MOVING_KMH, Gate, distance_to_line, gate_crossings, to_local_m
 from .lef26 import BAMOCAR_VDC_V_PER_NUM, igbt_temp_c
-from .monolith import T_ANALOG, T_CAN, T_GPS, checksum_ok, nmea_to_deg
+from .monolith import ADC_FSR_V, T_ANALOG, T_CAN, T_GPS, checksum_ok, nmea_to_deg
 
 CONTRACT = "0.16"
 REC = 24
@@ -135,6 +135,7 @@ CHANNELS = {c.id: c for c in (
     Ch("pedal.apps2_pct", "가속페달 센서 2", "%", "", 1, source="pedal"),
     Ch("pedal.fault_raw", "APPS 고장 비트", "", "", 0, source="pedal"),
     Ch("lv.voltage_v", "LV 전압 (추정 환산)", "V", "", 1, source="lv"),
+    Ch("brake.ain1_v", "브레이크 압력 센서 (AIN1 전압)", "V", "", 2, source="lv"),     # 25Evo 가 Monolith AIN1 에 단 센서. 전압까지만 — 환산식을 받으면 bar 로. ADC 끝 4.096 V 위는 잘린다
 )}
 TILES = ("gps.speed_kmh", "battery.power_kw", "battery.voltage_v", "battery.current_a", "bms.soc_pct", "bms.cell_min_v",
          "bms.temp_max_c", "motor.t_motor_c", "motor.t_igbt_c", "pedal.apps_pct", "lv.voltage_v",
@@ -142,11 +143,13 @@ TILES = ("gps.speed_kmh", "battery.power_kw", "battery.voltage_v", "battery.curr
          "bms.temp_min_c", "bms.temp_spread_c", "bms.dcl_kw", "bms.temp_avg_c", "bms.temp_max_id", "bms.temp_min_id", "bms.bms_heatsink_c",
          "bms.pack_resistance_ohm", "bms.pack_ah", "bms.dod_pct",
          "motor.vdc_v", "motor.rpm", "motor.enabled", "motor.ready", "motor.error_raw",
-         "pedal.torque_cmd_pct", "pedal.apps1_pct", "pedal.apps2_pct", "pedal.fault_raw")
+         "pedal.torque_cmd_pct", "pedal.apps1_pct", "pedal.apps2_pct", "pedal.fault_raw",
+         "brake.ain1_v")     # 11-13 추가 (25Evo 가 AIN1 에 브레이크 압력 센서)
 CHART = ("gps.speed_kmh", "battery.power_kw", "battery.current_a", "bms.temp_max_c", "motor.t_motor_c", "motor.t_igbt_c",
          "bms.soc_pct", "gps.x_m", "gps.y_m",
          # v0.16 추가 (사이트 #38fa — 뷰마다 최근 5분)
-         "bms.cell_min_v", "bms.temp_min_c", "motor.rpm", "pedal.apps_pct", "pedal.torque_cmd_pct")
+         "bms.cell_min_v", "bms.temp_min_c", "motor.rpm", "pedal.apps_pct", "pedal.torque_cmd_pct",
+         "brake.ain1_v")
 # 수신률 기록 (0 ~ 1) — 격자마다 그 순간의 link.rate_10s · sources[].rate_10s · fix_10s
 RATE_SERIES = ("rate.link", "rate.bms", "rate.inverter", "rate.pedal", "rate.gps_fix")
 # Monolith 상태 비트 (/d 의 u32, 펌웨어 main.h) — 비트 n = 오류, n + 12 = 치명
@@ -549,9 +552,10 @@ class Live:
                 self._gps(self._srv(ts, t), r[8:24].tobytes())
             elif r[1] == T_ANALOG and ts != self.analog_ts:
                 self.analog_ts = ts
-                supply = struct.unpack_from("<h", r[8:24].tobytes(), 12)[0]
-                if supply > 0:
-                    self._put("lv.voltage_v", self._srv(ts, t), supply * LV_V_PER_RAW)
+                ain = struct.unpack("<8h", r[8:24].tobytes())          # AIN1 ~ 6 · 공급 전압 · 보드 온도 (monolith.py 와 같은 배치)
+                if ain[6] > 0:
+                    self._put("lv.voltage_v", self._srv(ts, t), ain[6] * LV_V_PER_RAW)
+                self._put("brake.ain1_v", self._srv(ts, t), ain[0] / 32768 * ADC_FSR_V)
         self.fix_win.append((t, fix))
         while self.fix_win and self.fix_win[0][0] <= t - RATE_WINDOW_S:
             self.fix_win.popleft()

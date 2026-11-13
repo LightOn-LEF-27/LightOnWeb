@@ -684,6 +684,15 @@ def test_lv_voltage_estimated_scale():
     assert tile(L.state(t), "lv.voltage_v")["value"] == pytest.approx(12.1)
 
 
+def test_brake_sensor_voltage_from_ain1():
+    L = live.Live()
+    car = Car(L)
+    t = car.run(3, analog=rec(4, 5_000, struct.pack("<8h", 16384, 0, 0, 0, 0, 0, 2690, 0)))
+    st = L.state(t)
+    assert tile(st, "brake.ain1_v")["value"] == pytest.approx(2.048)
+    assert tile(st, "lv.voltage_v")["value"] == pytest.approx(12.1)
+
+
 # ---------------------------------------------------------------- 그래프 · 내보내기
 
 def test_chart_grid_since_and_gap():
