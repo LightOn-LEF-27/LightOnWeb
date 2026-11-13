@@ -166,6 +166,8 @@ def test_bamocar_and_pedal_match_evo_can():
     raw = 1234
     apps = with_sum(le(100) + le(200) + le(456) + b"\x01")[:8]
     assert dict(live.decode_frame(ec.APPS_RAW, 8, apps))["pedal.apps_pct"] == pytest.approx(ec.decode_apps_raw(np.frombuffer(apps, np.uint8)[None])["pedal_pct"][0])
+    got = dict(live.decode_frame(ec.APPS_RAW, 8, apps))
+    assert got["pedal.apps1_v"] == pytest.approx(100 * 3.3 / 4095) and got["pedal.apps2_v"] == pytest.approx(200 * 3.3 / 4095)
     cmd = le(0) + le(0) + le(-raw, signed=True) + b"\0\0"
     want = ec.TORQUE_SIGN * ec.decode_apps_scaled(np.frombuffer(cmd, np.uint8)[None])["torque_cmd_raw"][0] / ec.TORQUE_FULL * 100
     assert dict(live.decode_frame(ec.APPS_SCALED, 8, cmd))["pedal.torque_cmd_pct"] == pytest.approx(want) and want > 0

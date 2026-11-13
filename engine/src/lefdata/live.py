@@ -62,6 +62,7 @@ CLOCK_WINDOW_S = 600.0          # 시계 차이를 잡는 최솟값 창 — 시�
 RATE_WINDOW_S = 10.0
 HOLD_S = 2.0                    # 값 경고의 지속 (설계안 §4-6)
 SOURCE_STALE_S = 2.0
+APPS_ADC_V = 3.3 / 4095         # APPS 보드 ADC 원시값 → 보드 핀 전압 (12비트 · 기준 3.3 V, 25Evo APPS 펌웨어). 분압이 있으면 센서 출력 전압과 다르다
 LV_V_PER_RAW = 12.1 / 2690      # Monolith 공급 전압 raw → V [추정 환산 — 25Evo 테스트위크에서 12.1 V 고정 공급일 때 2,690]
 OFFLINE = b"OFFLINE"
 # 0x6D0 슬롯 — 슬롯 124개가 돌아가는데 0.5 s 에 아무 슬롯 하나만 온다. 같은 슬롯이 다시 오기까지 보통 수십 초, 길면 몇 분
@@ -133,6 +134,8 @@ CHANNELS = {c.id: c for c in (
     Ch("pedal.torque_cmd_pct", "토크 명령", "%", "가속 +", 0, source="pedal"),
     Ch("pedal.apps1_pct", "가속페달 센서 1", "%", "", 1, source="pedal"),
     Ch("pedal.apps2_pct", "가속페달 센서 2", "%", "", 1, source="pedal"),
+    Ch("pedal.apps1_v", "가속페달 센서 1 전압 (보드 ADC)", "V", "", 2, source="pedal"),
+    Ch("pedal.apps2_v", "가속페달 센서 2 전압 (보드 ADC)", "V", "", 2, source="pedal"),
     Ch("pedal.fault_raw", "APPS 고장 비트", "", "", 0, source="pedal"),
     Ch("lv.voltage_v", "LV 전압 (추정 환산)", "V", "", 1, source="lv"),
     Ch("brake.ain1_v", "브레이크 압력 센서 (AIN1 전압)", "V", "", 2, source="lv"),     # 25Evo 가 Monolith AIN1 에 단 센서. 전압까지만 — 환산식을 받으면 bar 로. ADC 끝 4.096 V 위는 잘린다
@@ -144,7 +147,7 @@ TILES = ("gps.speed_kmh", "battery.power_kw", "battery.voltage_v", "battery.curr
          "bms.pack_resistance_ohm", "bms.pack_ah", "bms.dod_pct",
          "motor.vdc_v", "motor.rpm", "motor.enabled", "motor.ready", "motor.error_raw",
          "pedal.torque_cmd_pct", "pedal.apps1_pct", "pedal.apps2_pct", "pedal.fault_raw",
-         "brake.ain1_v")     # 11-13 추가 (25Evo 가 AIN1 에 브레이크 압력 센서)
+         "brake.ain1_v", "pedal.apps1_v", "pedal.apps2_v")     # 11-13 추가 (브레이크 압력 센서 AIN1 · 가속페달 센서 전압)
 CHART = ("gps.speed_kmh", "battery.power_kw", "battery.current_a", "bms.temp_max_c", "motor.t_motor_c", "motor.t_igbt_c",
          "bms.soc_pct", "gps.x_m", "gps.y_m",
          # v0.16 추가 (사이트 #38fa — 뷰마다 최근 5분)
@@ -274,7 +277,8 @@ def decode_frame(can_id: int, dlc: int, d: bytes) -> list[tuple[str, float]]:
                 raw = _u16be(d, 5)
                 out.append((STREAM_TO_CH[name], (_s16(raw) if signed else raw) * scale))
     elif can_id == ec.APPS_RAW:
-        out.append(("pedal.apps_pct", _u16le(d, 4) * 0.1))
+        out += [("pedal.apps_pct", _u16le(d, 4) * 0.1),
+                ("pedal.apps1_v", _u16le(d, 0) * APPS_ADC_V), ("pedal.apps2_v", _u16le(d, 2) * APPS_ADC_V)]
     elif can_id == ec.APPS_SCALED:
         out += [("pedal.torque_cmd_pct", ec.TORQUE_SIGN * _s16(_u16le(d, 4)) / ec.TORQUE_FULL * 100),
                 ("pedal.apps1_pct", _u16le(d, 0) * 0.1), ("pedal.apps2_pct", _u16le(d, 2) * 0.1)]
