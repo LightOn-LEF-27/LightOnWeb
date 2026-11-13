@@ -157,7 +157,8 @@ JUMP_FWD_S = 60.0       # 이보다 앞으로 가면 시계 점프 (그 이하�
 GAP_REPORT_S = 1.0
 BATCH_BYTES = 1 << 26
 
-SESSION_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:_(am|pm))?_merged$")
+# <날짜>_merged · <날짜>_am|pm_merged · <날짜>_<b ~ z>_merged (같은 날짜에 둘째부터 올린 파일 — ingest 가 붙이는 이름)
+SESSION_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:_(am|pm|[a-z]))?_merged$")
 
 
 # ---------------------------------------------------------------- 읽기

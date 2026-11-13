@@ -165,7 +165,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"[laps] {args.event}")
         ven = venue.for_event(args.event, args.venue)
         runs, lap_df, gate = laps.run_event(args.event, ven)
-        print(f"[laps] 계측선 x={gate.x:.1f} m, y={gate.y:.1f} m, 방향 {gate.heading_deg:.0f}°" + (f" — 경기장 {ven['name']}" if ven else ""))
+        print("[laps] 주행 구간이 없어 계측선을 정하지 못함 (10 km/h 를 넘은 기록 없음)" if gate is None else
+              f"[laps] 계측선 x={gate.x:.1f} m, y={gate.y:.1f} m, 방향 {gate.heading_deg:.0f}°" + (f" — 경기장 {ven['name']}" if ven else ""))
         for rid, r in runs.groupby("recording_id"):
             n = lap_df[lap_df["recording_id"] == rid]
             best = f"  최고 랩 {n['lap_time_s'].min():.2f}s" if len(n) else ""

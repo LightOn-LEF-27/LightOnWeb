@@ -163,6 +163,9 @@ def analyze(gps: pd.DataFrame, lat0: float, lon0: float, gate: Gate | None = Non
 
 
 GPS_COLUMNS = {"t_rel_ms", "fix", "lat", "lon", "speed_kmh", "course_deg"}
+# runs.csv 의 열 — 주행이 하나도 없는 이벤트(서 있기만 한 기록)도 이 머리줄로 쓴다 (빈 파일은 다시 읽히지 않는다)
+RUN_COLUMNS = ["recording_id", "label", "run", "t_start_s", "t_end_s", "duration_s", "distance_m", "vmax_kmh", "gate_crossings",
+               "full_laps", "out_s", "in_s"]
 
 
 def gps_recordings(norm: Path) -> list[Path]:
@@ -187,6 +190,8 @@ def split_event(event_dir: Path, venue: dict | None = None) -> tuple[pd.DataFram
     recs = gps_recordings(norm)
     gps = {p.name: pq.read_table(p / "gps.parquet").to_pandas() for p in recs}
     labels = {p.name: json.loads((p / "meta.json").read_text(encoding="utf-8")).get("label") for p in recs}
+    if not gps:
+        raise ValueError(f"{event_dir.name}: 랩 분할에 쓸 GPS 레코딩이 없다 (normalized/<레코딩>/gps.parquet)")
 
     def longest_run_s(g):
         f = g[g["fix"]]
@@ -217,11 +222,12 @@ def split_event(event_dir: Path, venue: dict | None = None) -> tuple[pd.DataFram
                 df.insert(0, "label", labels[rid])
                 df.insert(0, "recording_id", rid)
                 acc.append(df)
-    # 랩이 하나도 없는 이벤트도 있다 (단발 종목만 기록된 대회 데이터 등)
-    runs = pd.concat(all_runs, ignore_index=True) if all_runs else pd.DataFrame()
+    # 랩이 하나도 없는 이벤트도 있다 (단발 종목만 기록된 대회 데이터 등). 주행이 하나도 없는 이벤트도 (서 있기만 한 기록 — 정지 리허설)
+    runs = pd.concat(all_runs, ignore_index=True) if all_runs else pd.DataFrame(columns=RUN_COLUMNS)
     laps = pd.concat(all_laps, ignore_index=True) if all_laps else pd.DataFrame(
         columns=["recording_id", "label", "lap_time_s"])
-    doc = {"origin": {"lat0": lat0, "lon0": lon0}, "gate": asdict(gate), "reference_recording": ref,
+    # 주행이 하나도 없고 경기장도 안 정했으면 계측선을 그을 곳이 없다 — gate 는 null (세션을 만드는 쪽은 주행이 없으니 쓰지 않는다)
+    doc = {"origin": {"lat0": lat0, "lon0": lon0}, "gate": asdict(gate) if gate is not None else None, "reference_recording": ref,
            "half_width_m": GATE_HALF_WIDTH_M, "note": "x=동, y=북 (m). heading 은 북=0 시계방향"}
     if venue is not None:
         share = near / total if total else None

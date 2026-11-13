@@ -47,6 +47,7 @@ def smooth(t: np.ndarray, v: np.ndarray, window_s: float) -> np.ndarray:
     n = int(round(window_s / median_dt(t))) if window_s and len(v) > 1 else 1
     if n <= 1:
         return v.copy()
+    n = min(n, len(v))                                  # 표본이 창보다 적으면 있는 만큼 (np.convolve 의 same 은 긴 쪽 길이를 돌려준다)
     ok = np.isfinite(v)
     k = np.ones(n)
     num = np.convolve(np.where(ok, v, 0.0), k, mode="same")

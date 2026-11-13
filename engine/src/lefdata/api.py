@@ -219,15 +219,29 @@ def list_channels(sid: str) -> list[dict]:
 
 # ---------------------------------------------------------------- F5 그래프 값
 
-def _channel(sid: str, spec: dict, win: tuple[float, float], smooth_s: float | None) -> tuple[np.ndarray, np.ndarray]:
-    """채널 하나의 (세션 시간, 값) — 원래 주기 그대로, win 둘레만. smooth_s 를 주면 이동평균 (창 밖 값도 써서 가장자리가 고르다)."""
+def _channel(sid: str, spec: dict, win: tuple[float, float], smooth_s: float | None) -> tuple[np.ndarray, np.ndarray, float]:
+    """채널 하나의 (세션 시간, 값, 기록 간격) — 원래 주기 그대로, win 둘레만. smooth_s 를 주면 이동평균 (창 밖 값도 써서 가장자리가 고르다).
+
+    기록 간격은 채널 전체의 중앙값이다 — 끊긴 곳은 이것으로 가린다 (`_breaks`).
+    """
     frame = _frame(_root() / sid / spec["_file"])
     t, v = frame["t_s"].to_numpy(float), frame[spec["_col"]].to_numpy(float)
+    dt = ser.median_dt(t)
     margin = (smooth_s or 0.0) + 1.0
     i0 = max(int(np.searchsorted(t, win[0] - margin)) - 1, 0)
     i1 = min(int(np.searchsorted(t, win[1] + margin, side="right")) + 1, len(t))
     t, v = t[i0:i1], v[i0:i1]
-    return t, (ser.smooth(t, v, smooth_s) if smooth_s else v)
+    return t, (ser.smooth(t, v, smooth_s) if smooth_s else v), dt
+
+
+def _breaks(t: np.ndarray, dt: float) -> np.ndarray:
+    """표본 i 와 i+1 사이가 끊겼는가 — 채널 전체의 기록 간격 dt 의 GAP_FACTOR 배보다 벌어진 곳 (계약 §6-4).
+
+    잘라 낸 조각의 간격으로 가리면, 긴 빈 틈 안쪽을 확대했을 때 조각에 틈 양옆 표본만 남아 틈이 '보통 간격' 이 되고 직선으로 이어진다.
+    """
+    if len(t) < 2:
+        return np.zeros(0, bool)
+    return np.diff(t) > GAP_FACTOR * dt if np.isfinite(dt) else np.zeros(len(t) - 1, bool)
 
 
 def _laps(sid: str) -> pd.DataFrame:
@@ -377,7 +391,14 @@ def get_series(sid: str, channel_ids, x: str = "time", t0: float | None = None, 
                 raise EngineError("bad_argument", f"세션 {sid} 에는 코스(위치) 기록이 없음")
             pt, sv = _lap_ref(sid, int(row["lap"]), fr[1])
             length = float(sv[-1])
-            to_x = lambda t: np.interp(t, pt, sv)           # noqa: E731 — 세션 시간 → 기준 거리
+
+            def to_x(t):                                     # 세션 시간 → 기준 거리
+                out = np.interp(t, pt, sv)
+                if len(pt) > 1:                              # 랩 밖의 표본(잇기용 이웃)은 0 · 끝에 눌러 붙이지 않고 범위 밖으로 — 첫 · 끝 칸에 섞이지 않게
+                    for m, k, j in ((t < pt[0], 0, 1), (t > pt[-1], -1, -2)):
+                        slope = max(float((sv[k] - sv[j]) / (pt[k] - pt[j])), 1e-6)
+                        out[m] = sv[k] + (t[m] - pt[k]) * slope
+                return out
         lo = max(float(d0), 0.0) if d0 is not None else 0.0
         hi = min(float(d1), length) if d1 is not None else length
         win = (ta, tb)
@@ -388,13 +409,13 @@ def get_series(sid: str, channel_ids, x: str = "time", t0: float | None = None, 
     picked = []
     for cid in ids:
         spec = specs[cid]
-        t, v = _channel(sid, spec, win, smooth_s)
+        t, v, dt = _channel(sid, spec, win, smooth_s)
         if x != "time":                                      # 그 랩 밖의 표본은 쓰지 않는다 (양옆 하나씩은 잇기용으로 둔다)
             j0 = max(int(np.searchsorted(t, win[0])) - 1, 0)
             j1 = min(int(np.searchsorted(t, win[1], side="right")) + 1, len(t))
             t, v = t[j0:j1], v[j0:j1]
         xv = t if to_x is None else to_x(t)
-        picked.append((cid, spec, xv, v, ser.time_breaks(t, GAP_FACTOR)))
+        picked.append((cid, spec, xv, v, _breaks(t, dt)))
 
     native = max(int(((xv >= lo) & (xv <= hi)).sum()) for _, _, xv, _, _ in picked)
     n = int(np.clip(native, 2, max_points))
@@ -404,7 +425,8 @@ def get_series(sid: str, channel_ids, x: str = "time", t0: float | None = None, 
         r = ser.reduce(xv, v, lo, hi, n, brk)
         centers = r.x
         d = int(spec.get("digits", 3))
-        out_series.append({"channel_id": cid, "unit": spec["unit"], "values": _arr(r.mean, d), "y_min": _arr(r.lo, d),
+        d_mean = max(d, 3) if spec.get("levels") else d      # 정해진 값만 갖는 채널의 칸 평균은 비율이다 — 정수로 자르지 않는다
+        out_series.append({"channel_id": cid, "unit": spec["unit"], "values": _arr(r.mean, d_mean), "y_min": _arr(r.lo, d),
                            "y_max": _arr(r.hi, d), "samples": r.samples})
     laps = _laps(sid)
     if x == "time":
@@ -470,6 +492,8 @@ def get_track(sid: str, lap: int | str | None = None, color: str | None = None, 
             raise EngineError("unknown_channel", f"없는 채널: {color}", {"unknown": [color]})
     if smooth_s is not None and (isinstance(smooth_s, bool) or not isinstance(smooth_s, (int, float)) or not 0 <= smooth_s <= MAX_SMOOTH_S):
         raise EngineError("bad_argument", f"smooth_s 는 0 ~ {MAX_SMOOTH_S} s: {smooth_s!r}")
+    if not s["track"]["has_track"]:                          # 전에 코스가 있던 세션의 파일이 남아 있어도 주지 않는다
+        raise EngineError("bad_argument", f"세션 {sid} 에는 코스(위치) 기록이 없음")
     tr = _track(sid)
     t, xx, yy, dd = (tr[c].to_numpy(float) for c in ("t_s", "x_m", "y_m", "dist_m"))
     which = s["best_lap"] if lap is None else lap
@@ -491,9 +515,9 @@ def get_track(sid: str, lap: int | str | None = None, color: str | None = None, 
     if fr is not None:
         out["ref_m"] = _arr(_lap_ref(sid, lap_no, fr[1])[1], 2)
     if spec is not None:
-        ct, cv = _channel(sid, spec, (float(pt[0]), float(pt[-1])), smooth_s)
+        ct, cv, cdt = _channel(sid, spec, (float(pt[0]), float(pt[-1])), smooth_s)
         levels = spec.get("levels")
-        vals = ser.sample_at(ct, cv, pt, ser.time_breaks(ct, GAP_FACTOR), nearest=bool(levels))   # 정해진 값만 갖는 채널은 잇지 않는다
+        vals = ser.sample_at(ct, cv, pt, _breaks(ct, cdt), nearest=bool(levels))   # 정해진 값만 갖는 채널은 잇지 않는다
         out["color"] = {"channel_id": color, "unit": spec["unit"], "values": _arr(vals, int(spec.get("digits", 3))),
                         "smooth_s": smooth_s or None, **({"levels": levels} if levels else {})}
     return out

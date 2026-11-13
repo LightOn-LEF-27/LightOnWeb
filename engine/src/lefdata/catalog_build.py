@@ -1796,15 +1796,17 @@ class _GpsCtx:
         self.event_dir, self.notes, self.made, self.derived = event_dir, notes, made, d
         if not self.available(event_dir):
             raise FileNotFoundError("runs.csv · laps.csv · gate.json 이 없다 — 먼저 랩 분할(lefdata laps 또는 gopro --laps)을 돌릴 것")
-        self.runs, laps = _read(d / "runs.csv"), _read(d / "laps.csv")
-        if "run" not in laps:                                  # 완주 랩이 하나도 없는 이벤트 (가속 · 스키드패드뿐)
+        runs, laps = _read(d / "runs.csv"), _read(d / "laps.csv")
+        self.runs = runs if runs is not None else pd.DataFrame(columns=lapmod.RUN_COLUMNS)    # 주행이 하나도 없는 이벤트 (서 있기만 한 기록)
+        if laps is None or "run" not in laps:                  # 완주 랩이 하나도 없는 이벤트 (가속 · 스키드패드뿐)
             laps = pd.DataFrame(columns=["recording_id", "run", "lap", "t_start_s", "t_end_s", "lap_time_s", "distance_m", "vmax_kmh", "vmin_kmh"])
         self.laps = laps
         self.gate_file = json.loads((d / "gate.json").read_text(encoding="utf-8"))
         self.origin = self.gate_file["origin"]
-        g = self.gate_file["gate"]
-        self.gate = {"x_m": round(float(g["x"]), 2), "y_m": round(float(g["y"]), 2), "heading_deg": round(float(g["heading_deg"]), 1),
-                     "half_width_m": float(self.gate_file.get("half_width_m", 0.0))}
+        g = self.gate_file["gate"]                             # 주행이 하나도 없어 계측선을 못 정한 이벤트는 null (GPS 세션도 없다)
+        self.gate = None if g is None else {"x_m": round(float(g["x"]), 2), "y_m": round(float(g["y"]), 2),
+                                            "heading_deg": round(float(g["heading_deg"]), 1),
+                                            "half_width_m": float(self.gate_file.get("half_width_m", 0.0))}
         self.run_e, self.lap_e, self.fits = _read(d / "run_energy.csv"), _read(d / "lap_energy.csv"), _read(d / "em_alignment.csv")
         self.aligned = {(a.meter.rec, a.track.rec): a for a in em_laps.align_event(event_dir) if a.accepted} if self.run_e is not None else {}
         self.cycles = _read(d / "power_cycles.csv")            # 같은 전원 스위치 — 켜지고 꺼진 시각으로 따로 잰 시계 차 (있으면)

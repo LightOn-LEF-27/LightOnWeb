@@ -169,3 +169,63 @@ def test_a_row_overlapping_a_session_is_not_built_again(tmp_path):
     assert all(s.split_by == "gps" for s in sessions) and [s.run_no for s in sessions] == ["1", ""]
     [nine] = [u for u in report["runsheet"]["unmatched_rows"] if u["run_no"] == "9"]
     assert "겹침" in nine["why"] and report["runsheet"]["timed_sessions"] == []
+
+
+# ---------------------------------------------------------------- 전원 켬 ↔ 로거 레코딩 (여러 번 켠 날) · 시각 형식
+
+def _rec(device, clock_s, name):
+    """레코딩 하나 — 전원 켬과 대 보는 데는 장비 · 시작 시각 · 이름만 쓴다."""
+    from types import SimpleNamespace
+    return SimpleNamespace(device=device, t0=pd.Timestamp(f"{DAY} 10:00:00", tz="Asia/Seoul").timestamp() + clock_s, rec=name)
+
+
+def _on(*clock_s):
+    return [{"power_on": pd.Timestamp(f"{DAY} 10:00:00", tz="Asia/Seoul") + pd.Timedelta(seconds=s)} for s in clock_s]
+
+
+@pytest.mark.parametrize("ons", [(0, 300), (0, 300, 600), (0, 0, 300)])
+def test_power_on_pairs_follow_one_clock_difference(ons):
+    """장비 시계가 폰보다 183 s 앞 · 5 분마다 켠 날 — 가까운 것부터 짝지으면 옆 주행의 레코딩과 엇갈린다 (183 s > 간격의 절반)."""
+    recs = [_rec("energymeter", s + 183.0, f"em{k}") for k, s in enumerate(sorted(set(ons)))]
+    [p] = runsheet.power_on(_on(*ons), recs)
+    assert p["pairs"] == len(recs) and p["device_minus_phone_s"] == 183.0 and (p["min_s"], p["max_s"]) == (183.0, 183.0)
+    assert p["recordings"] == {r.rec: 183.0 for r in recs}
+
+
+def test_power_on_keeps_the_pair_within_the_tolerance_and_leaves_the_rest():
+    """켠 뒤 기록이 조금 늦게 시작한 레코딩은 같은 시계 차로 보고, 전원 켬을 적지 않은 레코딩은 짝짓지 않는다."""
+    recs = [_rec("energymeter", 183.0, "a"), _rec("energymeter", 300 + 183.0 + 20.0, "b"), _rec("energymeter", 700 + 183.0, "c")]
+    [p] = runsheet.power_on(_on(0, 300), recs)
+    assert p["recordings"] == {"a": 183.0, "b": 203.0} and p["pairs"] == 2
+    assert runsheet.power_on(_on(0), [_rec("energymeter", 2000.0, "far")]) == []          # 창(15 분) 밖은 재지 않는다
+
+
+def test_two_runs_five_minutes_apart_keep_their_own_meter_data(tmp_path):
+    """끝까지 — 전원을 5 분 간격으로 두 번 켠 날, 일정표 두 줄이 각자의 에너지미터 기록을 갖는다 (서로 바뀌지 않는다)."""
+    sheet = "차,R번호,전원 켬,출발,도착,종목\nLEF-27,1,10:00:00,10:01:00,10:04:00,연습\nLEF-27,2,10:05:00,10:06:00,10:08:00,연습\n"
+    ev = tmp_path / "LEF-27" / "2027-06-05_test"
+    ev.mkdir(parents=True)
+    (ev / cb.NOTES_NAME).write_text('[event]\ncar = "LEF-27"\nsessions = "auto"\n', encoding="utf-8")
+    (ev / f"runsheet_{DAY}.csv").write_text(sheet, encoding="utf-8")
+    meter_with_drive(ev, pd.Timestamp(f"{DAY} 10:03:03", tz="Asia/Seoul"), drive=(60.0, 240.0), amps=50.0, span_s=280.0)     # 폰 10:00:00 에 켬
+    meter_with_drive(ev, pd.Timestamp(f"{DAY} 10:08:03", tz="Asia/Seoul"), drive=(60.0, 180.0), amps=30.0, span_s=280.0)     # 폰 10:05:00 에 켬
+    report = {}
+    one, two = cb.build_event(ev, report)
+    assert (one.run_no, two.run_no) == ("1", "2")
+    assert one.stats["net_wh"] == pytest.approx(280 * 50 * 180 / 3600, rel=0.02) and two.stats["net_wh"] == pytest.approx(280 * 30 * 120 / 3600, rel=0.02)
+    assert report["runsheet"]["power_on"][0]["recordings"] == {"2027-06-05_100303_em": 183.0, "2027-06-05_100803_em": 183.0}
+
+
+@pytest.mark.parametrize("text, clock", [("10:00:26", "10:00:26"), ("9:05", "09:05:00"), ("1:05:03 PM", "13:05:03"), ("10:00:26 AM", "10:00:26"),
+                                         ("오후 1:05:03", "13:05:03"), ("오전 9:05", "09:05:00"), ("10:00:26+09:00", "10:00:26"),
+                                         ("01:00:26+00:00", "10:00:26")])
+def test_times_without_a_date_take_the_date_of_the_file(text, clock):
+    """시각만 적은 칸은 형식이 무엇이든 일정표 파일의 날짜다 (오늘 날짜가 아니다)."""
+    assert runsheet._time(DAY, text) == pd.Timestamp(f"{DAY} {clock}", tz="Asia/Seoul")
+
+
+def test_a_written_date_is_kept_and_nonsense_is_refused():
+    assert runsheet._time(DAY, "2027-06-06 00:10:00") == pd.Timestamp("2027-06-06 00:10:00", tz="Asia/Seoul")
+    assert runsheet._time(DAY, "") is None and runsheet._time(DAY, "nan") is None
+    with pytest.raises(ValueError, match="시각을 읽지 못함"):
+        runsheet._time(DAY, "열 시쯤")

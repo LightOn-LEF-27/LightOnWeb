@@ -232,6 +232,8 @@ def write_session(s: Session, root: Path, data_root: Path | None = None) -> dict
     laps.to_parquet(out / "laps.parquet", index=False)
     if s.track is not None:
         s.track[["t_s", "x_m", "y_m", "dist_m"]].to_parquet(out / "track.parquet", index=False)
+    else:
+        (out / "track.parquet").unlink(missing_ok=True)       # 전에 코스가 있던 세션 — 지난 궤적이 남지 않게
     best = s.best_lap
     row = summary(s, all_blocks)
     doc = {"store_format": STORE_FORMAT, "summary": row, "notes": list(s.notes), "blocks": blocks,

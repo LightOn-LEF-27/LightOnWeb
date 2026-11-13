@@ -45,7 +45,7 @@ def _inside(s):
 
 def _rpm_lag(s):
     rpm, speed = _channel(s, "motor", "rpm"), _channel(s, "gps", "speed_kmh")
-    if rpm is None or len(rpm.t_s) < 100:
+    if rpm is None or speed is None or len(rpm.t_s) < 100:          # GPS 가 없는 시각 구간 세션은 대 볼 속도가 없다
         return None
     return cb.best_lag(rpm.t_s, np.abs(rpm.v), speed.t_s, speed.v)
 
@@ -92,6 +92,8 @@ def test_evo_backup_logger_blocks_and_clock_check(sevo):
         assert _inside(s), s.sid
         b = _blocks(s)
         if "battery" not in b:
+            continue
+        if s.split_by != "gps":                                  # 사람이 고른 시각 구간은 서 있던 동안일 수 있다 (속도가 없으면 추정도 · 대 볼 파형도 없다)
             continue
         assert store.drive_block(s) is not None
         lag = _rpm_lag(s)

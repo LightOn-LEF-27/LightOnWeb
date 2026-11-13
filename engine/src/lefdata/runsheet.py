@@ -38,7 +38,8 @@ NOTE_FIELDS = (("purpose", "목적"), ("setup", "세팅 바뀜"), ("devices", "�
 MATCH_SLACK_S = 300.0       # 일정표 출발 ↔ 세션 시작이 이 안인 쌍으로 시계 차를 잰다 (폰과 장비 시계가 몇 분 다를 수 있다)
 MATCH_SHARE = 0.5           # 옮긴 일정표 구간과 세션 구간이 짧은 쪽의 이 비율 넘게 겹치면 같은 주행
 START_ONLY_S = 60.0         # 도착을 안 적은 줄은 출발이 세션 시작과 이 안이면 같은 주행
-POWER_ON_WINDOW_S = 900.0   # 전원 켬 앞뒤 이 안에 켜진 로거 레코딩을 짝으로 본다
+POWER_ON_WINDOW_S = 900.0   # 전원 켬 앞뒤 이 안에 켜진 로거 레코딩을 짝으로 본다 (장비 시계가 폰과 이보다 더 다르면 재지 못한다)
+POWER_ON_TOL_S = 120.0      # 한 장비의 짝들은 (장비 시계 − 폰) 이 이 안에서 같아야 한다 — 켠 뒤 기록이 시작될 때까지 · 손으로 적은 시각(분 단위일 수도)의 오차
 POWER_DEVICES = {"monolith": "Monolith", "energymeter": "에너지미터", "lef26_logger": "LEF-26 차량 로거"}   # LV 와 같이 켜지는 로거
 AUTO_KINDS = ("트랙", "가속", "스키드패드")
 KIND_WORDS = (("가속", "가속"), ("스키드", "스키드패드"), ("트랙", "트랙"), ("내구", "트랙"), ("엔듀", "트랙"), ("오토크로스", "트랙"))   # 일정표 종목 → 데이터로 보는 종목
@@ -79,7 +80,10 @@ def _time(day: str, text) -> pd.Timestamp | None:
     t = str(text or "").strip()
     if not t or t.lower() == "nan":
         return None
-    if re.fullmatch(r"\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?", t):
+    m = re.fullmatch(r"(오전|오후)\s*(\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)", t)      # 시트가 한국어 형식으로 내보낸 시각
+    if m:
+        t = f"{m.group(2)} {'AM' if m.group(1) == '오전' else 'PM'}"
+    if not re.search(r"\d{4}[-/.]\s*\d{1,2}[-/.]\s*\d{1,2}", t):                   # 날짜를 같이 적지 않았으면 파일 이름의 날짜 (10:00:26 · 10:00 · 1:05:03 PM · 10:00:26+09:00)
         t = f"{day} {t}"
     try:
         ts = pd.Timestamp(t)
@@ -251,24 +255,41 @@ def power_on(rows: list[dict], recordings) -> list[dict]:
     """전원 켬(폰 시각) ↔ 그 앞뒤 POWER_ON_WINDOW_S 안에 켜진 로거 레코딩 → 장비마다 (장비 시계 − 폰) 의 중앙값 · 범위.
     레코딩은 켠 뒤 몇 초 안에 시작하므로, 차의 대부분은 장비 시계가 폰과 다른 만큼이다 (시각 구간 세션의 [clocks.<장비>] offset_s 는 이 값의 부호를 바꾼 것)."""
     out = []
-    ons = [_epoch(r["power_on"]) for r in rows if r["power_on"] is not None]
+    ons = sorted({_epoch(r["power_on"]) for r in rows if r["power_on"] is not None})      # 같은 전원 켬을 두 줄에 적었으면 한 번으로
     for device, label in POWER_DEVICES.items():
         mine = sorted((x.t0, x.rec) for x in recordings if x.device == device)
         starts = np.array([s for s, _ in mine])
         if not len(starts) or not ons:
             continue
-        cand = sorted((abs(s - p), i, k) for i, p in enumerate(ons) for k, s in enumerate(starts) if abs(s - p) <= POWER_ON_WINDOW_S)
-        d, per, used_on, used_rec = [], {}, set(), set()
-        for _, i, k in cand:                            # 가까운 것부터 하나씩 — 레코딩 하나는 전원 켬 하나에만
-            if i not in used_on and k not in used_rec:
-                used_on.add(i)
-                used_rec.add(k)
-                d.append(float(starts[k] - ons[i]))
-                per[mine[k][1]] = round(d[-1], 1)
+        # 장비 시계는 폰과 일정하게 다르다 — 그 차의 후보(가능한 쌍마다)를 하나씩 놓고 짝을 지어, 짝이 가장 많고 서로 가장 잘 맞는 것을 쓴다.
+        # (그냥 가까운 것부터 짝지으면, 시계 차가 전원 켬 간격의 절반보다 클 때 옆 주행의 레코딩과 엇갈린다)
+        clocks = sorted({round(float(s - p), 1) for p in ons for s in starts if abs(s - p) <= POWER_ON_WINDOW_S}, key=abs)
+        best, score = {}, None
+        for c in clocks:
+            pair = _power_pairs(ons, starts, c)
+            diffs = np.array([float(starts[k] - ons[i]) for i, k in pair.items()])
+            now = (len(pair), -float(np.abs(diffs - np.median(diffs)).sum()) if len(diffs) else 0.0)
+            if score is None or now > score:            # 같으면 시계 차가 작은 쪽 (clocks 는 크기순)
+                best, score = pair, now
+        d, per = [], {}
+        for i, k in sorted(best.items()):
+            d.append(float(starts[k] - ons[i]))
+            per[mine[k][1]] = round(d[-1], 1)
         if d:
             out.append({"device": device, "label": label, "pairs": len(d), "device_minus_phone_s": round(float(np.median(d)), 1),
                         "min_s": round(min(d), 1), "max_s": round(max(d), 1), "recordings": per})
     return out
+
+
+def _power_pairs(ons: list[float], starts: np.ndarray, clock: float) -> dict[int, int]:
+    """장비 시계가 폰보다 clock 초 앞이라고 볼 때의 짝 {전원 켬: 레코딩} — (전원 켬 + clock) 에 가까운 레코딩부터 하나씩, POWER_ON_TOL_S 안에서."""
+    cand = sorted((abs(s - p - clock), i, k) for i, p in enumerate(ons) for k, s in enumerate(starts) if abs(s - p - clock) <= POWER_ON_TOL_S)
+    pair, used = {}, set()
+    for _, i, k in cand:
+        if i not in pair and k not in used:
+            pair[i] = k
+            used.add(k)
+    return pair
 
 
 def write_check(event_dir: Path, check: dict) -> Path:

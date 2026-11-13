@@ -369,10 +369,13 @@ def test_evo_race_sessions_keep_their_promises(sevo):
         for b in s.blocks:
             for c in b.series or b.channels:
                 assert np.min(c.t_s) >= 0 and np.max(c.t_s) <= s.duration_s + 1e-6, (s.sid, b.key, c.key)
+        if "battery" not in _blocks(s):                          # 배터리 전력이 없는 구간 (BMS 만 켜져 있던 동안 등) 은 에너지를 대 볼 것이 없다
+            continue
         p = _ch(s, "battery", "power_kw")
         ok = np.isfinite(p.v)
         assert s.stats["net_wh"] == pytest.approx(np.trapezoid(p.v[ok], p.t_s[ok]) / 3.6, abs=max(2.0, 0.01 * abs(s.stats["net_wh"])))
-        assert "clock_mismatch" not in _codes(s), s.sid
+        if s.discipline != cb.UNCLASSIFIED:                      # 사람이 적은 미분류(짧은 구간)는 엔진이 어긋남 경고를 붙일 수 있다 — 그 경고가 답이다
+            assert "clock_mismatch" not in _codes(s), s.sid
     for s in (s for s in sevo if s.split_by == "gps"):
         assert "에너지미터" in _blocks(s)["battery"].device, s.sid
         assert not {m.block for m in s.missing} & set(_blocks(s)), s.sid                         # 있는 데이터를 없다고도 적지 않는다
@@ -387,7 +390,9 @@ def test_evo_race_sessions_keep_their_promises(sevo):
 @need_evo
 @E.need
 def test_evo_race_golden(sevo):
-    timed = [s for s in sevo if s.split_by == "time"]
+    every = [s for s in sevo if s.split_by == "time"]
+    timed = [s for s in every if s.discipline != cb.UNCLASSIFIED]
+    assert len(every) - len(timed) == E["evo_race.unclassified"]
     assert len(timed) == E["evo_race.sessions"] and [s.name for s in timed] == E["evo_race.names"]
     assert all(list(_blocks(s)) == E["evo_race.blocks"] for s in timed)
     s = next(x for x in sevo if x.sid == E["evo_race.endurance_sid"])

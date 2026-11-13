@@ -71,3 +71,11 @@ def test_smoothing_keeps_constants_and_averages_steps():
 def test_reduce_rejects_an_empty_range():
     with pytest.raises(ValueError):
         ser.reduce(np.arange(3.0), np.arange(3.0), 1.0, 1.0, 10)
+
+
+def test_smoothing_with_fewer_samples_than_the_window_does_not_fail():
+    """확대해서 조각에 표본이 몇 개뿐일 때 — 있는 만큼으로 평균한다 (모양이 안 맞는다는 예외가 아니다)."""
+    t = np.arange(0.0, 1.0, 0.1)
+    s = ser.smooth(t, np.arange(10.0), 5.0)
+    assert s.shape == (10,) and np.isfinite(s).all() and s[0] < s[-1]
+    assert np.allclose(ser.smooth(t, np.full(10, 3.0), 5.0), 3.0)

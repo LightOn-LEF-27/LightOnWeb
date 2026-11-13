@@ -91,7 +91,7 @@ def convert_file(src: Path, out_root: Path) -> dict:
     valid = (hdr["magic"] == MAGIC) & (rtype >= 1) & (rtype < len(LOG_TYPE)) & checksum_ok(raw)
 
     # --- BOOT: 레코딩 기준 시각
-    is_boot = rtype == T_BOOT
+    is_boot = valid & (rtype == T_BOOT)              # 체크섬이 깨진 레코드의 종류 칸은 믿지 않는다 (detect 와 같은 기준)
     if is_boot.sum() != 1:
         raise ValueError(f"{src.name}: BOOT 레코드가 {is_boot.sum()}개 (1개여야 함)")
     boot = _payload(raw, is_boot, BOOT_PL)[0]
@@ -194,7 +194,7 @@ def convert_file(src: Path, out_root: Path) -> dict:
 
     by_kind = {LOG_TYPE[t]: int((rtype == t).sum()) for t in range(len(LOG_TYPE)) if (rtype == t).any()}
     invalid = int((~valid).sum())
-    duration_s = float((t_rel.max() - t_rel.min()) / 1000)
+    duration_s = float((t_rel[valid].max() - t_rel[valid].min()) / 1000)      # 깨진 레코드의 시각 칸은 뺀다
 
     meta = {
         "car": "LEF-25evo",
@@ -217,7 +217,7 @@ def convert_file(src: Path, out_root: Path) -> dict:
             "t_abs_start": start_kst.isoformat(),
             "duration_s": duration_s,
             "boot_ts_ms": boot_ts,                  # 전원이 들어온 뒤 BOOT 레코드까지 (ms). t_rel_ms = ts - boot_ts
-            "last_ts_ms": int(ts.max()),            # 전원이 들어온 뒤 마지막 레코드까지 → 같은 전원을 쓰는 장비와 짝지을 때 쓴다
+            "last_ts_ms": int(ts[valid].max()),     # 전원이 들어온 뒤 마지막 레코드까지 → 같은 전원을 쓰는 장비와 짝지을 때 쓴다 (체크섬이 맞는 레코드만)
             "filename_time_match": filename_match,
             "ts_monotonic": bool((d >= 0).all()),
             "max_gap_ms": int(d.max()) if len(d) else 0,

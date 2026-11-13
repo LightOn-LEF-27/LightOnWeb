@@ -424,6 +424,11 @@ def _run(job: dict, paths: list[Path], hints, data_root: Path, store_root: Path,
         return
     if _ensure_notes(event_dir, h, job["job_id"]):               # 3. 새 이벤트의 기본 notes
         job["warnings"].append(f"새 이벤트 {h['event_id']} — {NOTES_NAME} 를 기본값으로 만들었다 (세션 이름 · 드라이버는 손으로)")
+    undated = [f["name"] for f, _ in placed if f["kind"] == "lef26_logger_csv"]
+    if undated and not h.get("date"):                            # 줄마다 시각만 있는 형식 — 날짜는 파일 이름에서 온다 (여러 날짜의 이벤트면 틀릴 수 있다)
+        day = EVENT_RE.match(h["event_id"])["date"]
+        job["warnings"].append(f"{' · '.join(undated)}: 날짜가 없는 형식이라 {day} 의 기록으로 넣었다 — 다른 날의 기록이면 "
+                               f"놓인 파일을 지우고 hints 의 date 를 줘서 다시 올릴 것 (시각이 하루 단위로 틀어진다)")
 
     steps = _steps(h["car"], {f["kind"] for f, _ in placed}, event_dir, data_root)    # 4. 엔진 명령 순서
     for k, (name, fn) in enumerate(steps):
