@@ -51,7 +51,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from . import em_laps, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
+from . import em_laps, events as evmod, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
 from .catalog import (HAVE, NONE, SEEK, WARN, Channel, CodeRef, DataBlock, Export, FileRef, LapColumn, Missing, Session, code_html,
                       size_text, to_markdown, write_session)
 
@@ -73,6 +73,7 @@ FULL_THROTTLE_PCT = 95.0    # 풀스로틀로 보는 값
 EM_REFINE_MIN_S = 1.0       # 에너지미터 전력에 다시 맞출 때는 이보다 크게 어긋난 것만 옮긴다 — 백업 로거 시각이 1 s 단위이고,
                             #   에너지미터 쪽도 긴 레코딩에서는 구간마다 조금 벗어난다 (그보다 작은 차이를 쫓지 않는다)
 ACCEL_LEAD_S = 10.0         # 가속 출발(정지)은 주행 구간 시작(10 km/h 를 넘는 순간)보다 앞이다 — 그만큼 앞까지 본다
+GYMKHANA = "짐카나"         # 콘으로 만든 짧은 코스 — 정지에서 출발해 같은 자리로 돌아와 선다 (2026-11-14 트랙데이, events.gymkhana_runs)
 UNCLASSIFIED = "미분류"      # 랩 · 종목을 알아보지 못했지만 달린 주행 — 세션으로 넣고 '확인 필요' 경고 (사람이 [[session]] 으로 정하거나 skip)
 UNCLASSIFIED_COVER = 0.4    # 이벤트 코스(기준 랩의 주행선)의 이 비율 이상을 지났거나 — 피트 이동은 코스의 일부만 지난다
 UNCLASSIFIED_KMH = 60.0     #   최고 속도가 이 값 이상이면 미분류로 넣는다 (짧아도 빨리 달린 것 — 놓친 가속 시도 등)
@@ -1122,11 +1123,13 @@ def _can_battery_block(r: _Run, stream: pd.DataFrame, oc: pd.DataFrame | None) -
 def _auto_sessions(ctx: "_GpsCtx") -> tuple[dict[tuple, dict], list[dict]]:
     """이름을 적지 않은 주행 구간 → (자동 이름, 뺀 주행).
 
-    랩이 있으면 트랙, 가속 · 스키드패드 표에 있으면 그 종목. 셋 다 아니면 코스를 얼마나 지났나(`_course_cover`)와 최고 속도로 가른다 —
+    랩이 있으면 트랙, 가속 표에 있으면 가속, 원을 SKID_LAPS_MIN 바퀴 넘게 돌았으면 스키드패드, 짐카나 표(정지 → 같은 자리 정지)에 있고
+    이벤트 코스를 UNCLASSIFIED_COVER 만큼 지나지 않았으면 짐카나 (코스를 많이 지났으면 코스 한 바퀴를 피트에서 피트로 돈 것일 수 있어 미분류 — 짐카나 기록은 메모로).
+    그 밖에 원을 돈 것이 있으면 스키드패드. 다 아니면 코스를 얼마나 지났나(`_course_cover`)와 최고 속도로 가른다 —
     UNCLASSIFIED_COVER 이상 지났거나 UNCLASSIFIED_KMH 이상이면 미분류(확인 필요), 아니면 피트 이동 등으로 보고 뺀다 (뺀 것은 돌려줘 알린다).
     """
     runs, derived = ctx.runs, ctx.derived
-    accel, skid = _read(derived / "accel_runs.csv"), _read(derived / "skidpad_laps.csv")
+    accel, skid, gym = _read(derived / "accel_runs.csv"), _read(derived / "skidpad_laps.csv"), _read(derived / "gymkhana_runs.csv")
     if accel is not None and "direction" in accel:
         accel = accel[accel["direction"] == "forward"]                  # 반대 방향(돌아오는 길)은 가속 시도가 아니다
     found, dropped = {}, []
@@ -1137,7 +1140,11 @@ def _auto_sessions(ctx: "_GpsCtx") -> tuple[dict[tuple, dict], list[dict]]:
             kind = "트랙"
         elif accel is not None and ((accel["recording_id"] == rec) & (accel["t_start_s"] >= a - ACCEL_LEAD_S) & (accel["t_start_s"] <= b)).any():
             kind = "가속"
-        elif skid is not None and ((skid["recording_id"] == rec) & (skid["run"] == n)).any():
+        elif (circles := int(((skid["recording_id"] == rec) & (skid["run"] == n)).sum()) if skid is not None else 0) >= evmod.SKID_LAPS_MIN:
+            kind = "스키드패드"
+        elif _gym_rows(gym, rec, a, b) and ((cover := _course_cover(ctx, rec, a, b)) is None or cover < UNCLASSIFIED_COVER):
+            kind = GYMKHANA
+        elif circles:
             kind = "스키드패드"
         else:
             cover = _course_cover(ctx, rec, a, b)
@@ -1150,6 +1157,14 @@ def _auto_sessions(ctx: "_GpsCtx") -> tuple[dict[tuple, dict], list[dict]]:
             kind, info["unclassified"] = UNCLASSIFIED, facts
         found[(rec, n)] = {**info, "discipline": kind}
     return found, dropped
+
+
+def _gym_rows(gym: pd.DataFrame | None, rec: str, a: float, b: float) -> list[dict]:
+    """그 주행 구간(GPS 레코딩 시간 a ~ b) 안의 짐카나 (derived/gymkhana_runs.csv — 정지 → 같은 자리 정지)."""
+    if gym is None:
+        return []
+    m = (gym["recording_id"] == rec) & (gym["t_start_s"] >= a - evmod.GYM_STOP_S - lapmod.MERGE_STOP_S) & (gym["t_end_s"] <= b + lapmod.MERGE_STOP_S)
+    return gym[m].to_dict("records")
 
 
 def _run_facts(f: dict) -> str:
@@ -1197,7 +1212,8 @@ def _course_cover(ctx: "_GpsCtx", rec: str, a: float, b: float) -> float | None:
 
 
 def _segment_notes(info: dict, derived: Path, r: _Run) -> list[str]:
-    """가속 · 스키드패드 세션에는 종목 결과를 한 줄씩 (derived/accel_runs.csv · skidpad_laps.csv 의 값)."""
+    """가속 · 스키드패드 · 짐카나 세션에는 종목 결과를 한 줄씩 (derived/accel_runs.csv · skidpad_laps.csv · gymkhana_runs.csv 의 값).
+    짐카나 기록은 트랙 · 가속 · 스키드패드가 아닌 세션(미분류 — 일정표가 종목을 정할 수 있다)에도 붙인다."""
     out = []
     if info.get("discipline") == "가속":
         a = _read(derived / "accel_runs.csv")
@@ -1212,6 +1228,10 @@ def _segment_notes(info: dict, derived: Path, r: _Run) -> list[str]:
         if len(rows):
             for turn, g in rows.groupby("turn"):
                 out.append(f"스키드패드 {dict(left='좌', right='우').get(turn, turn)}회전 — 원 {len(g)}바퀴 · 최속 {g['lap_time_s'].min():.2f} s · 반지름 {g['circle_r_m'].median():.1f} m")
+    if info.get("discipline") not in ("트랙", "가속", "스키드패드"):
+        for x in _gym_rows(_read(derived / "gymkhana_runs.csv"), r.rec, r.t0, r.t1):
+            out.append(f"{GYMKHANA} {x['time_s']:.2f} s — 정지에서 출발 (세션 {x['t_start_s'] - r.t0:.1f} s) ~ 같은 자리에 다시 섬 "
+                       f"(출발 자리와 {x['return_gap_m']:.0f} m) · {x['distance_m']:.0f} m · 최고 {x['v_max_kmh']:.0f} km/h")
     return out
 
 

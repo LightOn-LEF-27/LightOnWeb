@@ -195,6 +195,12 @@ def main(argv: list[str] | None = None) -> None:
         if not skid.empty:
             print(f"  스키드패드 {len(skid)}랩 · 최속 {skid['lap_time_s'].min():.3f} s · "
                   f"횡가속 최대 {skid['lat_acc_g'].max():.2f} g · 평균 반지름 {skid['circle_r_m'].mean():.2f} m")
+        import pandas as pd
+        gym_path = args.event / "derived" / "gymkhana_runs.csv"
+        gym = pd.read_csv(gym_path, encoding="utf-8-sig") if gym_path.exists() and gym_path.stat().st_size > 5 else pd.DataFrame()
+        if not gym.empty:
+            print(f"  짐카나 후보 {len(gym)}회 (정지 → 같은 자리 정지. 피트로 돌아온 트랙 주행도 섞임 - 종목은 세션이 정한다) · "
+                  f"가장 짧은 {gym['time_s'].min():.2f} s")
         from . import plots
         figs = args.event / "derived" / "figures"
         figs.mkdir(exist_ok=True)
