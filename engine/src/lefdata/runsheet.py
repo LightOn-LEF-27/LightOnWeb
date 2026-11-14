@@ -257,7 +257,7 @@ def power_on(rows: list[dict], recordings) -> list[dict]:
     out = []
     ons = sorted({_epoch(r["power_on"]) for r in rows if r["power_on"] is not None})      # 같은 전원 켬을 두 줄에 적었으면 한 번으로
     for device, label in POWER_DEVICES.items():
-        mine = sorted((x.t0, x.rec) for x in recordings if x.device == device)
+        mine = sorted((x.t0, x.rec) for x in recordings if x.device == device and not getattr(x, "boot", ""))
         starts = np.array([s for s, _ in mine])
         if not len(starts) or not ons:
             continue
@@ -278,6 +278,64 @@ def power_on(rows: list[dict], recordings) -> list[dict]:
         if d:
             out.append({"device": device, "label": label, "pairs": len(d), "device_minus_phone_s": round(float(np.median(d)), 1),
                         "min_s": round(min(d), 1), "max_s": round(max(d), 1), "recordings": per})
+    return out + _boot_power_on(rows, recordings, ons)       # 뒤에 둔다 — 세션 쪽이 장비 시계 차(위)를 먼저 받는다
+
+
+def _boot_power_on(rows: list[dict], recordings, ons: list[float]) -> list[dict]:
+    """켠 순간부터 세는 로거 (새 LEF-26 로그 — RTC 가 켤 때 00:00, `_Rec.boot`) → 전원 주기마다 일정표의 전원 켬 하나.
+
+    시계 차가 주기마다 달라 위의 길(시계 차가 일정)로는 못 짝짓는다. 대신 순서를 지켜 짝짓는다 (점수 합이 가장 큰 것):
+    - 그 주기가 다음 전원 켬보다 늦게까지 기록했으면 그 짝은 안 된다 (그 사이 전원을 끄지 않았다는 뜻)
+    - 그 전원 켬 ~ 다음 전원 켬 사이의 일정표 주행(출발 ~ 도착)이 그 주기의 레코딩(전원 켬 + 켠 뒤 경과)과 겹치면 +1, 안 겹치면 −1
+    점수가 같으면 이른 전원 켬. 레코딩마다 그 전원 켬 시각(폰)을 돌려준다.
+    """
+    out = []
+    for device, label in POWER_DEVICES.items():
+        boots: dict[str, list] = {}
+        for x in recordings:
+            if x.device == device and getattr(x, "boot", ""):
+                boots.setdefault(x.boot, []).append(x)
+        if not boots:
+            continue
+        keys = sorted(boots)
+        spans = [[(x.rec, float(x.t0), float(x.t1)) for x in sorted(boots[k], key=lambda x: x.t0)] for k in keys]
+        nxt = ons[1:] + [float("inf")]
+        drives = [[(_epoch(r["out"]), _epoch(r["in"])) for r in rows if r["out"] is not None and r["in"] is not None
+                   and p <= _epoch(r["out"]) < q] for p, q in zip(ons, nxt)]
+
+        def score(j: int, i: int) -> float | None:
+            if ons[i] + max(t1 for _, _, t1 in spans[j]) > nxt[i] + POWER_ON_TOL_S:
+                return None
+            got = 1.0 + sum(1.0 if any(ons[i] + t0 < b + POWER_ON_TOL_S and ons[i] + t1 > a - POWER_ON_TOL_S for _, t0, t1 in spans[j]) else -1.0
+                            for a, b in drives[i])
+            return got if got > 0 else None
+
+        m, n = len(keys), len(ons)
+        sc = [[score(j, i) for i in range(n)] for j in range(m)]
+        best = [[0.0] * (n + 1) for _ in range(m + 1)]
+        for j in range(1, m + 1):
+            for i in range(1, n + 1):
+                take = best[j - 1][i - 1] + sc[j - 1][i - 1] if sc[j - 1][i - 1] is not None else -1.0
+                best[j][i] = max(best[j - 1][i], best[j][i - 1], take)
+        pairs, j, i = [], m, n
+        while j > 0 and i > 0:
+            if best[j][i] == best[j][i - 1]:                    # 이 전원 켬 없이도 같다 → 앞의 전원 켬과 짝 (같으면 이른 것)
+                i -= 1
+            elif sc[j - 1][i - 1] is not None and best[j][i] == best[j - 1][i - 1] + sc[j - 1][i - 1]:
+                pairs.append((j - 1, i - 1))
+                j, i = j - 1, i - 1
+            else:
+                j -= 1
+        pairs.reverse()
+        per, said = {}, []
+        for j, i in pairs:
+            on = pd.Timestamp(ons[i], unit="s", tz="UTC").tz_convert(TZ)
+            per.update({rec: on.isoformat() for rec, _, _ in spans[j]})
+            said.append({"boot": keys[j], "power_on": _clock(on), "recordings": [rec for rec, _, _ in spans[j]]})
+        paired = {j for j, _ in pairs}
+        out.append({"device": device, "label": label, "pairs": len(pairs), "boot_relative": True,
+                    "device_minus_phone_s": None, "min_s": None, "max_s": None,
+                    "power_on_by_recording": per, "boots": said, "unpaired_boots": [keys[j] for j in range(m) if j not in paired]})
     return out
 
 
@@ -297,7 +355,12 @@ def write_check(event_dir: Path, check: dict) -> Path:
     rows = [{"kind": "짝", **m} for m in check["matched"]] + [{"kind": "일정표에만", **r} for r in check["unmatched_rows"]]
     rows += [{"kind": "시각 구간으로 만듦", **s} for s in check.get("timed_sessions", [])]
     rows += [{"kind": "세션에만", **s} for s in check["unplanned_sessions"]]
-    rows += [{"kind": "전원 켬", **{k: v for k, v in p.items() if k != "recordings"}} for p in check["power_on"]]
+    for p in check["power_on"]:
+        row = {k: v for k, v in p.items() if k not in ("recordings", "power_on_by_recording", "boots", "unpaired_boots")}
+        if p.get("boot_relative"):
+            row["note"] = " · ".join([f"{b['boot']} ← 전원 켬 {b['power_on']}" for b in p["boots"]]
+                                     + [f"짝 없는 전원 주기 {k}" for k in p["unpaired_boots"]])
+        rows.append({"kind": "전원 켬", **row})
     rows += [{"kind": "문제", "note": p} for p in check["problems"]]
     out = Path(event_dir) / "derived" / "runsheet_check.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -314,7 +377,10 @@ def check_text(check: dict) -> list[str]:
               + (r.get("why") or "장비가 안 켜졌거나 GPS 가 없는 주행") for r in check["unmatched_rows"]]
     lines += [f"일정표에 없는 주행: {s['session_start']} {s['session']}" for s in check["unplanned_sessions"]]
     lines += [f"전원 켬 ↔ {p['label']} 기록 시작: 장비 시계 − 폰 {p['device_minus_phone_s']:+.1f} s ({p['pairs']}쌍, {p['min_s']:+.1f} ~ {p['max_s']:+.1f})"
-              for p in check["power_on"]]
+              for p in check["power_on"] if not p.get("boot_relative")]
+    lines += [f"전원 켬 ↔ {p['label']} 전원 주기 (켠 순간부터 세는 시계): 짝 {p['pairs']}개"
+              + (f", 짝 없는 주기 {len(p['unpaired_boots'])}개 ({', '.join(p['unpaired_boots'])}) — 그 기록은 세션에 붙지 않음" if p["unpaired_boots"] else "")
+              for p in check["power_on"] if p.get("boot_relative")]
     mism = [m for m in check["matched"] if m["discipline_data"] in AUTO_KINDS and kind_of(m["discipline"]) not in (None, m["discipline_data"])]
     lines += [f"종목이 다름: R{m['run_no']} 일정표 '{m['discipline']}' · 데이터 '{m['discipline_data']}' ({m['where']})" for m in mism]
     return lines + list(check["problems"])

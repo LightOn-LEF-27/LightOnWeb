@@ -38,6 +38,7 @@ GPS 가 없으니 랩 · 코스가 없고, 그 시각에 기록이 있는 장비
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import json
 import os
@@ -531,6 +532,13 @@ def _gather(r: _Run, logs: list, pick) -> tuple[np.ndarray, np.ndarray, list[str
     return t[o], v[o], used
 
 
+def _can_times(log) -> tuple[np.ndarray, np.ndarray]:
+    """로거의 모터 · BMS 표본 시각 (로거 경과시간) — IMU 가 없는 로그에서 '기록한 동안' 을 잴 때."""
+    parts = [df["t_s"].to_numpy(float) for df in log.motor.values()] + [log.bms["t_s"].to_numpy(float)]
+    t = np.sort(np.concatenate(parts)) if parts else np.zeros(0)
+    return t, np.ones(len(t))
+
+
 def _motor_signal(name: str):
     def pick(log):
         df = log.motor.get(name)
@@ -569,11 +577,13 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
     """
     if not logs:
         return []
-    imu_t, _, used = _gather(r, logs, lambda log: (log.imu_t, np.ones(len(log.imu_t))))
+    rec_t, _, used = _gather(r, logs, lambda log: (log.imu_t, np.ones(len(log.imu_t))))     # 로거가 기록한 동안 = IMU 표본 (200 Hz)
+    if not used:                                                    # 새 로그 (CAN 만 — IMU 줄이 없다): 모터 · BMS 표본으로
+        rec_t, _, used = _gather(r, logs, _can_times)
     if not used:
         return []
     dur = r.t1 - r.t0
-    gaps = [[round(float(a), 3), round(float(b), 3)] for a, b in zip(np.concatenate([[0.0], imu_t]), np.concatenate([imu_t, [dur]])) if b - a > 2.0]
+    gaps = [[round(float(a), 3), round(float(b), 3)] for a, b in zip(np.concatenate([[0.0], rec_t]), np.concatenate([rec_t, [dur]])) if b - a > 2.0]
     cover = 1 - sum(b - a for a, b in gaps) / dur
     clock = f"{how} 로거 레코딩 {', '.join(used)} · 이 세션의 {cover * 100:.0f} % 를 기록"
     where = r.where("normalized/<로거 레코딩>/")
@@ -1053,7 +1063,7 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
     facts = [f"{c.label} {np.nanmin(c.v):.0f} ~ {np.nanmax(c.v):.0f} {c.unit}" for c in series if c.key in ("t_igbt_c", "t_motor_c", "vdc_v")]
     facts.append(f"컨트롤러 오류: {', '.join(errors) if errors else '없음'} · 경고: {', '.join(warnings) if warnings else '없음'}")
     checks = []
-    if "rpm" in keys:
+    if "rpm" in keys and getattr(r, "gps", None) is not None:                 # 시각 구간(_Window)에는 GPS 가 없다
         lag, _, c = best_lag(sig["rpm"][0], np.abs(sig["rpm"][1]), r.ts, r.gps["speed_kmh"].to_numpy(float))
         if np.isfinite(c):
             checks.append(f"회전수 ↔ GPS 속도 — GPS 를 {lag:+.1f} s 옮길 때 가장 잘 맞음 (+ = GPS 가 늦음, 상관 {c:.2f}). "
@@ -1213,7 +1223,8 @@ STM32_CLOCK = {"에너지미터": "energymeter", "Monolith": "monolith"}     # 2
 CLOCK_LABEL = {"energymeter": "에너지미터", "orion": "Orion BMS Connect", "lef26_logger": "LEF-26 차량 로거", "monolith": "Monolith",
                "gopro": "GoPro GPS"}
 TIMED_DEVICES = ("energymeter", "stm32", "orion", "lef26_logger")     # 시각 구간 세션에 붙이는 장비
-GPS_DEVICES = ("monolith", "gopro")                                   # 아직 붙이지 않는다 (겹치면 메모로 알린다)
+GPS_DEVICES = ("monolith", "gopro")                                   # GPS 는 구간을 덮을 때만 붙인다 (랩 · 코스). 덜 덮으면 메모로 알린다
+CAN_DEVICES = ("monolith",)                                           # 차량 CAN 을 받은 장비 — 그 CAN(모터 · 가속페달)은 시각 구간에도 붙인다 (lefdata evo-can)
 ORION_CHANNELS = (("soc_pct", "SOC", "%", 1), ("cell_min_v", "셀 최저 전압", "V", 3), ("cell_max_v", "셀 최고 전압", "V", 3),
                   ("temp_max_c", "셀 최고 온도", "°C", 0), ("temp_min_c", "셀 최저 온도", "°C", 0), ("dcl_a", "방전 전류 한계 (DCL)", "A", 0))
 DCL_REASONS = (("dcl_limited_soc", "SOC"), ("dcl_limited_temp", "온도"), ("dcl_limited_cell_v", "셀 전압"),
@@ -1225,6 +1236,8 @@ class _Rec:
     """변환된 레코딩 하나 — 장비, 그 t_abs 가 어느 시계인가, 그 시계로 본 시작 · 끝 (UTC 초).
 
     anchor = 시계를 맞춰 둔 다른 레코딩 (25Evo STM32 → 그 에너지미터 · Monolith 레코딩). 그 레코딩의 시계 차를 따로 적었으면 따른다.
+    boot = 켠 순간부터 세는 레코딩의 전원 주기 ("<원본 파일>#<주기>", 새 LEF-26 로그 — RTC 가 켤 때 00:00). 그때 t0 · t1 은
+    켠 순간부터의 초이고, 기준 시계로 옮기는 값은 그 전원 주기의 전원 켬 시각이다 (레코딩마다 적은 것만 — 이벤트 하나의 시계 차는 안 맞는다).
     """
     rec: str
     dir: Path
@@ -1234,6 +1247,7 @@ class _Rec:
     t0: float
     t1: float
     anchor: str = ""
+    boot: str = ""
 
 
 def _recordings(event_dir: Path) -> list[_Rec]:
@@ -1244,7 +1258,13 @@ def _recordings(event_dir: Path) -> list[_Rec]:
         logger = meta.get("source", {}).get("logger", "")
         device = next((d for key, d in DEVICES if logger.startswith(key)), None)
         tm = meta.get("time", {})
-        if device is None or not tm.get("t_abs_start"):
+        if device is None:
+            continue
+        if not tm.get("t_abs_start"):
+            since, dur = tm.get("since_boot_s"), tm.get("duration_s")
+            if device == "lef26_logger" and since is not None and dur is not None:     # 새 LEF-26 로그 — 켠 순간부터의 초
+                boot = f"{meta.get('source', {}).get('file', path.parent.name)}#{int(tm.get('power_cycle') or 0):03d}"
+                out.append(_Rec(path.parent.name, path.parent, meta, device, device, float(since), float(since) + float(dur), boot=boot))
             continue
         t0 = pd.Timestamp(tm["t_abs_start"]).timestamp()
         span = tm.get("duration_s")
@@ -1271,22 +1291,41 @@ class _Clocks:
         self.table = notes.get("clocks", {})
 
     def _own(self, x: _Rec) -> float | None:
-        """레코딩마다 따로 적은 값 (그 레코딩, 아니면 시계를 맞춰 둔 레코딩의 것)."""
+        """레코딩마다 따로 적은 값 (그 레코딩, 아니면 시계를 맞춰 둔 레코딩의 것).
+
+        켠 순간부터 세는 레코딩(x.boot)은 그 전원 주기의 전원 켬 시각 (기준 시계, "2026-11-14T10:02:11" 꼴) — 더할 초가 그 시각의 UTC 초다.
+        """
         per = self.table.get(x.clock, {}).get("recordings", {})
-        return next((float(per[k]) for k in (x.rec, x.anchor) if k and k in per), None)
+        v = next((per[k] for k in (x.rec, x.anchor) if k and k in per), None)
+        if v is None:
+            return None
+        if isinstance(v, str):
+            if not x.boot:
+                raise ValueError(f"{NOTES_NAME}: [clocks.{x.clock}.recordings] 의 {x.rec} 는 더할 초(숫자)로 적는다 "
+                                 "— 시각(전원 켬)으로 적는 것은 켠 순간부터 세는 LEF-26 로그 레코딩뿐")
+            return _when(v)
+        return float(v)
 
     def known(self, x: _Rec) -> bool:
+        if x.boot:                                           # 시계 차가 전원 주기마다 다르다 — 이벤트 하나의 offset_s 는 쓰지 않는다
+            return self._own(x) is not None
         return x.clock == self.ref or "offset_s" in self.table.get(x.clock, {}) or self._own(x) is not None
 
     def offset(self, x: _Rec) -> float:
         own = self._own(x)
         if own is not None:
             return own
+        if x.boot:
+            raise ValueError(f"{NOTES_NAME}: 레코딩 {x.rec} 의 전원 켬 시각을 모른다 — 일정표의 전원 켬 · [clocks.{x.clock}.recordings]")
         return 0.0 if x.clock == self.ref else float(self.table[x.clock]["offset_s"])
 
     def text(self, x: _Rec) -> str:
         """확인 글 — 이 레코딩의 시각을 기준 시계로 어떻게 옮겼나."""
         name, off = CLOCK_LABEL.get(x.clock, x.clock), self.offset(x)
+        if x.boot:
+            on = pd.Timestamp(off, unit="s", tz="UTC").tz_convert(TZ)
+            basis = self.table.get(x.clock, {}).get("boot_basis", "")
+            return f"{name} — 켠 순간부터의 시각 + 전원 켬 {on:%H:%M:%S} ({self.label})" + (f" — {basis}" if basis else "")
         if x.clock == self.ref and off == 0.0:
             return f"{name} 시계가 기준 시계"
         basis = self.table.get(x.clock, {}).get("basis", "")
@@ -1473,10 +1512,26 @@ def _add_check(b: DataBlock, said: tuple[str, dict | None]) -> None:
         b.findings.append(said[1])
 
 
+def _window_can(w: _Window, parts: list[tuple[_Rec, float]], name: str) -> pd.DataFrame | None:
+    """CAN 을 받은 장비 레코딩들의 CAN 표 하나 → 시각 구간만 (t_s = 기준 시계로 옮긴 세션 시간). 없으면 None."""
+    got = []
+    for x, off in parts:
+        path = x.dir / f"{name}.parquet"
+        if not path.exists():
+            continue
+        d = pd.read_parquet(path)
+        d = d[d["t_abs"].notna()]
+        d = d.assign(t_s=_epoch_s(d["t_abs"]) + off - w.t0_abs)
+        d = d[(d["t_s"] >= 0) & (d["t_s"] <= w.t1 - w.t0)]
+        if len(d):
+            got.append(d)
+    return pd.concat(got, ignore_index=True).sort_values("t_s", kind="stable").reset_index(drop=True) if got else None
+
+
 def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool = True) -> tuple[list[DataBlock], dict]:
     """시각 구간에 기록이 있는 장비 → 블록들 · 세션 요약 값.
 
-    같은 것을 두 장비가 주면 더 촘촘한 쪽을 쓴다 (배터리: 에너지미터 > STM32, BMS: Orion > STM32). 에너지미터가 있으면
+    같은 것을 두 장비가 주면 더 촘촘한 쪽을 쓴다 (배터리: 에너지미터 > STM32, BMS: Orion > STM32, 모터: Monolith 가 받은 CAN > STM32). 에너지미터가 있으면
     다른 장비의 같은 물리량(전력 · 전류 · 전압)을 그것과 대 봐서 시계가 맞는지 블록의 '확인' 에 적는다.
     """
     hit = []
@@ -1502,9 +1557,21 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
             blocks.append(em)
             stats.update(st)
     orion, orion_ref = _orion_block(w, of("orion"), f"Connect 시각을 기준 시계로 옮김 — {said(of('orion'))}") if of("orion") else (None, None)
+    can_motor = can_pedal = None
+    mono = [(x, clocks.offset(x)) for x in recs if x.device in CAN_DEVICES and clocks.known(x)
+            and x.t0 + clocks.offset(x) < w.t1_abs and x.t1 + clocks.offset(x) > w.t0_abs]
+    if mono:                                                           # Monolith 가 받은 차량 CAN (모터 컨트롤러 · 가속페달)
+        wm = copy.copy(w)
+        wm.rec = mono[0][0].rec
+        bam, apps, oc = (_window_can(w, mono, k) for k in ("bamocar", "apps", "orion_can"))
+        can_motor = _can_motor_block(wm, bam, oc) if bam is not None else None
+        can_pedal = _pedal_block(wm, apps, em_ref) if apps is not None and len(apps) else None
+        for b in (can_motor, can_pedal):
+            if b is not None:
+                b.checks.insert(0, f"Monolith 가 받은 차량 CAN — Monolith 시각을 기준 시계로 옮김 ({said(mono)})")
     part = of("stm32")
     if part:
-        skip = tuple(k for k, b in (("battery", em), ("bms", orion)) if b is not None)
+        skip = tuple(k for k, b in (("battery", em), ("bms", orion), ("motor", can_motor)) if b is not None)
         made = _stm32_make(w, {x.rec: off for x, off in part},
                            f"백업 로거 시각(lefdata evo-stm32 가 다른 장비에 맞춰 둔 것)을 기준 시계로 옮김 — {said(part)}", skip=skip, ref=em_ref)
         bat = next((b for b in made if b.key == "battery"), None)
@@ -1513,16 +1580,26 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
             ok = np.isfinite(p.v)
             stats.update(net_wh=round(float(np.trapezoid(p.v[ok], p.t_s[ok]) / 3.6)), i_max_a=round(float(np.nanmax(i.v))))
         blocks += made
+    if can_motor is not None:
+        if em_ref is not None and any(c.key == "vdc_v" for c in can_motor.series):
+            vdc = next(c for c in can_motor.series if c.key == "vdc_v")
+            _add_check(can_motor, _agree(vdc.t_s, vdc.v, em_ref["t"], em_ref["volt"], "stm32", "모터 컨트롤러의 DC 버스 전압을 에너지미터 전압과 대 봄"))
+        blocks.append(can_motor)
     if orion is not None:
         if em_ref is not None and orion_ref is not None:
             _add_check(orion, _agree(orion_ref["t"], orion_ref["amp"], em_ref["t"], em_ref["amp"], "orion",
                                      "Orion 팩 전류를 에너지미터 전류와 대 봄"))
         blocks.append(orion)
+    if can_pedal is not None:
+        blocks.append(can_pedal)
     part = of("lef26_logger")
     if part:
         logs = [lef26_laps.read_logger(x.dir, lef26_clock.ClockMap(np.array([0.0, x.t1 - x.t0]), np.array([x.t0 + off, x.t1 + off]), 1.0, 1.0),
                                        np.zeros(0)) for x, off in part]
-        how = f"로거 시각(변환기가 바로잡은 RTC 시각 t_abs)을 기준 시계로 옮김 — {said(part)}."
+        ways = [w_ for w_, b in (("로거 시각(변환기가 바로잡은 RTC 시각 t_abs)을 기준 시계로 옮김", False),
+                                 ("로거가 켜진 뒤의 시각(새 로그 — RTC 가 켤 때 00:00)에 전원 켬 시각을 더해 기준 시계로 옮김", True))
+                if any(bool(x.boot) == b for x, _ in part)]
+        how = f"{' · '.join(ways)} — {said(part)}."
         made = _logger_blocks(w, logs, how)
         imu = _logger_imu_block(w, logs, how)
         made += [imu] if imu is not None else []
@@ -1695,8 +1772,12 @@ def _runsheet_timed(event_dir: Path, notes: dict, made: dict, ctx: "_GpsCtx | No
     ev = notes.get("event", {})
     recs = _recordings(event_dir)
     table = {k: dict(v) for k, v in notes.get("clocks", {}).items()} if ev.get("clock") == RUNSHEET_CLOCK else {}
-    for pw in check["power_on"]:
+    for pw in check["power_on"]:                                        # 장비 시계 차(일정한 것)가 앞, 켠 순간부터 세는 로거가 뒤 (runsheet.power_on)
         own = table.setdefault(pw["device"], {})
+        if pw.get("boot_relative"):                                     # 레코딩마다 그 전원 주기의 전원 켬 — 사람이 적은 레코딩은 그대로
+            own["recordings"] = {**pw["power_on_by_recording"], **own.get("recordings", {})}
+            own.setdefault("boot_basis", f"일정표의 전원 켬 ↔ 로거 전원 주기 {pw['pairs']}쌍 (순서대로 · 그 사이 주행과 겹치는 짝)")
+            continue
         if "offset_s" in own or own.get("recordings"):                  # 사람이 적은 값이 먼저
             continue
         own.update(offset_s=-pw["device_minus_phone_s"], recordings={k: -v for k, v in pw["recordings"].items()},

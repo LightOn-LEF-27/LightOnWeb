@@ -32,6 +32,18 @@
     - 로거가 찍은 그대로의 경과시간은 frames.t_log_ms 에, 원문은 frames.t_raw 에 남는다
     - 바로잡지 않는 것: `gps_pps` 의 초 안 톱니(0~70 ms), `mixed` 레코딩(도중에 바뀜), 기준점 시각 자체의 오차
 
+시계 모델 v3 (2026-11-14, 26팀 새 펌웨어 — 11-12 시험 로그)
+    - SYSTEM 줄이 `LOG ON,…` (기록 켬) · `LOG OFF` · `STAT,<누적 CAN 프레임>,…` (1 초마다). `CONFIG ON` · `RTC-UTC SYNC` 은 없다.
+      `LOG ON` 이나 `STAT` 이 있는 레코딩만 아래처럼 읽는다 (8월 로그에는 하나도 없다 — 8월 변환 결과는 그대로)
+    - 레코딩 = `LOG ON` 부터 다음 `LOG ON` 까지. 전원을 끄지 않고 기록만 껐다 켠 것이라 RTC 는 이어진다
+    - 전원 주기 = STAT 누적값이 줄었거나 RTC 가 뒤로 간 곳에서 새로 센다. STAT 누적값은 부팅부터 센 CAN 프레임 수라 시각과 직선이다
+      (시험 로그에서 기록 구간 내내 직선이고, 0 이 되는 RTC 가 00:00 바로 뒤였다) → **RTC 는 전원을 켤 때 00:00 에서 시작한다** `[추정 — 로그 하나]`
+    - 그래서 GPS 가 RTC 를 맞추지 않으면 절대 시각이 없다 → t_abs 를 비우고, meta 의 time.since_boot_s (켠 순간 → 레코딩 첫 줄, 참 초) 와
+      power_cycle 을 남긴다. 참 시각 = 일정표의 전원 켬 + since_boot_s (`lefdata sessions` 가 전원 켬과 짝지어 옮긴다)
+    - 시계 속도 f: RTC 가 혼자 돌면 BAMOCAR 주기 프레임(0x30 실제 속도, 정격 10 ms)의 로거 간격으로 잰다 (f = 잰 간격 ÷ 정격 간격).
+      레코딩이 짧아 못 재면 같은 파일의 새 형식 레코딩을 모아 잰다. 그래도 못 재면 F_PRIOR_LOG_ON
+      (8월의 '7 % 느림' 이 아니다 — RTC 가 크리스털로 바뀐 것으로 보인다 `[추정]`)
+
 CAN 프레임 분류 (2026-10-01)
     - 펌웨어는 표준 ID 칸만 적는다. 확장 ID 프레임은 **직전 프레임의 ID 로 찍혀 있다** → 내용으로 가린다
     - Orion 써미스터 확장 모듈의 프레임(0x1839F380 · 0x1838F380, 그리고 표준 ID 0x80)은 `thermistor` 표로,
@@ -75,8 +87,11 @@ MOTOR_REGS = {                          # RegID → (신호 이름, 값 바이�
     0x4A: ("t_igbt_c", 2, "igbt"),                # 모터 컨트롤러(IGBT) 온도. NTC 비선형 → 표로 변환
     0x49: ("t_motor_c", 2, 1.0),                  # 모터 온도. 26팀 데이터 가이드: raw 그대로 ℃
     0x8A: ("vout_raw", 4, 1.0),                   # VOUT = 출력 전압 사용률(독일어 매뉴얼 p28). 4바이트 분해 방식은 미확인
+    0x23: ("id_cmd_a", 2, BAMOCAR_I_A_PER_NUM),   # 자속 전류 지령 (Id ref, 독일어 매뉴얼 p25) — 새 펌웨어 (2026-11)
+    0x28: ("id_act_a", 2, BAMOCAR_I_A_PER_NUM),   # 실제 자속 전류 (Id actual)
 }
 MOTOR_SIGNAL_NAMES = pa.array([v[0] for v in MOTOR_REGS.values()], pa.string())
+NEW_FW_REGS = {0x23, 0x28}              # 새 펌웨어 레코딩에서만 푼다 — 예전 펌웨어 로그에도 이 레지스터 줄이 드물게 섞여 있어, 예전 변환 결과를 바꾸지 않으려고
 # --- 26팀 펌웨어에서 확정한 채널 정의 (main.c 의 snprintf 포맷, MPU9250.c 의 스케일)
 #
 #   IMU  (200 Hz) : acc[0..2], cal_gyro[0..2]
@@ -140,6 +155,20 @@ SYNC_GAP_MIN_S = 0.030      # f_sync 동안 기록이 멈춘 흔적 (약 39 ms)
 SYNC_SPAN_RANGE_S = (4.2, 5.4)
 SYNC_PEAK_HALF_S = 0.03
 SYNC_MIN_SPANS = 10
+
+# --- 시계 모델 v3 (새 펌웨어, 2026-11)
+LOG_ON, LOG_OFF, STAT = "LOG ON", "LOG OFF", "STAT"
+F_PRIOR_LOG_ON = 1.0        # 새 펌웨어에서 시계 속도를 못 쟀을 때 (시험 로그로 잰 값은 1 과 0.2 % 안)
+CAN_PERIOD_REG = 0x30       # 시계 속도를 재는 BAMOCAR 주기 레지스터 (실제 속도)
+CAN_PERIOD_NOMINAL_S = (0.005, 0.01, 0.02, 0.05, 0.1)   # 정격 전송 주기 후보 — 잰 간격에 가장 가까운 것
+CAN_PERIOD_MIN = 500        # 고른 간격이 이만큼 있어야 잰다
+CAN_PERIOD_SHARE = 0.9      # 간격의 이 비율 이상이 가운데값의 ±50 % 안 (빠짐 · 같은 프레임 반복이 많으면 재지 않는다)
+CAN_PERIOD_DEV = 0.12       # 잰 간격이 정격에서 이보다 멀면 재지 않는다
+SHORT_S = 30.0              # 이보다 짧은 새 형식 레코딩은 밀리초 분포로 시계 상태를 가리기 어렵다 — 같은 파일의 것을 모아 본다
+STAT_MIN_SPAN_S = 2.0       # STAT 직선을 그으려면 이만큼 떨어진 줄이 있어야 한다
+STAT_ZERO_RTC_S = (-1.0, 10.0)   # STAT 누적이 0 이 되는 RTC 가 이 안이면 'RTC 가 켤 때 00:00 에서 시작' 으로 본다
+STAT_LAG_S = 2.2            # 켠 순간 → STAT 이 세기 시작한 순간 (시험 로그로 잰 값). RTC 가 00:00 부터가 아닐 때만 쓴다
+BOOT_RTC_ZERO_MAX_S = 3600.0     # STAT 이 없을 때: 전원 주기의 첫 RTC 가 이보다 이르면 켤 때 00:00 에서 시작했다고 본다 [추정]
 
 # --- Orion 써미스터 확장 모듈 (https://www.orionbms.com/downloads/misc/thermistor_module_canbus.pdf)
 THERMISTOR_LEGACY_ID = 0x80
@@ -343,6 +372,14 @@ class Recording:
     gap_start: list = field(default_factory=list)
     gap_end: list = field(default_factory=list)
     clock: dict = field(default_factory=dict)   # mode, f, f_basis, pps_share, sync_spans, sync_span_s, rtc_per_tick
+    # 시계 모델 v3 (새 펌웨어)
+    start_event: str = ""                       # 레코딩을 연 줄 (CONFIG ON · LOG ON, 파일 첫머리면 "")
+    new_fw: bool = False                        # LOG ON 으로 열렸거나 STAT 줄이 있는 레코딩
+    stat: list = field(default_factory=list)    # (RTC 초, 누적 CAN 프레임) — 레코딩 안에서 시계가 뛰기 전 것만
+    can_t: list = field(default_factory=list)   # BAMOCAR 주기 레지스터 프레임의 로거 경과시간 (배치마다 배열)
+    power_cycle: int | None = None
+    boot: dict = field(default_factory=dict)    # 그 전원 주기의 부팅 — rtc_s (켠 순간의 RTC 초) · basis · STAT 직선
+    since_boot_s: float | None = None           # 켠 순간 → 레코딩 첫 줄 (참 초)
 
 
 def trust(t_raw: str, via_sync: bool) -> tuple[bool, str]:
@@ -359,9 +396,12 @@ def scan_time_plan(path: Path) -> list[Recording]:
     prev_secs = None
     pending_sync = False
 
+    seen_new = False                                        # 이 파일에서 새 펌웨어 줄(LOG ON · STAT)을 본 적이 있나
     for offset, lines in iter_lines(path):
         b = parse_batch(offset, lines)
         ln = b.line_no
+        seen_new = seen_new or any((m or "").strip() in (LOG_ON, LOG_OFF, STAT) for m in b.msg[b.is_sys])
+        periodic = _periodic_rows(b) if seen_new else None   # 시계 속도를 잴 BAMOCAR 주기 프레임 (새 형식만)
         # 이벤트는 수가 적으므로 파이썬 루프, 데이터는 이벤트 사이 구간을 numpy 로 처리
         ev_idx = np.flatnonzero(b.is_sys)
         bounds = list(ev_idx) + [len(ln)]
@@ -413,6 +453,8 @@ def scan_time_plan(path: Path) -> list[Recording]:
                 cur.gap_end += trel[g].tolist()
                 cur.gap_start += (trel[g] - dt_log[g]).tolist()
                 cur.last_trel = float(trel[-1])
+                if periodic is not None and cur.new_fw and periodic[start:e].any():
+                    cur.can_t.append(trel[periodic[start:e]])
                 cur.late_rows += int((np.round((s - np.floor(s)) * 1000) >= LATE_MS).sum())
                 cur.rows += e - start
                 cur.last_line = int(lines_seg[-1])
@@ -421,11 +463,21 @@ def scan_time_plan(path: Path) -> list[Recording]:
             if e < len(ln):                                 # 이벤트 행
                 msg = (b.msg[e] or "").strip()
                 t = b.t_raw[e].as_py()
-                if msg.startswith("CONFIG ON"):
-                    cur = Recording(index=len(recs), boot_line=int(ln[e]), boot_t_raw=t)
+                if msg.startswith("CONFIG ON") or msg.startswith(LOG_ON):
+                    new = msg.startswith(LOG_ON)
+                    cur = Recording(index=len(recs), boot_line=int(ln[e]), boot_t_raw=t,
+                                    start_event=LOG_ON if new else "CONFIG ON", new_fw=new)
                     recs.append(cur)
                     prev_secs = None
                     pending_sync = False
+                elif msg.startswith(STAT):
+                    if cur is None:
+                        cur = Recording(index=len(recs), boot_line=None, boot_t_raw=None)
+                        recs.append(cur)
+                    cur.new_fw = True
+                    cum = _stat_count(b.lines[e].as_py())
+                    if cum is not None and len(cur.anchors) <= 1:     # 레코딩 안에서 시계가 뛴 뒤의 줄은 직선에 넣지 않는다
+                        cur.stat.append((float(b.secs[e]), cum))
                 elif msg.startswith("RTC-UTC SYNC"):
                     if cur is None:
                         cur = Recording(index=len(recs), boot_line=None, boot_t_raw=None)
@@ -437,9 +489,136 @@ def scan_time_plan(path: Path) -> list[Recording]:
             start = e + 1
 
     for r in recs:
-        build_offsets(r)
         r.clock = measure_clock(r)
+    new = [r for r in recs if r.new_fw]
+    _pool_short(new)
+    for r in recs:
+        if r.new_fw:
+            _trust_v3(r)
+        build_offsets(r)
+    _power_cycles(new)
     return recs
+
+
+def _periodic_rows(b: Batch) -> np.ndarray:
+    """배치에서 BAMOCAR 주기 레지스터(CAN_PERIOD_REG) 프레임 줄 — 바로 윗줄과 같은 줄(같은 프레임을 다시 찍은 것)은 뺀다."""
+    hit = pc.match_substring_regex(b.lines, f"^[^,]*,{MOTOR_ID:x},{CAN_PERIOD_REG},").to_numpy(zero_copy_only=False)
+    idx = np.flatnonzero(hit)
+    if len(idx):
+        prev = idx > 0
+        same = np.zeros(len(idx), dtype=bool)
+        if prev.any():
+            same[prev] = pc.equal(pc.take(b.lines, pa.array(idx[prev])), pc.take(b.lines, pa.array(idx[prev] - 1))).to_numpy(zero_copy_only=False)
+        hit[idx[same]] = False
+    return hit
+
+
+def _stat_count(line: str) -> int | None:
+    """`HH:MM:SS.mmm,SYSTEM,STAT,<누적>,…` → 누적 CAN 프레임 수."""
+    parts = line.split(",")
+    try:
+        return int(parts[3])
+    except (IndexError, ValueError):
+        return None
+
+
+def _period(d: np.ndarray) -> dict | None:
+    """주기 프레임 사이 간격들(로거 초) → 시계 속도. 고르게 오지 않거나 정격 주기 근처가 아니면 None."""
+    d = np.asarray(d, float)
+    if len(d) < CAN_PERIOD_MIN:
+        return None
+    med = float(np.median(d))
+    ok = (d > 0.5 * med) & (d < 1.5 * med)
+    if med <= 0 or ok.sum() < CAN_PERIOD_MIN or ok.mean() < CAN_PERIOD_SHARE:
+        return None
+    period = float(d[ok].mean())                            # 빠진 프레임(2 배 간격)은 뺀 평균 — 밀리초 눈금은 평균에서 사라진다
+    nominal = min(CAN_PERIOD_NOMINAL_S, key=lambda x: abs(period / x - 1))
+    if abs(period / nominal - 1) > CAN_PERIOD_DEV:
+        return None
+    return {"register": f"0x{CAN_PERIOD_REG:X}", "intervals": int(ok.sum()), "period_ms": round(period * 1000, 4),
+            "nominal_ms": round(nominal * 1000, 3), "f": round(period / nominal, 5)}
+
+
+def can_period(t) -> dict | None:
+    """BAMOCAR 주기 프레임의 로거 시각들 → 시계 속도 f = 로거가 잰 간격 ÷ 정격 간격 (시계 모델 v3). 못 재면 None."""
+    return _period(np.diff(np.sort(np.asarray(t, float))))
+
+
+def _intervals(r: Recording) -> np.ndarray:
+    return np.diff(np.concatenate(r.can_t)) if r.can_t else np.zeros(0)
+
+
+def _pool_short(recs: list[Recording]) -> None:
+    """새 형식 레코딩 중 짧아서 시계 상태 · 속도를 못 가린 것 → 같은 파일의 새 형식 레코딩을 모아 본 값 (같은 로거 · 같은 크리스털).
+
+    빌리는 것: 혼자 돈 것은 맞는데 주기 프레임이 모자란 레코딩, SHORT_S 보다 짧아 밀리초 분포가 'mixed' 로 나온 레코딩.
+    """
+    rows = sum(r.rows for r in recs)
+    if not rows:
+        return
+    mode = clock_mode(float(np.clip(1 - (sum(r.late_rows for r in recs) / rows) / FREE_LATE_SHARE, 0, 1)))
+    if mode != "free":
+        return
+    pooled = _period(np.concatenate([_intervals(r) for r in recs]))
+    for r in recs:
+        short = r.last_trel is not None and r.last_trel < SHORT_S
+        if (r.clock.get("mode") == "free" and r.clock.get("f_basis") == "assumed") or (short and r.clock.get("mode") == "mixed"):
+            if pooled is not None:
+                r.clock.update(mode="free", f=pooled["f"], f_basis="can_period_pooled", can_period=pooled)
+            else:
+                r.clock.update(mode="free", f=F_PRIOR_LOG_ON, f_basis="assumed")
+
+
+def _trust_v3(r: Recording) -> None:
+    """새 형식: 켤 때의 RTC 는 00:00 부터라 시각이 아니다. 이벤트 없는 점프도 GPS 가 매초 맞추고 있던 레코딩에서만 믿는다."""
+    for a in r.anchors:
+        if a.kind == "boot":
+            a.reason = "rtc_since_power_on"
+        elif a.kind == "jump" and a.trusted and r.clock.get("mode") != "gps_pps":
+            a.trusted, a.reason = False, "no_gps_sync"
+
+
+def _boot_of(group: list[Recording]) -> dict:
+    """한 전원 주기의 레코딩들 → 켠 순간의 RTC 초 (STAT 직선 · 없으면 첫 줄 시각으로)."""
+    pts = np.array([q for r in group for q in r.stat], dtype=float).reshape(-1, 2)
+    first = next((r.first_secs for r in group if r.first_secs is not None), None)
+    out = {"rtc_s": None, "basis": "none", "stat_points": int(len(pts)), "stat_zero_rtc_s": None, "stat_rate_hz": None, "stat_resid_max_s": None}
+    if len(pts) >= 2 and np.ptp(pts[:, 0]) >= STAT_MIN_SPAN_S:
+        k, c = np.polyfit(pts[:, 0], pts[:, 1], 1)
+        if k > 0:
+            zero = -c / k
+            out.update(stat_zero_rtc_s=round(float(zero), 3), stat_rate_hz=round(float(k), 2),
+                       stat_resid_max_s=round(float(np.abs(pts[:, 1] - (k * pts[:, 0] + c)).max() / k), 3))
+            if STAT_ZERO_RTC_S[0] <= zero <= STAT_ZERO_RTC_S[1]:
+                out.update(rtc_s=0.0, basis="rtc_zero_stat")      # STAT 이 RTC 00:00 바로 뒤부터 셌다 → RTC 는 켤 때 0 에서 시작
+            elif first is not None and zero - STAT_LAG_S <= first:
+                out.update(rtc_s=round(float(zero) - STAT_LAG_S, 3), basis="stat")
+    elif first is not None and first < BOOT_RTC_ZERO_MAX_S:
+        out.update(rtc_s=0.0, basis="rtc_zero_assumed")
+    return out
+
+
+def _power_cycles(recs: list[Recording]) -> None:
+    """새 형식 레코딩들 → 전원 주기 번호 · 그 부팅 · 켠 순간부터 레코딩 첫 줄까지의 참 초 (모듈 설명의 시계 모델 v3)."""
+    groups: list[list[Recording]] = []
+    last_cum = last_secs = None
+    for r in recs:
+        first_cum = r.stat[0][1] if r.stat else None
+        reset = (first_cum is not None and last_cum is not None and first_cum < last_cum) \
+            or (r.first_secs is not None and last_secs is not None and r.first_secs < last_secs - 1.0)
+        if not groups or reset:
+            groups.append([])
+        groups[-1].append(r)
+        last_cum = r.stat[-1][1] if r.stat else last_cum
+        last_secs = r.last_secs if r.last_secs is not None else last_secs
+    for k, group in enumerate(groups):
+        boot = _boot_of(group)
+        jumped = False                                      # 주기 안에서 시계가 뛴 뒤의 RTC 는 켠 순간과 이어지지 않는다
+        for r in group:
+            r.power_cycle, r.boot = k, boot
+            if boot["rtc_s"] is not None and r.first_secs is not None and not jumped:
+                r.since_boot_s = round((r.first_secs - boot["rtc_s"]) / r.clock["f"], 3)
+            jumped = jumped or any(a.kind != "boot" for a in r.anchors)
 
 
 def measure_clock(r: Recording) -> dict:
@@ -449,6 +628,15 @@ def measure_clock(r: Recording) -> dict:
                 "sync_spans": 0, "sync_span_s": None, "rtc_per_tick": None}
     pps_share = float(np.clip(1 - (r.late_rows / r.rows) / FREE_LATE_SHARE, 0, 1))
     mode = clock_mode(pps_share)
+    if r.new_fw:                                            # 시계 모델 v3 — SD 동기화 주기(8월 펌웨어의 틱)는 쓰지 않는다
+        cp = can_period(np.concatenate(r.can_t)) if r.can_t else None
+        if mode == "gps_pps":
+            f, basis = 1.0, "gps_pps"
+        elif mode == "free":
+            f, basis = (cp["f"], "can_period") if cp else (F_PRIOR_LOG_ON, "assumed")
+        else:
+            f, basis = 1.0, "none"
+        return {"mode": mode, "f": f, "f_basis": basis, "pps_share": round(pps_share, 3), **sync_period_from_spans([]), "can_period": cp}
     period = sync_period_from_spans(sync_spans_from_gaps(r.gap_start, r.gap_end)[1]) if mode == "free" \
         else sync_period_from_spans([])
     if mode == "gps_pps":
@@ -494,6 +682,14 @@ def build_offsets(r: Recording) -> None:
 
 
 # ---------------------------------------------------------------- 2차: 변환
+
+def _event_text(b: Batch, i: int) -> str:
+    """events 표의 message. 새 펌웨어의 LOG ON · STAT 은 뒤의 값까지 (`STAT,376037,50,0,0,0`), 나머지는 이벤트 이름만."""
+    msg = (b.msg[i] or "").strip()
+    if msg.startswith((LOG_ON, STAT)):
+        return b.lines[i].as_py().split(",", 2)[2].strip()
+    return msg
+
 
 SCHEMAS = {
     "frames": pa.schema([
@@ -574,8 +770,8 @@ def _gather_bytes(arr: pa.Array, width: int) -> np.ndarray:
     return flat[offs[:-1, None] + np.arange(width)[None, :]].astype(np.int64)
 
 
-def decode_motor(can_bin: pa.Array, can_len: np.ndarray, pos: np.ndarray):
-    """0x181 프레임들 → (해독된 행의 pos 내 인덱스, 신호 코드(MOTOR_REGS 순번), 물리값, raw)."""
+def decode_motor(can_bin: pa.Array, can_len: np.ndarray, pos: np.ndarray, new_fw: bool = False):
+    """0x181 프레임들 → (해독된 행의 pos 내 인덱스, 신호 코드(MOTOR_REGS 순번), 물리값, raw). NEW_FW_REGS 는 new_fw 일 때만."""
     if not len(pos):
         return np.array([], dtype=np.int64), [], np.array([]), np.array([], dtype=np.int64)
     ln = can_len[pos]
@@ -584,6 +780,8 @@ def decode_motor(can_bin: pa.Array, can_len: np.ndarray, pos: np.ndarray):
     reg = b[:, 0]
     keep, names, values, raws = [], [], [], []
     for code, (rid, (name, nbytes, scale)) in enumerate(MOTOR_REGS.items()):
+        if rid in NEW_FW_REGS and not new_fw:
+            continue
         m = (reg == rid) & (ln[usable] == nbytes + 2)
         if not m.any():
             continue
@@ -829,7 +1027,7 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
             # 모터 컨트롤러 0x181 (중복 제외). 레지스터마다 따로 오므로 긴 형식(signal, value)으로 둔다
             mrows = np.flatnonzero((can_id[sl] == MOTOR_ID) & ~dup[sl]) + lo
             if len(mrows):
-                k, names, values, raws = decode_motor(can_bin, can_len, order[mrows])
+                k, names, values, raws = decode_motor(can_bin, can_len, order[mrows], new_fw=recs[ri].new_fw)
                 st["motor_rows_nodup"] += len(mrows)
                 st["motor_decoded"] += len(k)
                 if len(k):
@@ -850,8 +1048,7 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
 
             rows = np.flatnonzero(b.is_sys[sl]) + lo
             if len(rows):
-                W.write("events", {**base(rows),
-                                   "message": pa.array([(b.msg[i] or "").strip() for i in rows], pa.string())})
+                W.write("events", {**base(rows), "message": pa.array([_event_text(b, i) for i in rows], pa.string())})
 
     for w in writers:
         w.close()
@@ -867,6 +1064,19 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
             for k in range(len(r.anchors)):
                 q[r.seg_quality[k]] = q.get(r.seg_quality[k], 0) + 1
         trusted_any = any(a.trusted for a in r.anchors)
+        abs_basis = ("레코딩 내 신뢰 기준점 기준, 시계 점프는 경과 0 초로 이어 붙임 (점프당 ±1 s)" if trusted_any
+                     else "신뢰 가능한 기준점 없음 → t_abs 전부 null")
+        if r.new_fw and not trusted_any:
+            abs_basis = ("새 펌웨어 · GPS 동기 없음 — RTC 가 전원을 켤 때 00:00 부터라 t_abs 는 비움. "
+                         "참 시각 = 일정표의 전원 켬 + since_boot_s (lefdata sessions 가 전원 켬과 짝지어 옮긴다)")
+        clock_note = {"gps_pps": "GPS 가 매초 시계를 맞춤 — 그대로 둠 (초 안에 0~70 ms 톱니가 남는다)",
+                      "free": "RTC 가 혼자 돎 — 경과시간을 f 로 나눠 바로잡음",
+                      "mixed": "도중에 바뀜 — 바로잡지 못함. 구간에 따라 최대 7 % 틀릴 수 있다",
+                      "unknown": "줄이 없어 판정 불가"}[r.clock["mode"]]
+        if r.new_fw and r.clock["mode"] == "free":
+            clock_note = {"can_period": "RTC 가 혼자 돎 — BAMOCAR 주기 프레임으로 잰 속도 f 로 나눠 바로잡음",
+                          "can_period_pooled": "RTC 가 혼자 돎 — 레코딩이 짧아 같은 파일의 BAMOCAR 주기 프레임을 모아 잰 속도 f 로 바로잡음",
+                          "assumed": f"RTC 가 혼자 돎 — 속도를 재지 못해 새 펌웨어 사전값 f = {F_PRIOR_LOG_ON} (주기 프레임이 모자람)"}[r.clock["f_basis"]]
         meta = {
             "car": "LEF-26",
             "event": out_root.parent.name,
@@ -881,14 +1091,9 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
                 "tz": TZ,
                 "tz_basis": ("KST 확정 — 동기화 기본값 09:00:0x (= GPS 00:00 UTC + 9h), "
                              "시각 범위, 팀원 확인이 모두 일치"),
-                "abs_basis": ("레코딩 내 신뢰 기준점 기준, 시계 점프는 경과 0 초로 이어 붙임 (점프당 ±1 s)"
-                              if trusted_any else "신뢰 가능한 기준점 없음 → t_abs 전부 null"),
+                "abs_basis": abs_basis,
                 # 시계 모델 v2: t_rel_ms · t_abs 는 로거 경과시간을 f 로 나눈 값이다. 로거가 찍은 그대로는 frames.t_log_ms
-                "clock": {**r.clock,
-                          "note": {"gps_pps": "GPS 가 매초 시계를 맞춤 — 그대로 둠 (초 안에 0~70 ms 톱니가 남는다)",
-                                   "free": "RTC 가 혼자 돎 — 경과시간을 f 로 나눠 바로잡음",
-                                   "mixed": "도중에 바뀜 — 바로잡지 못함. 구간에 따라 최대 7 % 틀릴 수 있다",
-                                   "unknown": "줄이 없어 판정 불가"}[r.clock["mode"]]},
+                "clock": {**r.clock, "note": clock_note},
                 "t_abs_start": fmt(st["t_abs_min"]),
                 "t_abs_end": fmt(st["t_abs_max"]),
                 "boot_t_raw": r.boot_t_raw,
@@ -919,6 +1124,10 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
             "converter_version": __version__,
             "created_at": dt.datetime.now(KST).isoformat(timespec="seconds"),
         }
+        if r.new_fw:                                        # 시계 모델 v3 — 켠 순간부터의 시간 (참 시각은 일정표의 전원 켬으로)
+            meta["source"]["log_format"] = "log_on"
+            meta["time"].update(power_cycle=r.power_cycle, boot=r.boot, since_boot_s=r.since_boot_s,
+                                duration_s=None if r.last_trel is None else round(r.last_trel / r.clock["f"], 3))
         write_json(meta, out / "meta.json")
         index_rows.append({
             "recording_id": rid, "session": session, "t_abs_start": meta["time"]["t_abs_start"],
@@ -929,6 +1138,7 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
             "anchors": len(r.anchors), "clock_mode": r.clock["mode"], "clock_f": r.clock["f"],
             "clock_f_basis": r.clock["f_basis"], "thermistor_rows": st["thermistor_rows"],
             "output_bytes": meta["perf"]["output_bytes"],
+            **({"power_cycle": r.power_cycle, "since_boot_s": r.since_boot_s, "boot_basis": r.boot.get("basis")} if r.new_fw else {}),
         })
     print(f"  [{session}] 완료 {total_sec:.0f}s", flush=True)
     return index_rows
@@ -966,6 +1176,11 @@ def detect(path: Path) -> dict | None:
         return None
     first = next(ln for ln in lines if LINE_RE.match(ln)).split(",", 1)[0]
     boots = sum("CONFIG ON" in ln for ln in lines)
+    log_on = sum(",SYSTEM,LOG ON" in ln for ln in lines)
+    stat = sum(",SYSTEM,STAT," in ln for ln in lines)
+    notes = ["날짜가 없는 형식 (줄마다 시각만) — 날짜는 올릴 때 hints 의 date 로", f"첫 줄 시각 {first} (로거 RTC — 틀릴 수 있다)",
+             f"크기 {path.stat().st_size / 1e6:,.0f} MB" + (f" · 앞부분에 로거 부팅 {boots}번" if boots else "")]
+    if log_on or stat:
+        notes.append("새 펌웨어 형식 (LOG ON · STAT 줄) — RTC 가 전원을 켤 때 00:00 부터라 절대 시각은 일정표의 '전원 켬' 으로 옮긴다")
     return {"kind": "lef26_logger_csv", "car_guess": "LEF-26", "start": None, "duration_s": None, "ok": True, "recording_id": None,
-            "notes": ["날짜가 없는 형식 (줄마다 시각만) — 날짜는 올릴 때 hints 의 date 로", f"첫 줄 시각 {first} (로거 RTC — 틀릴 수 있다)",
-                      f"크기 {path.stat().st_size / 1e6:,.0f} MB" + (f" · 앞부분에 로거 부팅 {boots}번" if boots else "")]}
+            "notes": notes}
