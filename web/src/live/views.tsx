@@ -122,7 +122,7 @@ export function MainView({ c }: { c: ViewCtx }) {
         <div className="lv-gauges mid">
           {G('motor.t_motor_c', 'mid')}
           {G('motor.t_igbt_c', 'mid')}
-          <PedalTile accel={apps} brake={brake} frozen={c.frozen} lamp={worstLamp(lamp('pedal.apps_pct'), lamp('brake.ain1_v'))} />
+          <PedalTile accel={apps} brake={brake} sensors={[c.tile('pedal.apps1_v'), c.tile('pedal.apps2_v')]} frozen={c.frozen} lamp={worstLamp(lamp('pedal.apps_pct'), lamp('brake.ain1_v'))} />
           {G('bms.soc_pct', 'mid')}
         </div>
         <div className="lv-tiles c4">
@@ -336,7 +336,7 @@ export function PowertrainView({ c }: { c: ViewCtx }) {
           {T('motor.rpm', { sign: true })}
         </div>
         <div className="lv-tiles c2">
-          {T('pedal.apps_pct', { children: <AppsDetail s1={c.tile('pedal.apps1_pct')} s2={c.tile('pedal.apps2_pct')} pedal={c.s.pedal} frozen={c.frozen} /> })}
+          {T('pedal.apps_pct', { children: <AppsDetail s1={c.tile('pedal.apps1_pct')} s2={c.tile('pedal.apps2_pct')} v1={c.tile('pedal.apps1_v')} v2={c.tile('pedal.apps2_v')} pedal={c.s.pedal} frozen={c.frozen} /> })}
           {T('pedal.torque_cmd_pct', { sign: true })}
         </div>
       </div>

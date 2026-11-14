@@ -2282,6 +2282,15 @@ ul.plain {
 .live-pg-line.none .live-pg-value {
   fill: var(--text-muted);
 }
+.live-pg-volt {
+  fill: var(--text);
+  font-size: 9px;
+  text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+.live-pg-volt.stale {
+  fill: var(--text-muted);
+}
 .live-mini {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

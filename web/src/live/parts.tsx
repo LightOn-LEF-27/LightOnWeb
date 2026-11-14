@@ -435,16 +435,26 @@ export function InverterPanel({ inv, frozen }: { inv: LiveState['inverter']; fro
 }
 
 // APPS 칸 아래 — 센서 1 · 2 와 고장 이름 (엔진 state.pedal)
-export function AppsDetail({ s1, s2, pedal, frozen }: { s1: LiveTile; s2: LiveTile; pedal: LiveState['pedal']; frozen: boolean }) {
+export function AppsDetail({ s1, s2, v1, v2, pedal, frozen }: {
+  s1: LiveTile
+  s2: LiveTile
+  v1: LiveTile
+  v2: LiveTile
+  pedal: LiveState['pedal']
+  frozen: boolean
+}) {
   const faults = pedal?.faults ?? []
+  const volt = (v: LiveTile) => (v.value === null ? '' : ` (${tileValue(v)} ${v.unit})`) // 보드 ADC 전압 — 받았을 때만
   const st = pedal ? shownStatus(pedal.status, frozen) : 'none'
   return (
     <div className="live-tile-sub">
       <div>
         센서 1 · {tileValue(s1)}
         {s1.value !== null && ` ${s1.unit}`}
+        {volt(v1)}
         {'   '}센서 2 · {tileValue(s2)}
         {s2.value !== null && ` ${s2.unit}`}
+        {volt(v2)}
       </div>
       {pedal && (
         <div className={faults.length && st !== 'stale' ? 'live-warn-text' : 'muted'}>

@@ -2,6 +2,7 @@
 
 import type { SectorsResponse, SeriesResponse, TrackResponse } from '../types'
 import type { XMode } from './state'
+import { formatValue } from '../overview/model'
 
 // 오름차순 배열에서 v 에 가장 가까운 칸
 export function nearestIndex(arr: number[], v: number): number {
@@ -159,4 +160,12 @@ export const GRAPH_HIDDEN = new Set(['gps.x_m', 'gps.y_m'])
 // 부호가 있어도 한쪽이 주가 되는 것(배터리 전류 · 전력 — 방전 +)과 위치(원점이 경기장마다 정한 아무 점이라 0 에 뜻이 없다)는 아니다
 export function centerZero(c: { unit: string; sign: string } | undefined): boolean {
   return !!c?.sign && ['g', '°/s', '°'].includes(c.unit)
+}
+
+// 정해진 값만 갖는 채널(levels)의 마우스 값 — 표본 그대로면 이름(「가속」 · 「켜짐」), 칸으로 줄인 평균이면 비율 그대로 소수 2자리 (계약 §6-3 —
+// 0 / 1 채널은 켜진 비율, 주행 상태는 가속 비율 − 제동 비율). 이름에 없는 값을 정수로 반올림해 이름처럼 보이게 하지 않는다
+export function levelText(v: number, c: { digits: number; levels?: { value: number; label: string }[] }): string {
+  if (!c.levels) return formatValue(v, c.digits)
+  const hit = c.levels.find((l) => l.value === v)
+  return hit ? hit.label : `칸 평균 ${formatValue(v, 2)}`
 }

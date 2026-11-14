@@ -236,11 +236,19 @@ describe('계기판 — 연결 불 · 작은 그래프 축 · 랩 꼭짓점 (§6
     expect(worstLamp({ tone: 'warn', text: 'a' }, { tone: 'none', text: 'b' }).tone).toBe('warn')
   })
 
-  it('브레이크 칸 — 엔진이 안 보내면 무수신 칸 (이름 있음), 눈금은 0 ~ ADC 끝', () => {
+  it('브레이크 칸 — 엔진이 안 보내면 무수신 칸 (이름 있음), 눈금은 쉴 때 전압 ~ ADC 끝', () => {
     const t = tileOr(new Map(), 'brake.ain1_v')
     expect(t.status).toBe('none')
     expect(t.unit).toBe('V')
-    expect(scaleOf(t)).toMatchObject({ min: 0, max: 4.096 })
+    expect(scaleOf(t)).toMatchObject({ min: 0.5, max: 4.096 })
+  })
+
+  it('가속페달 센서 전압 칸 — 엔진이 안 보내면 무수신 칸, V 소수 2자리, 원천은 APPS', () => {
+    for (const id of ['pedal.apps1_v', 'pedal.apps2_v']) {
+      const t = tileOr(new Map(), id)
+      expect(t).toMatchObject({ status: 'none', unit: 'V', digits: 2 })
+      expect(tileSource(id)).toBe('pedal')
+    }
   })
 
   it('연결 불 — 원천 수신률 상태 그대로, 없으면 원천 상태, LV 는 장치 수신, 멈춤은 회색 · 꺼짐은 빈 불', () => {

@@ -296,6 +296,7 @@ const OFF_TILES: [string, string, string, number][] = [
   ['bms.bms_heatsink_c', 'BMS 방열판 온도', '°C', 0], ['bms.pack_resistance_ohm', '팩 저항', 'Ω', 3], ['bms.pack_ah', '팩 Ah', 'Ah', 1],
   ['bms.dod_pct', '방전 깊이 (DoD)', '%', 1], ['motor.vdc_v', 'DC 버스 전압', 'V', 0], ['motor.rpm', '회전수 (로거 환산)', 'rpm', 0],
   ['pedal.torque_cmd_pct', '토크 명령', '%', 0], ['pedal.apps1_pct', '가속페달 센서 1', '%', 1], ['pedal.apps2_pct', '가속페달 센서 2', '%', 1],
+  ['pedal.apps1_v', '가속페달 센서 1 전압 (보드 ADC)', 'V', 2], ['pedal.apps2_v', '가속페달 센서 2 전압 (보드 ADC)', 'V', 2],
 ]
 const offTile = ([id, label, unit, digits]: [string, string, string, number]): LiveTile =>
   ({ id, label, unit, sign: '', digits, value: null, age_s: null, status: 'none', alert: null })
@@ -336,7 +337,7 @@ const FIXED_SCALE: Record<string, LiveScale> = {
   'gps.speed_kmh': { min: 0, max: 120, warn: null, danger: null, dir: '>=' }, // 원형 게이지 눈금만 — 문턱 없음 (Formula 차 속도 범위)
   'bms.soc_pct': { min: 0, max: 100, warn: null, danger: null, dir: '<=' },
   'pedal.apps_pct': { min: 0, max: 100, warn: null, danger: null, dir: '>=' },
-  'brake.ain1_v': { min: 0, max: 4.096, warn: null, danger: null, dir: '>=' }, // 전압까지만 — 끝은 로거 ADC 끝 (계약 §12-3). 환산식이 오면 bar
+  'brake.ain1_v': { min: 0.5, max: 4.096, warn: null, danger: null, dir: '>=' }, // 전압 그대로 (bar 로 바꾸지 않음). 시작 = 센서가 쉴 때 내는 전압 (안 밟으면 반원이 비게) · 끝 = 로거 ADC 끝 (계약 §12-3)
   'battery.power_kw': { min: -20, max: 90, warn: null, danger: 80, dir: '>=' }, // 규정 80 kW ([기술] 제68조)
   'bms.temp_max_c': { min: 0, max: 70, warn: null, danger: 60, dir: '>=' }, // 규정 60 °C ([기술] 제62조)
 }

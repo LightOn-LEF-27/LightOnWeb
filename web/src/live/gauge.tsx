@@ -115,7 +115,7 @@ function Half({ side, t, s, st }: { side: 'left' | 'right'; t: LiveTile; s: Live
   return (
     <g className={`live-pg-side ${side === 'left' ? 'brake' : 'accel'} ${st}`}>
       <path className="live-rg-track" d={HALF[side]} />
-      {p !== null && p > 0.001 && <path className="live-rg-fill" d={HALF[side]} pathLength={1} strokeDasharray={`${p.toFixed(4)} 1`} />}
+      {p !== null && p > 0.005 && <path className="live-rg-fill" d={HALF[side]} pathLength={1} strokeDasharray={`${p.toFixed(4)} 1`} />}
     </g>
   )
 }
@@ -134,9 +134,22 @@ function PedalLine({ y, name, side, t, st }: { y: number; name: string; side: 'a
 }
 
 // 페달 칸 — 이름 「페달」, 불은 두 원천 중 나쁜 쪽, 상태 낱말 · 지난 초는 가속 기준 (APPS 고장이 여기로 온다)
-export function PedalTile({ accel, brake, frozen, lamp }: {
+// 가속 값 아래 — 센서 1 · 2 전압 (APPS 보드 ADC, 11-13 사용자 요청). 둘 다 없으면 줄을 안 그린다
+function SensorVolts({ y, s1, s2, frozen }: { y: number; s1: LiveTile; s2: LiveTile; frozen: boolean }) {
+  if (s1.status === 'none' && s2.status === 'none') return null
+  const st = shownStatus(s1.status, frozen) === 'stale' || shownStatus(s2.status, frozen) === 'stale' ? 'stale' : 'ok'
+  return (
+    <text className={`live-pg-volt ${st}`} x={CX} y={y}>
+      {tileValue(s1)} · {tileValue(s2)}
+      <tspan className="live-pg-unit" dx={2}>{s1.unit || s2.unit || 'V'}</tspan>
+    </text>
+  )
+}
+
+export function PedalTile({ accel, brake, sensors, frozen, lamp }: {
   accel: LiveTile
   brake: LiveTile
+  sensors: [LiveTile, LiveTile]
   frozen: boolean
   lamp: { tone: LampTone; text: string }
 }) {
@@ -146,18 +159,20 @@ export function PedalTile({ accel, brake, frozen, lamp }: {
   const sca = scaleOf(accel)
   const scb = scaleOf(brake)
   const fmt = (t: LiveTile) => (t.value === null ? '값 없음' : `${tileValue(t)} ${t.unit}`)
+  const [s1, s2] = sensors
   return (
-    <div className={`live-gtile mid ${sa}`} title={`${accel.id} · ${brake.id}`}>
+    <div className={`live-gtile mid ${sa}`} title={`${accel.id} · ${s1.id} · ${s2.id} · ${brake.id}`}>
       <div className="live-gtile-label">
         <span className="name">페달</span>
         {word && <span className="live-tile-word">{word}</span>}
         <Lamp tone={lamp.tone} text={lamp.text} />
       </div>
-      <svg className="live-rg live-pg" viewBox="0 0 120 114" role="img" aria-label={`페달, 가속 ${fmt(accel)}, 브레이크 ${fmt(brake)}`}>
+      <svg className="live-rg live-pg" viewBox="0 0 120 114" role="img" aria-label={`페달, 가속 ${fmt(accel)} (센서 1 ${fmt(s1)}, 센서 2 ${fmt(s2)}), 브레이크 ${fmt(brake)}`}>
         <Half side="left" t={brake} s={scb} st={sb} />
         <Half side="right" t={accel} s={sca} st={sa} />
-        <PedalLine y={54} name="가속" side="accel" t={accel} st={sa} />
-        <PedalLine y={88} name="브레이크" side="brake" t={brake} st={sb} />
+        <PedalLine y={49} name="가속" side="accel" t={accel} st={sa} />
+        <SensorVolts y={61} s1={s1} s2={s2} frozen={frozen} />
+        <PedalLine y={92} name="브레이크" side="brake" t={brake} st={sb} />
       </svg>
       <TileAge st={sa} age={accel.age_s} frozen={frozen} />
     </div>

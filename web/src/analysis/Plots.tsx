@@ -162,7 +162,7 @@ function AxisRow(p: Props & { index: number; ids: string[]; width: number; heigh
             <div key={c.channel_id}>
               {data.meta.map((m, i) =>
                 m.kind === 'v' && m.axis === k ? (
-                  <span key={i} data-s={i + 1} data-d={c.digits} style={{ color: p.colors[m.trace.slot] }}>
+                  <span key={i} data-s={i + 1} data-k={k} data-d={c.digits} style={{ color: p.colors[m.trace.slot] }}>
                     —
                   </span>
                 ) : null,

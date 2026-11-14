@@ -8,7 +8,7 @@ import uPlot from 'uplot'
 
 import { formatValue } from '../overview/model'
 import type { Channel } from '../types'
-import { centerZero } from './lookup'
+import { centerZero, levelText } from './lookup'
 import type { AxisData } from './traces'
 
 export interface ZoomGroup {
@@ -162,7 +162,7 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
             const v = j == null ? null : (u.data[i + 1][j] as number | null | undefined)
             const sw = document.createElement('i')
             sw.style.background = colors[m.trace.slot]
-            row.append(sw, v == null ? '—' : (c.levels?.find((l) => l.value === v)?.label ?? formatValue(v, c.digits)))
+            row.append(sw, v == null ? '—' : levelText(v, c))
           })
           if (c.unit) row.append(Object.assign(document.createElement('span'), { className: 'tip-unit', textContent: c.unit }))
           return row
@@ -261,7 +261,8 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
               const s = Number(el.dataset.s)
               const i = u.cursor.idxs?.[s]
               const v = i == null ? null : (u.data[s][i] as number | null | undefined)
-              el.textContent = v == null ? '—' : formatValue(v, Number(el.dataset.d))
+              const c = channels[Number(el.dataset.k)]
+              el.textContent = v == null ? '—' : c ? levelText(v, c) : formatValue(v, Number(el.dataset.d))
             })
           },
         ],

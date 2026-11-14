@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { DeltaResponse, SectorsResponse, SeriesResponse, TrackResponse } from '../types'
-import { centerZero, channelColors, channelGradient, channelPalette, deltaColors, floorIndex, nearestIndex, paceColor, paceColors, paceGradient, PURPLE, trackIndex, valueAt, xOfTrackPoint } from './lookup'
+import { centerZero, channelColors, channelGradient, channelPalette, deltaColors, floorIndex, levelText, nearestIndex, paceColor, paceColors, paceGradient, PURPLE, trackIndex, valueAt, xOfTrackPoint } from './lookup'
 import { axisData, DELTA, tracesFor } from './traces'
 
 const track = (over: Partial<TrackResponse> = {}): TrackResponse => ({
@@ -93,5 +93,17 @@ describe('0 을 가운데 두는 채널', () => {
     expect(centerZero({ unit: 'A', sign: '방전 +, 배터리로 돌아오면 −' })).toBe(false)
     expect(centerZero({ unit: 'mm', sign: '' })).toBe(false)
     expect(centerZero(undefined)).toBe(false)
+  })
+})
+
+describe('levelText', () => {
+  const lv = { digits: 0, levels: [{ value: -1, label: '제동' }, { value: 0, label: '타력' }, { value: 1, label: '가속' }] }
+  it('표본 그대로면 이름, 칸 평균(비율)이면 반올림하지 않고 소수 2자리', () => {
+    expect(levelText(1, lv)).toBe('가속')
+    expect(levelText(0.333, lv)).toBe('칸 평균 0.33')
+    expect(levelText(-0.5, lv)).toBe('칸 평균 -0.50')
+  })
+  it('정해진 값이 없는 채널은 그 채널 자릿수', () => {
+    expect(levelText(12.345, { digits: 1 })).toBe('12.3')
   })
 })
