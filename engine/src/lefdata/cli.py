@@ -25,6 +25,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 import time
 from pathlib import Path
 
@@ -33,6 +35,9 @@ from . import (clocks, em_laps, energymeter, events, evo_can, evo_stm32, laps, l
 
 
 def main(argv: list[str] | None = None) -> None:
+    for stream in (sys.stdout, sys.stderr):                 # 콘솔이 cp949 면 '—' 같은 글자에서 죽는다 — 못 찍는 글자는 ? 로
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(prog="lefdata")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -171,6 +176,9 @@ def main(argv: list[str] | None = None) -> None:
             n = lap_df[lap_df["recording_id"] == rid]
             best = f"  최고 랩 {n['lap_time_s'].min():.2f}s" if len(n) else ""
             print(f"  {rid}  {r['label'].iloc[0] or '-':<15} run {len(r):>2}개  완주 랩 {len(n):>2}개{best}")
+        doc = json.loads((args.event / "derived" / "gate.json").read_text(encoding="utf-8"))
+        for o in doc.get("course_check", {}).get("off_course_runs", []):
+            print(f"  ! 경기장 코스와 다른 코스로 보여 랩을 뺌: {o['recording_id']} run {o['run']} - 랩 {o['laps']}개, 기준선 가까이 {o['near_share']:.0%}")
         from . import plots                       # matplotlib 은 그림 그릴 때만 불러온다
         figs = args.event / "derived" / "figures"
         figs.mkdir(exist_ok=True)

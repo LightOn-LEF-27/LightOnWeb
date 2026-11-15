@@ -129,6 +129,21 @@ def test_segment_outside_the_meter_recording_is_left_blank():
     assert abs(full["em_lag_s"]) <= 0.04 and full["em_corr"] > 0.98
 
 
+@pytest.mark.parametrize("gap_s, covered, gap_left", [(30.0, False, 30.0), (1.5, True, 1.5), (0.8, True, 0.0)])
+def test_a_hole_inside_the_meter_recording_is_not_counted_as_covered(gap_s, covered, gap_left):
+    """미터 기록 안쪽이 1 s 넘게 비면 그 동안은 기록하지 않은 것 — 30 s 가 비면 값을 비우고 (예전에는 직선으로 이어 적분해 에너지가 크게 틀렸다),
+    1.5 s 면 값은 내되 em_gap_s 로 남긴다. 1 s 아래 틈은 지금처럼 이어 적분한다 (기록 간격의 흔들림)."""
+    import dataclasses
+    meter, track = synthetic()
+    al = el.align(meter, track)
+    hole = (meter.t >= 150.0) & (meter.t < 150.0 + gap_s)                  # 미터 시간 150 s 부터 (GPS 시간 170 s)
+    holed = el.make_meter("em", meter.start, meter.t[~hole], meter.volt[~hole], meter.amp[~hole])
+    got = el.summarize_segment([dataclasses.replace(al, meter=holed)], track, 120.0, 220.0, distance_m=1400.0)
+    assert got["cover_share"] == pytest.approx(1.0 - gap_left / 100.0, abs=0.002)
+    assert got["em_gap_s"] == pytest.approx(gap_left, abs=0.02)
+    assert ("discharge_wh" in got) is covered
+
+
 def test_segment_lag_shows_a_line_that_is_off():
     """직선이 0.3 s 틀려 있으면 구간별 검증이 그만큼을 내놓는다 (전체 맞추기와 독립인 확인)."""
     meter, track = synthetic()

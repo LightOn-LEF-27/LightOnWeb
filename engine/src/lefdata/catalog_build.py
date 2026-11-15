@@ -435,8 +435,11 @@ def _battery_block(r: _Run, al: em_laps.Alignment, run_e: pd.Series, lap_e: pd.D
               Channel("power_500ms_kw", "전력 500 ms 평균", "kW", ts, me.p500_kw[m], sign="방전 +", derived=True,
                       derivation="전압 × 전류의 500 ms 이동평균 (대회 출력 한도 판정과 같은 방식)", source=rec, digits=3)]
     hole_at = [[round(float(ts[i]), 3), round(float(ts[i + 1]), 3)] for i in np.flatnonzero(step > 2 * np.median(step))]   # 맞닿은 틈도 따로 (사이에 표본 하나가 있다)
+    long_gap = float(run_e.get("em_gap_s", 0.0) or 0.0)
+    joined = (f". 그 중 {em_laps.EM_GAP_S:g} s 넘는 틈 합계 {long_gap:.1f} s 는 덮은 비율에서 뺐고, 그 동안의 에너지는 앞뒤 표본을 직선으로 이어 적분한 값"
+              if long_gap > 0 else "")
     findings = [{"level": "warn", "code": "em_dropped_samples", "t_ranges": hole_at,
-                 "message": f"기록 간격의 두 배 넘게 빈 틈 {len(hole_at)}곳 · 합계 {holes:.1f} s — 그 사이 값 없음 (확대하면 그래프 끊김)"}] if hole_at else []
+                 "message": f"기록 간격의 두 배 넘게 빈 틈 {len(hole_at)}곳 · 합계 {holes:.1f} s — 그 사이 값 없음 (확대하면 그래프 끊김){joined}"}] if hole_at else []
     return DataBlock(
         "battery", "배터리 전압 · 전류", HAVE, f"{meta['source']['logger']} · {1000 / meta['time']['median_dt_ms']:.0f} Hz",
         [f"표본 {int(m.sum()):,}개", f"방전 {run_e['discharge_wh']:,.0f} Wh · 배터리로 돌아온 양 {run_e['regen_wh']:,.0f} Wh · 순 {run_e['net_wh']:,.0f} Wh",
@@ -1995,6 +1998,12 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
     if can["apps"] is not None:
         blocks.append(_pedal_block(r, can["apps"], ref))
     blocks.append(_video_block(r))
+    if int(run.get("off_course_laps", 0) or 0) > 0:             # 경기장 코스와 다른 코스를 달린 주행 — 그 랩은 laps 가 뺐다 (N4)
+        venue_name = ctx.gate_file.get("venue", "")
+        blocks[0].findings.append({"level": "warn", "code": "off_course",
+                                   "message": f"경기장 {venue_name} 코스와 다른 코스로 보여 계측선 랩 {int(run['off_course_laps'])}개를 뺐음 "
+                                              f"(랩 점의 {float(run['course_share']):.0%} 만 기준선 {lapmod.COURSE_TOL_M:g} m 안) — 종목은 랩 없이 정함",
+                                   "t_ranges": [[0.0, round(r.t1 - r.t0, 3)]]})
     if info.get("unclassified"):                                # 랩 · 종목을 알아보지 못한 주행 — 사람이 정하게
         blocks[0].findings.append({"level": "warn", "code": "unclassified_run",
                                    "message": f"랩 · 종목을 알아보지 못한 주행 — 확인 필요 ({_run_facts(info['unclassified'])}). "

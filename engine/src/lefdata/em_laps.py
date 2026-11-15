@@ -30,7 +30,10 @@ GPS 로거가 같은 팩 전류를 CAN 으로 받아 두었으면(25Evo Monolith
 normalized/ 의 energy 표에서 같은 구간을 잘라낼 수 있다.
 
 붙였는지 믿을 수 있나 — 구간마다 같이 적는다
-    cover_share    구간 중 에너지미터가 기록하고 있던 비율. MIN_COVER 에 못 미치면 값을 비운다
+    cover_share    구간 중 에너지미터가 기록하고 있던 비율. MIN_COVER 에 못 미치면 값을 비운다. 기록 안쪽이 EM_GAP_S 넘게 빈 틈은
+                   기록하지 않은 것으로 친다 (2026-11-14 — 그 전에는 레코딩의 처음 ~ 끝만 보고 덮었다고 셌다)
+    em_gap_s       그 구간 안에서 EM_GAP_S 넘게 빈 틈의 합 (초). 덮은 비율이 넉넉해 값을 냈어도 그 동안의 에너지는
+                   앞뒤 표본을 직선으로 이어 적분한 것이다 — 세션의 배터리 블록에 경고가 붙는다
     em_lag_s       그 구간만 따로 다시 대 봤을 때 남는 어긋남(초). 전체에 맞춘 직선과 독립인 검증 — 0 근처여야 한다.
                    양수 = 그 구간의 전력이 직선이 말한 것보다 늦게 있다
     em_corr        그때의 상관
@@ -67,6 +70,7 @@ MIN_INLIER_SHARE = 0.6
 MIN_CORR = 0.7
 MIN_WH = 50.0               # 이만큼도 쓰지 않은 레코딩은 주행이 아니다
 MIN_COVER = 0.98            # 에너지미터가 구간의 이만큼을 기록하지 않았으면 값을 내지 않는다
+EM_GAP_S = 1.0              # 미터 표본이 이보다 길게 비면 그 동안은 기록하지 않은 것 (덮은 비율에서 뺀다). 그보다 짧으면 이어 적분
 P500_S = 0.5
 COAST_A = 5.0               # 전류의 크기가 이보다 작으면 페달을 뗀 것으로 본다
 LAP_LAGS_S = np.arange(-1.0, 1.0001, 0.02)
@@ -76,7 +80,7 @@ CAN_MIN_CORR = 0.95         # 같은 물리량이라 이보다 덜 닮으면 맞
 
 ALIGN_COLS = ["em_recording", "gps_recording", "method", "accepted", "windows", "inliers", "corr_median", "em_minus_gps_s", "f",
               "rms_s", "span_s", "gps_t_abs_at_em_start", "discharge_wh", "regen_wh"]
-JOIN_COLS = ["t_abs_start", "em_recording", "em_t_start_s", "em_t_end_s", "cover_share", "em_lag_s", "em_corr"]
+JOIN_COLS = ["t_abs_start", "em_recording", "em_t_start_s", "em_t_end_s", "cover_share", "em_gap_s", "em_lag_s", "em_corr"]
 VALUE_COLS = ["discharge_wh", "regen_wh", "net_wh", "wh_per_km", "p_mean_kw", "p_max_kw", "p500_max_kw",
               "i_max_a", "i_min_a", "i_rms_a", "v_min_v", "v_max_v", "coast_share"]
 LAP_KEEP = ["recording_id", "label", "run", "lap", "lap_time_s", "distance_m", "vmax_kmh"]
@@ -271,6 +275,12 @@ def segment_energy(me: Meter, r0: float, r1: float, distance_m: float | None = N
     return out
 
 
+def gaps_within(t: np.ndarray, a: float, b: float) -> float:
+    """미터 경과시간 [a, b] 안에서 표본이 EM_GAP_S 넘게 빈 틈의 길이 합 (구간에 걸친 틈은 걸친 만큼만)."""
+    k = np.flatnonzero(np.diff(t) > EM_GAP_S)
+    return float(np.clip(np.minimum(t[k + 1], b) - np.maximum(t[k], a), 0.0, None).sum()) if len(k) else 0.0
+
+
 def summarize_segment(aligned: list[Alignment], track: Track, t0_rel: float, t1_rel: float,
                       distance_m: float | None = None) -> dict:
     """GPS 경과시간으로 준 구간 → 그 구간을 가장 많이 덮는 에너지미터 레코딩의 값."""
@@ -279,13 +289,14 @@ def summarize_segment(aligned: list[Alignment], track: Track, t0_rel: float, t1_
     best = None
     for al in aligned:
         r0, r1 = (float(x) for x in al.to_em([t0, t1]))
-        cover = max(0.0, min(r1, float(al.meter.t[-1])) - max(r0, float(al.meter.t[0]))) / (r1 - r0) if r1 > r0 else 0.0
+        gap = gaps_within(al.meter.t, r0, r1)
+        cover = max(0.0, min(r1, float(al.meter.t[-1])) - max(r0, float(al.meter.t[0])) - gap) / (r1 - r0) if r1 > r0 else 0.0
         if cover > row["cover_share"]:
-            row["cover_share"], best = round(cover, 3), (al, r0, r1)
+            row["cover_share"], best = round(cover, 3), (al, r0, r1, gap)
     if best is None:
         return row
-    al, r0, r1 = best
-    row.update({"em_recording": al.meter.rec, "em_t_start_s": round(r0, 3), "em_t_end_s": round(r1, 3)})
+    al, r0, r1, gap = best
+    row.update({"em_recording": al.meter.rec, "em_t_start_s": round(r0, 3), "em_t_end_s": round(r1, 3), "em_gap_s": round(gap, 2)})
     if row["cover_share"] < MIN_COVER:
         return row
     lag, corr = segment_lag(al, t0, t1)

@@ -73,6 +73,41 @@ def test_a_different_course_is_refused(made):
         laps.split_event(far, far_doc)
 
 
+def _loop_rec(ev, name, center, radius, laps_n=3):
+    """같은 이벤트에 레코딩 하나 더 — 중심 center · 반지름 radius 원을 50 km/h 로 laps_n 바퀴 (반시계)."""
+    rec = ev / "normalized" / name
+    rec.mkdir(parents=True)
+    v = 50 / 3.6
+    t = np.arange(0.0, 60 + laps_n * 2 * np.pi * radius / v, 0.1)
+    phi = np.clip(t - 30, 0, None) * v / radius
+    x, y = center[0] + radius * np.cos(phi), center[1] + radius * np.sin(phi)
+    speed = np.where((t > 30) & (phi < laps_n * 2 * np.pi), 50.0, 0.0)
+    pd.DataFrame({"t_rel_ms": (t * 1000).astype("int64"), "fix": True, "lat": LAT0 + y / 110_950.0,
+                  "lon": LON0 + x / (np.cos(np.radians(LAT0)) * 111_320.0), "speed_kmh": speed,
+                  "course_deg": np.degrees(np.arctan2(-np.sin(phi), np.cos(phi))) % 360.0}).to_parquet(rec / "gps.parquet", index=False)
+    (rec / "meta.json").write_text(json.dumps({"label": "practice"}), encoding="utf-8")
+
+
+def test_a_drive_on_another_course_loses_only_its_own_laps(made):
+    """같은 날 다른 코스(짐카나 등)를 달린 주행이 섞여도 랩 분할은 멈추지 않는다 — 그 주행의 랩만 빼고 알린다 (N4, 2026-11-14).
+    다른 코스 = 계측선을 같은 방향으로 지나지만(반지름 90 m 원이 계측선에서 기준 원에 닿는다) 나머지는 기준선에서 먼 원."""
+    root, base, doc = made
+    ev = write_event(root, "ev_mixed", start_deg=150.0)
+    g = np.array([doc["gate"]["x"], doc["gate"]["y"]])
+    center = np.array([np.mean(doc["line"]["x_m"]), np.mean(doc["line"]["y_m"])])    # 경기장 좌표(원점 = GPS 가운데값)로 본 기준 원의 중심
+    inward = (center - g) / np.hypot(*(center - g))                 # 계측선에서 기준 원의 중심 쪽
+    shift = np.array(laps.to_local_m(doc["origin"]["lat0"], doc["origin"]["lon0"], LAT0, LON0), float)   # 경기장 좌표 → 이 테스트가 GPS 를 쓰는 좌표
+    _loop_rec(ev, "ev_mixed_other", center=g + 90.0 * inward + shift, radius=90.0)
+    runs, lp, gate, gd = laps.split_event(ev, doc)
+    assert set(lp["recording_id"]) == {"ev_mixed_rec"} and len(lp) >= 4
+    other = runs[runs["recording_id"] == "ev_mixed_other"].iloc[0]
+    assert other["full_laps"] == 0 and other["off_course_laps"] >= 2 and other["course_share"] < laps.COURSE_SHARE
+    mine = runs[runs["recording_id"] == "ev_mixed_rec"].iloc[0]
+    assert mine["off_course_laps"] == 0 and mine["course_share"] == 1.0
+    [off] = gd["course_check"]["off_course_runs"]
+    assert off["recording_id"] == "ev_mixed_other" and off["laps"] == other["off_course_laps"]
+
+
 def test_event_notes_choose_the_venue(made):
     root, base, doc = made
     ev = write_event(root, "ev_noted", venue_name="testtrack")

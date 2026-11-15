@@ -11,8 +11,10 @@
 
 경기장(venue) — 같은 코스를 여러 이벤트(다른 날 · 다른 차)가 달리면, 이벤트마다 계측선 · 원점을 새로 고르지 않고
 경기장에 정해 둔 것을 쓴다 (`run_event(..., venue=…)`). 그래야 두 이벤트의 랩을 같은 선 · 같은 좌표로 겹칠 수 있다.
-경기장 기준선(그 코스의 랩 하나)과 이 이벤트의 랩이 같은 코스인지 먼저 본다 — 랩 점의 COURSE_SHARE 이상이
-기준선에서 COURSE_TOL_M 안이어야 한다. 아니면 다른 코스(배치가 바뀜)로 보고 멈춘다.
+경기장 기준선(그 코스의 랩 하나)과 이 이벤트의 랩이 같은 코스인지 **주행 구간마다** 본다 (2026-11-14) — 그 주행의 랩 점의
+COURSE_SHARE 이상이 기준선에서 COURSE_TOL_M 안이어야 한다. 아니면 그 주행의 랩만 빼고 (runs.csv 의 off_course_laps ·
+course_share, gate.json 의 course_check.off_course_runs) 나머지는 그대로 나눈다 — 같은 날 다른 코스(짐카나 등)를 달린 주행이 섞여도
+랩 분할 전체가 멈추지 않게. 랩이 있는 주행이 **모두** 다른 코스면 배치가 바뀐 것으로 보고 멈춘다 (경기장을 새로 만들 것).
 """
 
 from __future__ import annotations
@@ -207,16 +209,31 @@ def split_event(event_dir: Path, venue: dict | None = None) -> tuple[pd.DataFram
         lat0, lon0 = float(venue["origin"]["lat0"]), float(venue["origin"]["lon0"])
         gate = Gate(float(venue["gate"]["x"]), float(venue["gate"]["y"]), float(venue["gate"]["heading_deg"]))
 
-    all_runs, all_laps, near, total = [], [], 0, 0
+    all_runs, all_laps, near, total, off, on_runs = [], [], 0, 0, [], 0
     for rid, g in gps.items():
         runs, laps, _, xy = analyze(g, lat0, lon0, gate)
-        if venue is not None and len(laps):                   # 같은 코스인가 — 랩 안의 점이 경기장 기준선 가까이 있나
+        if venue is not None and len(runs):
+            runs["course_share"], runs["off_course_laps"] = np.nan, 0
+        if venue is not None and len(laps):                   # 같은 코스인가 — 주행마다, 그 랩 안의 점이 경기장 기준선 가까이 있나
             t = xy["t_s"].to_numpy()
-            inside = np.zeros(len(t), bool)
-            for a, b in zip(laps["t_start_s"], laps["t_end_s"]):
-                inside |= (t >= a) & (t < b)
-            d = distance_to_line(xy["x_m"].to_numpy()[inside], xy["y_m"].to_numpy()[inside], venue["line"]["x_m"], venue["line"]["y_m"])
-            near, total = near + int((d <= COURSE_TOL_M).sum()), total + int(inside.sum())
+            for ri in sorted(set(laps["run"])):
+                mine = laps[laps["run"] == ri]
+                inside = np.zeros(len(t), bool)
+                for a, b in zip(mine["t_start_s"], mine["t_end_s"]):
+                    inside |= (t >= a) & (t < b)
+                d = distance_to_line(xy["x_m"].to_numpy()[inside], xy["y_m"].to_numpy()[inside], venue["line"]["x_m"], venue["line"]["y_m"])
+                n_near, n = int((d <= COURSE_TOL_M).sum()), int(inside.sum())
+                near, total = near + n_near, total + n
+                share = n_near / n if n else 1.0
+                k = runs.index[runs["run"] == ri]
+                runs.loc[k, "course_share"] = round(share, 4)
+                if share < COURSE_SHARE:                       # 다른 코스를 달린 주행 — 그 랩만 뺀다
+                    runs.loc[k, "off_course_laps"] = len(mine)
+                    runs.loc[k, "full_laps"] = 0
+                    laps = laps[laps["run"] != ri]
+                    off.append({"recording_id": rid, "run": int(ri), "laps": int(len(mine)), "near_share": round(share, 4)})
+                else:
+                    on_runs += 1
         for df, acc in ((runs, all_runs), (laps, all_laps)):
             if len(df):
                 df.insert(0, "label", labels[rid])
@@ -233,10 +250,10 @@ def split_event(event_dir: Path, venue: dict | None = None) -> tuple[pd.DataFram
         share = near / total if total else None
         doc.update(venue=venue["name"], frame_id=venue["frame_id"], reference_recording=None,
                    course_check={"laps": int(len(laps)), "points": total, "near_share": None if share is None else round(share, 4),
-                                 "tol_m": COURSE_TOL_M, "need": COURSE_SHARE})
-        if share is not None and share < COURSE_SHARE:
-            raise ValueError(f"경기장 {venue['name']} 와 다른 코스로 보임 — 랩 점의 {share:.0%} 만 기준선에서 {COURSE_TOL_M:g} m 안 "
-                             f"(필요 {COURSE_SHARE:.0%}). 코스 배치가 바뀌었으면 경기장을 새로 만들 것")
+                                 "tol_m": COURSE_TOL_M, "need": COURSE_SHARE, "judged": "run", "off_course_runs": off})
+        if off and not on_runs:                                # 랩이 있는 주행이 모두 다른 코스 — 배치가 바뀌었다
+            raise ValueError(f"경기장 {venue['name']} 와 다른 코스로 보임 — 랩이 있는 주행 {len(off)}개 모두 랩 점의 {COURSE_SHARE:.0%} 미만이 "
+                             f"기준선에서 {COURSE_TOL_M:g} m 안 (전체 {share:.0%}). 코스 배치가 바뀌었으면 경기장을 새로 만들 것")
     return runs, laps, gate, doc
 
 
