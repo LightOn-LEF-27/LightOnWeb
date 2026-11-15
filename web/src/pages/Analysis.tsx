@@ -13,7 +13,7 @@ import GG from '../analysis/GG'
 import LapPicker from '../analysis/LapPicker'
 import Plots from '../analysis/Plots'
 import TrackMap, { type MapMode } from '../analysis/TrackMap'
-import { addToAxis, cmpKey, lastAnalysis, MAX_AXES, MAX_CMP, readState, recentSessions, remember, resolveState, toggleChannel, writeState,
+import { addChannels, addToAxis, cmpKey, lastAnalysis, MAX_AXES, MAX_CMP, readState, recentSessions, remember, removeChannels, resolveState, toggleChannel, writeState,
          type AnalysisState, type CmpLap, type XMode } from '../analysis/state'
 import { DELTA, mergeDetail, tracesFor, type Trace } from '../analysis/traces'
 import { sameAxes, sheetAxes, workbook, WORKBOOK_GROUPS, WORKBOOKS } from '../analysis/workbooks'
@@ -403,7 +403,8 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
 
       <div className="analysis-main">
         <ChannelList channels={listChannels} blockTitles={new Map([...s.data_status.map((d): [string, string] => [d.block, d.title]), ['calc', '화면 계산 (엔진 값)']])}
-                     shown={new Set(axes.flat())} onToggle={(c) => set({ axes: toggleChannel(axes, c) })} />
+                     shown={new Set(axes.flat())} onToggle={(c) => set({ axes: toggleChannel(axes, c) })}
+                     onSet={(ids, on) => set({ axes: on ? addChannels(axes, ids) : removeChannels(axes, ids) })} room={MAX_AXES - axes.length} maxAxes={MAX_AXES} />
         <div className="analysis-center">
           {series.error && <div className="banner">그래프 값 불러오기 실패 — {series.error}</div>}
           <Plots axes={axes} channels={channelMap} traces={traces} responses={series.data} deltas={deltas} x={x} quality={quality.data ?? []} colors={colors}

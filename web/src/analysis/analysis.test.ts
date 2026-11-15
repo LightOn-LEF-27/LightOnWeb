@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { QualityItem, SeriesResponse } from '../types'
-import { addToAxis, readState, resolveState, toggleChannel, writeState } from './state'
+import { addChannels, addToAxis, MAX_AXES, readState, removeChannels, resolveState, toggleChannel, writeState } from './state'
 import { axisData, DELTA, mergeDetail, shadeRanges, tracesFor, xShift } from './traces'
 import { sameAxes, sheetAxes, workbook, WORKBOOKS } from './workbooks'
 
@@ -119,5 +119,18 @@ describe('워크북', () => {
     expect(workbook('coach').name).toBe('드라이버 코칭')
     expect(workbook('nope').key).toBe(WORKBOOKS[0].key)
     expect(sameAxes([['a'], ['b', 'c']], [['a'], ['b', 'c']])).toBe(true)
+  })
+})
+
+describe('채널 묶음 전체 선택 · 해제', () => {
+  it('전체 선택 — 안 그린 채널만 새 축으로, 이미 그린 것은 그대로', () => {
+    expect(addChannels([['a', 'x']], ['a', 'b', 'c'])).toEqual([['a', 'x'], ['b'], ['c']])
+  })
+  it('전체 선택 — 축이 꽉 차면 들어가는 만큼만', () => {
+    const axes = Array.from({ length: MAX_AXES - 1 }, (_, i) => [`k${i}`])
+    expect(addChannels(axes, ['a', 'b', 'c'])).toEqual([...axes, ['a']])
+  })
+  it('전체 해제 — 그 묶음 채널만 빼고 빈 축은 없앰, 오른쪽 축에 겹친 다른 채널은 남김', () => {
+    expect(removeChannels([['a', 'x'], ['b'], ['y']], ['a', 'b'])).toEqual([['x'], ['y']])
   })
 })

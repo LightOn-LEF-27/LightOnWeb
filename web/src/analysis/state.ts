@@ -77,6 +77,22 @@ export function toggleChannel(axes: string[][], ch: string): string[][] {
   return axes.length >= MAX_AXES ? axes : [...axes, [ch]]
 }
 
+// 채널 목록 묶음의 전체 선택 — 아직 안 그린 채널을 하나씩 새 축으로, 축이 MAX_AXES 개가 되면 멈춘다
+export function addChannels(axes: string[][], chs: string[]): string[][] {
+  const out = [...axes]
+  for (const ch of chs) {
+    if (out.length >= MAX_AXES) break
+    if (!out.some((a) => a.includes(ch))) out.push([ch])
+  }
+  return out
+}
+
+// 전체 해제 — 그 채널들을 축에서 빼고, 빈 축은 없앤다 (다른 묶음의 채널은 그대로)
+export function removeChannels(axes: string[][], chs: string[]): string[][] {
+  const drop = new Set(chs)
+  return axes.map((a) => a.filter((c) => !drop.has(c))).filter((a) => a.length)
+}
+
 // 축에 둘째 채널(오른쪽 세로축)을 더한다
 export function addToAxis(axes: string[][], i: number, ch: string): string[][] {
   return axes.map((a, k) => (k === i && a.length < MAX_PER_AXIS && !a.includes(ch) ? [...a, ch] : a))

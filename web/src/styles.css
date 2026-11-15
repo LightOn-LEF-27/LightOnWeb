@@ -1010,6 +1010,26 @@ ul.plain {
   cursor: pointer;
   text-align: left;
 }
+.ch-group-btn {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.ch-group .legend-actions {
+  flex: none;
+  gap: 6px;
+  font-size: 10.5px;
+}
 .ch-group span[aria-hidden] {
   width: 10px;
   color: var(--text-muted);
