@@ -539,6 +539,7 @@ def _gather(r: _Run, logs: list, pick) -> tuple[np.ndarray, np.ndarray, list[str
 def _can_times(log) -> tuple[np.ndarray, np.ndarray]:
     """로거의 모터 · BMS 표본 시각 (로거 경과시간) — IMU 가 없는 로그에서 '기록한 동안' 을 잴 때."""
     parts = [df["t_s"].to_numpy(float) for df in log.motor.values()] + [log.bms["t_s"].to_numpy(float)]
+    parts += [log.pack["t_s"].to_numpy(float)] if getattr(log, "pack", None) is not None else []
     t = np.sort(np.concatenate(parts)) if parts else np.zeros(0)
     return t, np.ones(len(t))
 
@@ -632,13 +633,21 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
                                 trace_keys=[k for k in ("iq_a",) if k in keys], map_key="iq_a" if "iq_a" in keys else None, lap_columns=cols,
                                 checks=[clock], cautions=[sparse], series=series, findings=findings))
 
+    # 배터리 전압 · 전류 (새 펌웨어 로그 — 0x6B4 팩 전류 · 0x6B1 팩 전압)
+    bat = _logger_battery(r, logs, used, raw, code, where, clock)
+    if bat is not None:
+        blocks.append(bat)
+
     # BMS (0x6B1) — 셀 전압 · SOC
     bms = {k: _gather(r, logs, _column("bms", k))[:2] for k in ("cell_max_v", "cell_min_v", "soc_pct", "temp_c")}
+    lim = {k: _gather(r, logs, _column("pack", k))[:2] for k in ("dcl_a", "ccl_a")}
     series = [Channel(k, label, unit, *bms[k], sign=sign, cautions=[note] if note else [], source=", ".join(used), digits=d)
               for k, label, unit, sign, note, d in (("cell_max_v", "셀 최고 전압", "V", "", "", 4), ("cell_min_v", "셀 최저 전압", "V", "", "", 4),
                                                     ("soc_pct", "SOC", "%", "", "BMS 가 보고한 값", 1),
                                                     ("temp_c", "BMS 온도", "°C", "", "BMS 가 보고한 온도 (셀 하나하나는 셀 온도 블록)", 0))
               if len(bms[k][0])]
+    series += [Channel(k, label, "A", *lim[k], cautions=["Orion 이 0x6B4 로 낸 한계 — 이만큼 넘게 쓰면 BMS 가 방전 · 충전을 끊을 수 있음"], source=", ".join(used), digits=0)
+               for k, label in (("dcl_a", "방전 전류 한계 (DCL)"), ("ccl_a", "충전 전류 한계 (CCL)")) if len(lim[k][0])] if series else []
     if series:
         _lap_stat(r, "cell_v_min", *bms["cell_min_v"], np.min)
         sv = bms["soc_pct"][1]
@@ -648,8 +657,9 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
                                 raw=raw, code=code, outputs=[FileRef("변환된 표 (로거 레코딩 전체)", "bms.parquet", where=where)],
                                 channels=series, time_keys=[c.key for c in series if c.key in ("cell_min_v", "soc_pct")],
                                 lap_columns=[LapColumn("cell_v_min", "셀 최저 전압", "V", 3)], checks=[clock],
-                                cautions=["BMS 프레임은 체크섬이 약해, 셀 전압이 2.0 ~ 4.3 V 밖인 줄과 valid 가 아닌 줄은 제외",
-                                          "팩 전류 기록 없음 (BMS 가 보내는 프레임이 한 종류뿐)"], series=series))
+                                cautions=["BMS 프레임은 체크섬이 약해, 셀 전압이 2.0 ~ 4.3 V 밖인 줄과 valid 가 아닌 줄은 제외"]
+                                + ([] if bat is not None else ["팩 전류 기록 없음 (BMS 가 보내는 프레임이 한 종류뿐)"]), series=series,
+                                findings=_over_dcl(r, logs)))
 
     # 셀 온도 (Orion 써미스터 확장 모듈)
     has = lambda col: (lambda df: df[col].notna())                                   # noqa: E731
@@ -679,6 +689,68 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
                                 channels=series, time_keys=[c.key for c in series], trace_keys=[c.key for c in series], checks=[clock],
                                 cautions=warn + ["오프셋을 빼지 않은 원래 거리 (서 있을 때의 값이 0 이 아님)"], series=series))
     return blocks
+
+
+OVER_DCL_A, OVER_DCL_S = 5.0, 0.5    # 팩 전류가 방전 한계(DCL)를 이만큼 넘어 이만큼 넘게 이어지면 경고
+
+
+def _logger_battery(r, logs: list, used: list, raw, code, where, clock: str) -> DataBlock | None:
+    """LEF-26 새 로그의 팩 전류(0x6B4, 방전 +) · 팩 전압(0x6B1 바이트 6-7) → battery 블록 (전력 = 전압 × 전류, 랩 에너지). 전류가 없으면 None."""
+    t, i, _ = _gather(r, logs, _column("pack", "current_a"))
+    if len(t) < 30:
+        return None
+    tv, v, _ = _gather(r, logs, _column("bms", "pack_v", lambda df: df["valid"].astype(bool) & df["pack_v"].notna()))
+    volt = np.interp(t, tv, v) if len(tv) >= 2 else np.full(len(t), np.nan)
+    if len(tv) >= 2:                                            # 전압 표본이 1 s 넘게 비면 그 사이 전력은 모른다
+        gap = np.interp(t, tv[1:], np.diff(tv), left=np.inf, right=np.inf) > 1.0
+        volt[(t < tv[0]) | (t > tv[-1]) | gap] = np.nan
+    kw = volt * i / 1000.0
+    ok = np.isfinite(kw)
+    seg = np.concatenate([[False], np.diff(t) > 1.0])           # 전류 표본이 1 s 넘게 비면 적분을 끊는다
+    def energy(m):
+        m = m & ok
+        if m.sum() < 2:
+            return np.nan
+        tt, kk, cut = t[m], kw[m], seg[m]
+        piece = np.cumsum(cut)
+        return float(sum(np.trapezoid(kk[piece == k], tt[piece == k]) for k in np.unique(piece)) / 3.6)
+    src = ", ".join(used)
+    series = [Channel("current_a", "배터리 전류", "A", t, i, sign="방전 +, 배터리로 돌아오면 −", source=src, digits=1,
+                      cautions=["Orion BMS 가 0x6B4 로 낸 팩 전류 (0.1 A)"]),
+              Channel("voltage_v", "팩 전압", "V", t, volt, source=src, digits=1, cautions=["Orion BMS 가 0x6B1 로 낸 팩 순간 전압 (0.1 V), 전류 표본 시각으로 이음"]),
+              Channel("power_kw", "전력", "kW", t, kw, sign="방전 +", derived=True, derivation="팩 전압 × 팩 전류", source=src, digits=2)]
+    r.laps["net_wh"] = [energy((t >= a) & (t < b)) for a, b in zip(r.laps["t_start_s"], r.laps["t_end_s"])]
+    r.laps["p_mean_kw"] = [float(np.nanmean(kw[(t >= a) & (t < b)])) if ((t >= a) & (t < b) & ok).any() else np.nan
+                           for a, b in zip(r.laps["t_start_s"], r.laps["t_end_s"])]
+    net = energy(np.ones(len(t), bool))
+    facts = [f"표본 {len(t):,}개", f"순 에너지 {net:,.0f} Wh (전력을 시간으로 적분)" if np.isfinite(net) else "팩 전압이 없어 에너지 없음",
+             f"전류 최대 {np.nanmax(i):.0f} A" + (f" · 전력 최대 {np.nanmax(kw):.1f} kW" if ok.any() else ""),
+             f"팩 전압 {np.nanmin(volt):.0f} ~ {np.nanmax(volt):.0f} V" if ok.any() else "팩 전압 없음"]
+    block = DataBlock("battery", "배터리 전압 · 전류", HAVE, "LEF-26 차량 로거 — Orion BMS CAN 0x6B4 (팩 전류) · 0x6B1 (팩 전압)", facts,
+                      raw=raw, code=code, outputs=[FileRef("변환된 표 (로거 레코딩 전체)", "pack.parquet · bms.parquet",
+                                                           note="pack: current_a(방전 +) · dcl_a · ccl_a · limit_status, bms: pack_v", where=where)],
+                      channels=series, time_keys=["current_a", "voltage_v", "power_kw"], trace_keys=["current_a", "power_kw"], map_key="power_kw",
+                      lap_columns=[LapColumn("net_wh", "순 에너지", "Wh", 0, chart=True), LapColumn("p_mean_kw", "평균 전력", "kW", 1)],
+                      checks=[clock], cautions=["BMS 가 낸 값 — 주최측 에너지미터가 있는 세션은 그쪽이 더 촘촘함"] + list(r.extra("battery").get("cautions", [])),
+                      series=series)
+    block._stats = {"net_wh": None if not np.isfinite(net) else round(net), "i_max_a": round(float(np.nanmax(i)))}
+    return block
+
+
+def _over_dcl(r, logs: list) -> list[dict]:
+    """팩 전류가 Orion 의 방전 한계(DCL)를 OVER_DCL_A 넘게 OVER_DCL_S 넘게 넘은 구간 → 경고 (BMS 가 방전을 끊을 수 있다)."""
+    t, i, _ = _gather(r, logs, _column("pack", "current_a"))
+    td, d, _ = _gather(r, logs, _column("pack", "dcl_a"))
+    if len(t) < 2 or len(td) < 2:
+        return []
+    over = i > np.interp(t, td, d) + OVER_DCL_A
+    spans = [s for s in _runs(t, over, min_s=0.0) if s[1] - s[0] >= OVER_DCL_S]
+    if not spans:
+        return []
+    peak = float(np.nanmax(i[over]))
+    return [{"level": "warn", "code": "over_dcl", "t_ranges": spans,
+             "message": f"팩 전류가 BMS 방전 한계(DCL)를 넘음 {len(spans)}번 · 합계 {sum(b - a for a, b in spans):.0f} s (최대 {peak:.0f} A) — "
+                        "BMS 가 방전을 끊을 수 있음 (모터 컨트롤러가 DCL 을 따르지 않는지 확인)"}]
 
 
 def _binned(t: np.ndarray, v: np.ndarray, grid: np.ndarray, step: float) -> np.ndarray:
@@ -1634,8 +1706,19 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
         if em_ref is not None and vdc is not None:
             _add_check(mot, _agree(vdc.t_s, vdc.v, em_ref["t"], em_ref["volt"], "lef26_logger",
                                    "로거의 DC 버스 전압을 에너지미터 전압과 대 봄"))
+        made = _logger_battery_or_not(made, blocks, stats)
         blocks += made
     return blocks, stats
+
+
+def _logger_battery_or_not(made: list[DataBlock], have: list[DataBlock], stats: dict) -> list[DataBlock]:
+    """LEF-26 로거의 battery 블록 — 다른 장비(에너지미터 등)가 배터리를 주면 빼고, 아니면 세션 요약 값(순 에너지 · 최대 전류)을 거기서."""
+    if any(b.key == "battery" for b in have):
+        return [b for b in made if b.key != "battery"]
+    for b in made:
+        if b.key == "battery":
+            stats.update({k: v for k, v in getattr(b, "_stats", {}).items() if v is not None and stats.get(k) is None})
+    return made
 
 
 def timed_sessions(event_dir: Path, notes: dict, made: dict | None = None) -> list[Session]:
@@ -1991,6 +2074,11 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
                              f"{float(fit['em_minus_gps_s']) - x:+.2f} s 차이")
         blocks.append(em)
         stats.update(net_wh=round(float(e["net_wh"])), wh_per_km=round(float(e["wh_per_km"])), i_max_a=round(float(e["i_max_a"])))
+    mine = lambda b: b is not None and b.key == "battery" and b.device.startswith("LEF-26 차량 로거")      # noqa: E731
+    if any(b is not None and b.key == "battery" and not mine(b) for b in blocks) or al is not None or can_bat is not None:
+        blocks = [b for b in blocks if not mine(b)]                       # 에너지미터 · CAN 이 먼저
+    else:
+        _logger_battery_or_not([b for b in blocks if mine(b)], [], stats)
     if can_motor is not None:
         blocks.append(can_motor)
     if can_bms is not None:

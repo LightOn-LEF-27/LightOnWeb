@@ -43,6 +43,11 @@
     - 시계 속도 f: RTC 가 혼자 돌면 BAMOCAR 주기 프레임(0x30 실제 속도, 정격 10 ms)의 로거 간격으로 잰다 (f = 잰 간격 ÷ 정격 간격).
       레코딩이 짧아 못 재면 같은 파일의 새 형식 레코딩을 모아 잰다. 그래도 못 재면 F_PRIOR_LOG_ON
       (8월의 '7 % 느림' 이 아니다 — RTC 가 크리스털로 바뀐 것으로 보인다 `[추정]`)
+    - BMS 프로파일 (2026-11-15, 트랙데이 로그 · 26팀 CAN 정의 표): Orion 이 내는 0x6B1 의 바이트 6-7 이 체크섬 대신
+      **팩 순간 전압** (uint16 빅 엔디언, 0.1 V) 인 판이 있다 → 새 형식 레코딩 중 0x6B1 체크섬이 절반도 안 맞으면 그 판으로 보고
+      (`bms_profile = pack_v`), 체크섬 대신 값의 범위로 유효를 가린다. 같은 새 형식이라도 체크섬이 맞는 레코딩(시험 로그)은 그대로.
+      0x6B4 = 전류 한계 상태 비트 · CCL · DCL (A) · **팩 전류** (int16 빅 엔디언 0.1 A, 방전 +) → `pack` 표 (새 형식 레코딩만).
+      0x8A 출력 전압은 26팀 정의대로 바이트 1-2 int16 의 부호를 뒤집은 값 (새 형식 레코딩만 — raw 는 4 바이트 그대로)
 
 CAN 프레임 분류 (2026-10-01)
     - 펌웨어는 표준 ID 칸만 적는다. 확장 ID 프레임은 **직전 프레임의 ID 로 찍혀 있다** → 내용으로 가린다
@@ -71,6 +76,12 @@ KST = dt.timezone(dt.timedelta(hours=9))
 NON_CAN = {"IMU", "MAG", "LIN", "PED", "GPS", "SYSTEM"}
 BMS_ID = 0x6B1
 MOTOR_ID = 0x181
+PACK_ID = 0x6B4             # Orion — 전류 한계 상태 · CCL · DCL · 팩 전류 (새 펌웨어 레코딩만 푼다)
+BMS_CHECK_SHARE = 0.5       # 새 형식 레코딩의 0x6B1 체크섬이 이보다 덜 맞으면 바이트 6-7 이 팩 전압인 판 (우연히 맞을 확률은 1/256)
+BMS_CHECK_MIN = 20
+BMS_CELL_V = (2.0, 4.5)     # 체크섬 없는 판에서 유효로 보는 셀 전압 범위
+BMS_PACK_V = (50.0, 1000.0)
+PACK_LIMIT_A = 2000.0       # 0x6B4 의 CCL · DCL · |전류| 가 이보다 크면 BMS 프레임이 아니다
 
 # BAMOCAR-PG-D3-400-400 (Unitek). 출처: Unitek "CAN-BUS" 매뉴얼 2025/V1
 #   §7.1 Automatic CAN transmission — 로거용으로 미리 정해진 8개 변수가 주기 전송된다
@@ -380,6 +391,9 @@ class Recording:
     power_cycle: int | None = None
     boot: dict = field(default_factory=dict)    # 그 전원 주기의 부팅 — rtc_s (켠 순간의 RTC 초) · basis · STAT 직선
     since_boot_s: float | None = None           # 켠 순간 → 레코딩 첫 줄 (참 초)
+    bms_n: int = 0                              # 0x6B1 8 바이트 프레임 수 · 그중 체크섬이 맞은 수 (새 형식만 센다)
+    bms_ok: int = 0
+    bms_profile: str = "checksum"               # checksum = 바이트 7 이 체크섬 · pack_v = 바이트 6-7 이 팩 전압
 
 
 def trust(t_raw: str, via_sync: bool) -> tuple[bool, str]:
@@ -402,6 +416,7 @@ def scan_time_plan(path: Path) -> list[Recording]:
         ln = b.line_no
         seen_new = seen_new or any((m or "").strip() in (LOG_ON, LOG_OFF, STAT) for m in b.msg[b.is_sys])
         periodic = _periodic_rows(b) if seen_new else None   # 시계 속도를 잴 BAMOCAR 주기 프레임 (새 형식만)
+        bms_seen, bms_good = _bms_checks(b) if seen_new else (None, None)   # 0x6B1 체크섬이 맞나 (BMS 프로파일을 가린다)
         # 이벤트는 수가 적으므로 파이썬 루프, 데이터는 이벤트 사이 구간을 numpy 로 처리
         ev_idx = np.flatnonzero(b.is_sys)
         bounds = list(ev_idx) + [len(ln)]
@@ -455,6 +470,9 @@ def scan_time_plan(path: Path) -> list[Recording]:
                 cur.last_trel = float(trel[-1])
                 if periodic is not None and cur.new_fw and periodic[start:e].any():
                     cur.can_t.append(trel[periodic[start:e]])
+                if bms_seen is not None and cur.new_fw:
+                    cur.bms_n += int(bms_seen[start:e].sum())
+                    cur.bms_ok += int(bms_good[start:e].sum())
                 cur.late_rows += int((np.round((s - np.floor(s)) * 1000) >= LATE_MS).sum())
                 cur.rows += e - start
                 cur.last_line = int(lines_seg[-1])
@@ -497,7 +515,25 @@ def scan_time_plan(path: Path) -> list[Recording]:
             _trust_v3(r)
         build_offsets(r)
     _power_cycles(new)
+    for r in new:
+        if r.bms_n >= BMS_CHECK_MIN and r.bms_ok < BMS_CHECK_SHARE * r.bms_n:
+            r.bms_profile = "pack_v"
     return recs
+
+
+def _bms_checks(b: Batch) -> tuple[np.ndarray, np.ndarray]:
+    """배치의 줄마다 (0x6B1 8 바이트 프레임인가, 그 바이트 7 이 바이트 0 ~ 6 합의 체크섬인가)."""
+    n = len(b.lines)
+    seen, good = np.zeros(n, bool), np.zeros(n, bool)
+    idx = np.flatnonzero(pc.match_substring_regex(b.lines, f"^[^,]*,{BMS_ID:x},").to_numpy(zero_copy_only=False))
+    if len(idx):
+        arr, lens = _can_bytes(b.parts, idx)
+        i8 = np.flatnonzero(lens == 8)
+        if len(i8):
+            x = _gather_bytes(pc.take(arr, pa.array(i8)), 8)
+            seen[idx[i8]] = True
+            good[idx[i8]] = (x[:, :7].sum(axis=1) & 0xFF) == x[:, 7]
+    return seen, good
 
 
 def _periodic_rows(b: Batch) -> np.ndarray:
@@ -701,7 +737,10 @@ SCHEMAS = {
 _BASE = [("t_rel_ms", pa.int64()), ("t_abs", T_ABS_TYPE), ("t_quality", pa.string())]
 SCHEMAS["bms"] = pa.schema(_BASE + [("valid", pa.bool_()), ("cell_max_v", pa.float64()),
                                     ("cell_min_v", pa.float64()), ("temp_c", pa.int16()),
-                                    ("soc_pct", pa.float64())])
+                                    ("soc_pct", pa.float64()), ("pack_v", pa.float64())])     # pack_v = bms_profile pack_v 일 때만
+# 0x6B4 (새 펌웨어 레코딩만): 전류 한계 상태 비트 · 충전 한계 CCL · 방전 한계 DCL (A) · 팩 전류 (방전 +)
+SCHEMAS["pack"] = pa.schema(_BASE + [("valid", pa.bool_()), ("limit_status", pa.int32()), ("ccl_a", pa.float64()),
+                                     ("dcl_a", pa.float64()), ("current_a", pa.float64())])
 SCHEMAS["motor"] = pa.schema(_BASE + [("signal", pa.string()), ("value", pa.float64()), ("raw", pa.int64())])
 # 이름은 펌웨어가 정의한 물리적 의미를 따른다 (센서 칩 축 이름이 아니다).
 SCHEMAS["imu"] = pa.schema(_BASE + [(c, pa.float64()) for c in
@@ -793,6 +832,9 @@ def decode_motor(can_bin: pa.Array, can_len: np.ndarray, pos: np.ndarray, new_fw
             b6 = _gather_bytes(pc.take(can_bin, pa.array(pos[idx])), 5)
             raw = b6[:, 1] | (b6[:, 2] << 8) | (b6[:, 3] << 16) | (b6[:, 4] << 24)
         val = igbt_temp_c(raw) if scale == "igbt" else raw * scale
+        if new_fw and rid == 0x8A:                                   # 26팀 정의: 바이트 1-2 int16, 부호 반전 (raw 는 4 바이트 그대로)
+            s16 = b[m, 1] | (b[m, 2] << 8)
+            val = -np.where(s16 > 32767, s16 - 65536, s16).astype(float)
         keep.append(idx); raws.append(raw); values.append(val); names.append(np.full(len(idx), code))
     if not keep:
         return np.array([], dtype=np.int64), [], np.array([]), np.array([], dtype=np.int64)
@@ -820,13 +862,15 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
     seg_base = np.concatenate([r.seg_abs_base for r in recs if r.anchors] or [np.array([])])
     seg_trel = np.concatenate([r.seg_abs_trel for r in recs if r.anchors] or [np.array([])])
     rec_f = np.array([r.clock["f"] for r in recs])                  # 레코딩별 시계 속도 (v2)
+    rec_pack_v = np.array([r.bms_profile == "pack_v" for r in recs], dtype=bool)   # 0x6B1 바이트 6-7 이 팩 전압인 레코딩
+    rec_new = np.array([r.new_fw for r in recs], dtype=bool)
 
     ids = [f"{session}_r{r.index:02d}" for r in recs]
     outs = [fresh_dir(out_root / i) for i in ids]
     writers = [RecWriter(o) for o in outs]
     stats = [{"frames": 0, "dup": 0, "by_source": {}, "bms_rows": 0, "bms_rows_nodup": 0, "motor_rows_nodup": 0, "motor_decoded": 0,
               "bms_invalid": 0, "bms_invalid_nodup": 0, "t_abs_null": 0,
-              "kinds": {}, "thermistor_rows": 0, "legacy_bad": 0,
+              "kinds": {}, "thermistor_rows": 0, "legacy_bad": 0, "pack_rows": 0, "pack_valid": 0,
               "t_abs_min": None, "t_abs_max": None} for _ in recs]
 
     q_names = pa.array(QUALITY)
@@ -910,6 +954,13 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
                 sub = pc.take(can_bin, pa.array(pos[good]))
                 bms_bytes[good] = _gather_bytes(sub, 8)
             ck = ok_len & ((bms_bytes[:, :7].sum(axis=1) & 0xFF) == bms_bytes[:, 7])
+            pv = rec_pack_v[rec_of[bms_rows]]
+            if pv.any():                                           # 체크섬 없는 판 — 값의 범위로 가린다
+                hi, lo = (bms_bytes[:, 0] << 8 | bms_bytes[:, 1]) / 10000, (bms_bytes[:, 4] << 8 | bms_bytes[:, 5]) / 10000
+                volt = (bms_bytes[:, 6] << 8 | bms_bytes[:, 7]) * 0.1
+                sane = ok_len & (lo >= BMS_CELL_V[0]) & (lo <= hi) & (hi <= BMS_CELL_V[1]) & (bms_bytes[:, 3] <= 200) \
+                    & (volt >= BMS_PACK_V[0]) & (volt <= BMS_PACK_V[1])
+                ck = np.where(pv, sane, ck)
             valid_code[bms_rows] = ck.astype(np.int8)
 
         # 내용으로 가리기: 길이 8 인 CAN 프레임 전부 (찍힌 ID 와 무관), 그리고 0x80 의 4 바이트 프레임
@@ -975,12 +1026,16 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
                 st["bms_rows_nodup"] += int(nd.sum())
                 st["bms_invalid_nodup"] += int((~v_all[nd]).sum())
                 nd &= ~is_tem[rows_all]
-                rows, bb, v = rows_all[nd], bms_bytes[in_rec][nd], (v_all & (ckind[rows_all] == KIND_BMS))[nd]
+                pv = bool(rec_pack_v[ri])
+                kind_ok = (ckind[rows_all] != -1) if pv else (ckind[rows_all] == KIND_BMS)   # 체크섬 없는 판은 써미스터 프레임만 이미 뺐다
+                rows, bb, v = rows_all[nd], bms_bytes[in_rec][nd], (v_all & kind_ok)[nd]
                 W.write("bms", {**base(rows), "valid": pa.array(v),
                                 "cell_max_v": pa.array((bb[:, 0] << 8 | bb[:, 1]) / 10000),
                                 "cell_min_v": pa.array((bb[:, 4] << 8 | bb[:, 5]) / 10000),
                                 "temp_c": pa.array(bb[:, 2].astype(np.int16)),
-                                "soc_pct": pa.array(bb[:, 3] * 0.5)})
+                                "soc_pct": pa.array(bb[:, 3] * 0.5),
+                                "pack_v": pa.array((bb[:, 6] << 8 | bb[:, 7]) * 0.1 if pv else np.full(len(rows), np.nan),
+                                                   mask=None if pv else np.ones(len(rows), bool))})
 
             # 배터리 써미스터 모듈 (중복 제외). 찍힌 ID 가 무엇이든 내용으로 가려낸 것
             keep_sl = ~dup[sl]
@@ -1023,6 +1078,20 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
                 W.write("thermistor", {**base(rows), "source": pa.array(source, pa.string()), **cols,
                                        "fault": pa.array(fault, mask=no_fault)})
                 st["thermistor_rows"] += len(rows)
+
+            # 팩 전류 · 전류 한계 0x6B4 (새 펌웨어 레코딩만, 중복 제외). 같은 ID 로 찍힌 써미스터 모듈 프레임은 내용으로 뺀다
+            if rec_new[ri]:
+                prow = np.flatnonzero((can_id[sl] == PACK_ID) & ~dup[sl] & (ckind[sl] != -1) & ~is_tem[sl]) + lo
+                if len(prow):
+                    x = bytes8[prow]
+                    cur = (x[:, 6] << 8 | x[:, 7])
+                    cur = np.where(cur > 32767, cur - 65536, cur) * 0.1
+                    ccl, dcl = (x[:, 2] << 8 | x[:, 3]).astype(float), (x[:, 4] << 8 | x[:, 5]).astype(float)
+                    ok = (ccl <= PACK_LIMIT_A) & (dcl <= PACK_LIMIT_A) & (np.abs(cur) <= PACK_LIMIT_A)
+                    W.write("pack", {**base(prow), "valid": pa.array(ok), "limit_status": pa.array((x[:, 0] << 8 | x[:, 1]).astype(np.int32)),
+                                     "ccl_a": pa.array(ccl), "dcl_a": pa.array(dcl), "current_a": pa.array(cur.astype(float))})
+                    st["pack_rows"] += len(prow)
+                    st["pack_valid"] += int(ok.sum())
 
             # 모터 컨트롤러 0x181 (중복 제외). 레지스터마다 따로 오므로 긴 형식(signal, value)으로 둔다
             mrows = np.flatnonzero((can_id[sl] == MOTOR_ID) & ~dup[sl]) + lo
@@ -1126,6 +1195,8 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
         }
         if r.new_fw:                                        # 시계 모델 v3 — 켠 순간부터의 시간 (참 시각은 일정표의 전원 켬으로)
             meta["source"]["log_format"] = "log_on"
+            meta["source"]["bms_profile"] = r.bms_profile
+            meta["counts"].update(bms_checksum_ok=r.bms_ok, bms_frames_8=r.bms_n, pack_rows=st["pack_rows"], pack_valid=st["pack_valid"])
             meta["time"].update(power_cycle=r.power_cycle, boot=r.boot, since_boot_s=r.since_boot_s,
                                 duration_s=None if r.last_trel is None else round(r.last_trel / r.clock["f"], 3))
         write_json(meta, out / "meta.json")
@@ -1138,7 +1209,8 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
             "anchors": len(r.anchors), "clock_mode": r.clock["mode"], "clock_f": r.clock["f"],
             "clock_f_basis": r.clock["f_basis"], "thermistor_rows": st["thermistor_rows"],
             "output_bytes": meta["perf"]["output_bytes"],
-            **({"power_cycle": r.power_cycle, "since_boot_s": r.since_boot_s, "boot_basis": r.boot.get("basis")} if r.new_fw else {}),
+            **({"power_cycle": r.power_cycle, "since_boot_s": r.since_boot_s, "boot_basis": r.boot.get("basis"),
+                "bms_profile": r.bms_profile, "pack_rows": st["pack_rows"]} if r.new_fw else {}),
         })
     print(f"  [{session}] 완료 {total_sec:.0f}s", flush=True)
     return index_rows

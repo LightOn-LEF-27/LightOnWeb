@@ -118,6 +118,7 @@ class Logger:
     therm: pd.DataFrame
     motor: dict[str, pd.DataFrame]
     yaw_dps: np.ndarray | None = None   # 요레이트 (좌회전 +) — 영상이 없는 세션에서 로거로 차량 거동을 낼 때
+    pack: pd.DataFrame | None = None    # 0x6B4 팩 전류 · 전류 한계 (새 펌웨어 로그만, 유효한 줄)
 
 
 def _smooth(x: np.ndarray, n: int) -> np.ndarray:
@@ -148,16 +149,21 @@ def read_video(rec_dir: Path) -> Video:
 def read_logger(rec_dir: Path, cm: lc.ClockMap | None, win_true: np.ndarray) -> Logger:
     imu = pq.read_table(rec_dir / "imu.parquet", columns=["t_rel_ms", "ax_lat_g", "ay_long_g", "yaw_dps"]).to_pandas()
     lin = pq.read_table(rec_dir / "lin.parquet", columns=["t_rel_ms", "lin_rl_mm", "lin_rr_mm"]).to_pandas()
-    bms = pq.read_table(rec_dir / "bms.parquet", columns=["t_rel_ms", "valid", "cell_max_v", "cell_min_v", "soc_pct", "temp_c"]).to_pandas()
+    bms_cols = ["t_rel_ms", "valid", "cell_max_v", "cell_min_v", "soc_pct", "temp_c"]
+    bms_cols += ["pack_v"] if "pack_v" in pq.read_schema(rec_dir / "bms.parquet").names else []      # 팩 전압 — 0x6B1 바이트 6-7 인 판만
+    bms = pq.read_table(rec_dir / "bms.parquet", columns=bms_cols).to_pandas()
     bms = bms[bms["valid"] & (bms["cell_min_v"] >= 2.0) & (bms["cell_max_v"] <= 4.3)].copy()      # 약한 체크섬 보완
     therm = pq.read_table(rec_dir / "thermistor.parquet",
                           columns=["t_rel_ms", "source", "lowest_c", "highest_c", "average_c", "hottest_id"]).to_pandas()
     m = pq.read_table(rec_dir / "motor.parquet", columns=["t_rel_ms", "signal", "value", "raw"]).to_pandas()
-    for df in (lin, bms, therm, m):
+    pack = pq.read_table(rec_dir / "pack.parquet").to_pandas() if (rec_dir / "pack.parquet").exists() else pd.DataFrame()
+    pack = pack[pack["valid"].astype(bool)].copy() if len(pack) else None
+    for df in (lin, bms, therm, m) + ((pack,) if pack is not None else ()):
         df["t_s"] = df["t_rel_ms"] / 1000.0
     return Logger(rec_dir.name, cm, win_true, imu["t_rel_ms"].to_numpy() / 1000.0, imu["ay_long_g"].to_numpy(),
                   -imu["ax_lat_g"].to_numpy(),              # 로거의 X 는 우회전에서 양수다 → 좌회전 양수로 뒤집는다
-                  lin if len(lin) else None, bms, therm, {k: v for k, v in m.groupby("signal")}, imu["yaw_dps"].to_numpy())
+                  lin if len(lin) else None, bms, therm, {k: v for k, v in m.groupby("signal")}, imu["yaw_dps"].to_numpy(),
+                  pack if pack is not None and len(pack) else None)
 
 
 def _cut(df: pd.DataFrame | None, r0: float, r1: float) -> pd.DataFrame | None:
