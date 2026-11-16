@@ -37,6 +37,7 @@ normalized/ 의 어느 표든 같은 구간을 잘라낼 수 있다.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,6 +120,7 @@ class Logger:
     motor: dict[str, pd.DataFrame]
     yaw_dps: np.ndarray | None = None   # 요레이트 (좌회전 +) — 영상이 없는 세션에서 로거로 차량 거동을 낼 때
     pack: pd.DataFrame | None = None    # 0x6B4 팩 전류 · 전류 한계 (새 펌웨어 로그만, 유효한 줄)
+    log_format: str = ""                # "log_on" = 새 펌웨어 로그 (레지스터마다 10 ms · 반복 없음)
 
 
 def _smooth(x: np.ndarray, n: int) -> np.ndarray:
@@ -163,7 +165,8 @@ def read_logger(rec_dir: Path, cm: lc.ClockMap | None, win_true: np.ndarray) -> 
     return Logger(rec_dir.name, cm, win_true, imu["t_rel_ms"].to_numpy() / 1000.0, imu["ay_long_g"].to_numpy(),
                   -imu["ax_lat_g"].to_numpy(),              # 로거의 X 는 우회전에서 양수다 → 좌회전 양수로 뒤집는다
                   lin if len(lin) else None, bms, therm, {k: v for k, v in m.groupby("signal")}, imu["yaw_dps"].to_numpy(),
-                  pack if pack is not None and len(pack) else None)
+                  pack if pack is not None and len(pack) else None,
+                  json.loads((rec_dir / "meta.json").read_text(encoding="utf-8")).get("source", {}).get("log_format", ""))
 
 
 def _cut(df: pd.DataFrame | None, r0: float, r1: float) -> pd.DataFrame | None:

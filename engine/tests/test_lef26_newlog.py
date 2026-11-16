@@ -162,6 +162,16 @@ def test_each_power_cycle_takes_its_own_power_on(tmp_path):
     assert any("전원 주기" in line for line in runsheet.check_text(report["runsheet"]))
 
 
+def test_new_logs_show_id_with_the_torque_current_sign_and_keep_every_sample(tmp_path):
+    """새 로그의 Id (0x28) 는 세션 채널 motor.id_a — 토크 전류와 같이 부호를 뒤집는다 (기록 −10 Num → +3.7 A).
+    새 펌웨어는 같은 프레임을 다시 찍지 않으므로 같은 값이 이어져도 표본을 줄이지 않는다 (10 ms 마다 하나씩)."""
+    [s, *_] = cb.build_event(event(tmp_path))
+    mot = next(b for b in s.blocks if b.key == "motor")
+    idc = next(c for c in mot.series if c.key == "id_a")
+    assert np.allclose(idc.v, 10 * lef26.BAMOCAR_I_A_PER_NUM) and len(idc.t_s) == pytest.approx(2000, abs=3)
+    assert any("반복 없음" in c for c in mot.cautions)
+
+
 def test_a_power_cycle_without_its_power_on_is_left_out(tmp_path):
     """두 번째 전원 켬을 안 적은 날 — 첫 전원 켬에 두 주기를 다 붙이지 않는다 (두 번째 주기는 그 뒤 주행과 겹치지 않는다). 남은 줄은 이유와 함께."""
     sheet = SHEET.replace("LEF-26,3,10:10:00,", "LEF-26,3,,")

@@ -98,6 +98,8 @@ SESSION_COLS = ["sid", "title", "car", "day", "start", "event_kind", "discipline
 
 ROT_SIGN = "전진 +"
 ROT_FLIP = "기록 부호를 뒤집음 (원래는 전진할 때 −)"
+TORQUE_SIGN = "구동 +, 회생 −"
+TORQUE_FLIP = "기록 부호를 뒤집음 (원래는 구동할 때 −) — 회전수와 같이 앞으로 밀 때 + (2026-11-16)"
 
 
 def _read(path: Path) -> pd.DataFrame | None:
@@ -549,6 +551,8 @@ def _motor_signal(name: str):
         df = log.motor.get(name)
         if df is None or not len(df):
             return None, None
+        if getattr(log, "log_format", "") == "log_on":              # 새 펌웨어 — 같은 프레임을 다시 찍지 않는다 (같은 값이 이어진 것도 진짜 표본)
+            return df["t_s"].to_numpy(), df["value"].to_numpy()
         fresh = lef26_laps._fresh(df["raw"].to_numpy())             # 같은 CAN 프레임이 다시 찍힌 표본은 뺀다
         return df["t_s"].to_numpy()[fresh], df["value"].to_numpy()[fresh]
     return pick
@@ -600,23 +604,38 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
     blocks = []
 
     # 모터 · 인버터 (BAMOCAR 0x181)
-    sig = {k: _gather(r, logs, _motor_signal(k))[:2] for k in ("n_act_pct", "iq_act_a", "iq_cmd_a", "vdc_v", "t_igbt_c", "t_motor_c")}
+    sig = {k: _gather(r, logs, _motor_signal(k))[:2] for k in ("n_act_pct", "iq_act_a", "iq_cmd_a", "id_act_a", "id_cmd_a", "vdc_v", "t_igbt_c", "t_motor_c")}
+    if logs and all(getattr(log, "log_format", "") == "log_on" for log in logs):      # 새 펌웨어 — 레지스터마다 10 ms, 빠짐 · 반복 없음
+        sparse = "새 로거 펌웨어 — 레지스터마다 10 ms (온도 100 ms), 빠짐 · 같은 프레임 반복 없음"
     series = []
+    flip = lambda v: 0.0 - v                                       # noqa: E731 — 이 차는 전진 · 구동이 컨트롤러의 − 방향
     spec = (("n_act_pct", "rpm", "모터 회전수", "rpm", lambda v: (0.0 - v) / 100 * lef26.N_MAX_RPM, ROT_SIGN, 0,
              [f"컨트롤러 설정값 N-100 % = {lef26.N_MAX_RPM:.0f} rpm 기준으로 바꾼 값", ROT_FLIP, sparse]),
-            ("iq_act_a", "iq_a", "토크 전류", "A", None, "", 1, ["모터 상전류(교류)의 토크 성분 — 배터리 전류 아님", sparse]),
-            ("iq_cmd_a", "iq_cmd_a", "토크 전류 지령", "A", None, "", 1, [sparse]),
+            ("iq_act_a", "iq_a", "토크 전류", "A", flip, TORQUE_SIGN, 1, ["모터 상전류(교류)의 토크 성분 — 배터리 전류 아님", TORQUE_FLIP, sparse]),
+            ("iq_cmd_a", "iq_cmd_a", "토크 전류 지령", "A", flip, TORQUE_SIGN, 1, [TORQUE_FLIP, sparse]),
+            ("id_act_a", "id_a", "자속 전류 (Id)", "A", flip, "토크 전류와 같은 부호 규칙", 1,
+             ["모터 상전류(교류)의 자속 성분 — 고속에서 자속을 줄일 때(약계자) 크게 나옴", TORQUE_FLIP.replace("구동할 때 −", "토크 전류와 같이 뒤집음"), sparse]),
+            ("id_cmd_a", "id_cmd_a", "자속 전류 지령 (Id)", "A", flip, "토크 전류와 같은 부호 규칙", 1, [TORQUE_FLIP.replace("구동할 때 −", "토크 전류와 같이 뒤집음"), sparse]),
             ("vdc_v", "vdc_v", "DC 버스 전압", "V", None, "", 1, [sparse]),
             ("t_igbt_c", "inverter_c", "인버터(IGBT) 온도", "°C", None, "", 1, ["NTC 값을 컨트롤러 제조사 표로 바꾼 값", sparse]),
             ("t_motor_c", "motor_c", "모터 온도", "°C", None, "", 1, [sparse]))
     for src, key, label, unit, conv, sign, d, cautions in spec:
         t, v = sig[src]
         if len(t):
+            how = "−n_act_pct ÷ 100 × 설정 최대 회전수" if key == "rpm" else "−(기록값)" if conv else ""
             series.append(Channel(key, label, unit, t, conv(v) if conv else v, sign=sign, derived=conv is not None,
-                                  derivation="−n_act_pct ÷ 100 × 설정 최대 회전수" if conv else "", cautions=cautions, source=", ".join(used), digits=d))
+                                  derivation=how, cautions=cautions, source=", ".join(used), digits=d))
+    phase = _phase_current(sig["iq_act_a"], sig["id_act_a"])
+    if phase is not None:
+        series.append(Channel("i_phase_a", "상전류 (크기)", "A", *phase, derived=True, digits=1, source=", ".join(used),
+                              derivation=f"√(Iq² + Id²) — 같은 순간({PHASE_PAIR_S * 1000:.0f} ms 안)의 토크 전류 · 자속 전류",
+                              cautions=["BAMOCAR 전류 환산(Arms / Num, 매뉴얼)을 따른 상전류 실효값 — 배터리 전류 아님", sparse]))
     if series:
         keys = {c.key for c in series}
         cols = []
+        if "i_phase_a" in keys:
+            _lap_stat(r, "i_phase_peak_a", *phase, np.max)
+            cols.append(LapColumn("i_phase_peak_a", "상전류 최대", "A", 0))
         if "inverter_c" in keys:
             _lap_stat(r, "inverter_t_max_c", *sig["t_igbt_c"], np.max)
             cols.append(LapColumn("inverter_t_max_c", "인버터 최고 온도", "°C", 1, chart=True))
@@ -626,7 +645,7 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
         if "iq_a" in keys:
             _lap_stat(r, "iq_peak_a", sig["iq_act_a"][0], np.abs(sig["iq_act_a"][1]), np.max)
             cols.append(LapColumn("iq_peak_a", "토크 전류 최대", "A", 0))
-        facts = [f"{c.label} {np.nanmin(c.v):.0f} ~ {np.nanmax(c.v):.0f} {c.unit} (표본 {len(c.v):,}개)" for c in series if c.key in ("inverter_c", "motor_c", "iq_a")]
+        facts = [f"{c.label} {np.nanmin(c.v):.0f} ~ {np.nanmax(c.v):.0f} {c.unit} (표본 {len(c.v):,}개)" for c in series if c.key in ("inverter_c", "motor_c", "iq_a", "id_a", "i_phase_a")]
         blocks.append(DataBlock("motor", "모터 · 인버터 (BAMOCAR)", HAVE, "LEF-26 차량 로거 — CAN 0x181 (컨트롤러가 보내는 8개 값)", facts,
                                 raw=raw, code=code, outputs=[FileRef("변환된 표 (로거 레코딩 전체)", "motor.parquet", note="signal · value · raw", where=where)],
                                 channels=series, time_keys=[k for k in ("rpm", "iq_a", "inverter_c") if k in keys],
@@ -689,6 +708,20 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
                                 channels=series, time_keys=[c.key for c in series], trace_keys=[c.key for c in series], checks=[clock],
                                 cautions=warn + ["오프셋을 빼지 않은 원래 거리 (서 있을 때의 값이 0 이 아님)"], series=series))
     return blocks
+
+
+PHASE_PAIR_S = 0.02     # 상전류 = √(Iq² + Id²) 을 낼 때 Iq · Id 표본이 이 안이어야 같은 순간으로 본다 (둘 다 10 ms 마다)
+
+
+def _phase_current(iq: tuple, id_: tuple) -> tuple[np.ndarray, np.ndarray] | None:
+    """(시각, Iq) · (시각, Id) → Iq 표본 시각마다 √(Iq² + Id²). 가장 가까운 Id 가 PHASE_PAIR_S 밖이면 그 표본은 뺀다. 둘 중 하나가 없으면 None."""
+    (tq, q), (td, d) = iq, id_
+    if len(tq) < 2 or len(td) < 2:
+        return None
+    k = np.clip(np.searchsorted(td, tq), 1, len(td) - 1)
+    k = np.where(np.abs(td[k - 1] - tq) <= np.abs(td[k] - tq), k - 1, k)
+    ok = np.abs(td[k] - tq) <= PHASE_PAIR_S
+    return (tq[ok], np.hypot(q[ok], d[k][ok])) if ok.sum() >= 2 else None
 
 
 OVER_DCL_A, OVER_DCL_S = 5.0, 0.5    # 팩 전류가 방전 한계(DCL)를 이만큼 넘어 이만큼 넘게 이어지면 경고

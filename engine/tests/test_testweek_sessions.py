@@ -71,6 +71,9 @@ def test_lef26_logger_blocks_are_on_the_session_clock(s26):
     assert checked >= 3
     rpm = next(_channel(s, "motor", "rpm") for s in s26 if _channel(s, "motor", "rpm") is not None)
     assert rpm.sign == "전진 +" and any("부호를 뒤집음" in c for c in rpm.cautions)   # 기록은 전진할 때 − — 엔진이 뒤집어 낸다
+    iq = next(_channel(s, "motor", "iq_a") for s in s26 if _channel(s, "motor", "iq_a") is not None)
+    assert iq.sign == "구동 +, 회생 −" and any("부호를 뒤집음" in c for c in iq.cautions)   # 토크 전류도 회전수와 같이 (2026-11-16)
+    assert np.nanmedian(iq.v[np.abs(iq.v) > 20]) > 0                                     # 달릴 때 대부분 구동 — + 로 나온다
 
 
 @need26
