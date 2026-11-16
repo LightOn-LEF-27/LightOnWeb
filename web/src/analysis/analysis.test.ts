@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { QualityItem, SeriesResponse } from '../types'
-import { addChannels, addToAxis, MAX_AXES, readState, removeChannels, resolveState, toggleChannel, writeState } from './state'
+import { addChannels, addToAxis, graphHref, MAX_AXES, readState, removeChannels, resolveState, toggleChannel, writeState } from './state'
 import { axisData, DELTA, mergeDetail, shadeRanges, tracesFor, xShift } from './traces'
 import { sameAxes, sheetAxes, workbook, WORKBOOKS } from './workbooks'
 
@@ -132,5 +132,12 @@ describe('채널 묶음 전체 선택 · 해제', () => {
   })
   it('전체 해제 — 그 묶음 채널만 빼고 빈 축은 없앰, 오른쪽 축에 겹친 다른 채널은 남김', () => {
     expect(removeChannels([['a', 'x'], ['b'], ['y']], ['a', 'b'])).toEqual([['x'], ['y']])
+  })
+})
+
+describe('그래프 하나만 새 창', () => {
+  it('축만 그 그래프로 바꾸고 세션 · 랩 · 가로축은 그대로', () => {
+    const u = new URL(graphHref('http://h/analysis?sid=S1&x=distance&ref=3&cmp=5&ax=a|b,c&wb=coach', ['b', 'c']))
+    expect(Object.fromEntries(u.searchParams)).toEqual({ sid: 'S1', x: 'distance', ref: '3', cmp: '5', ax: 'b,c', wb: 'coach' })
   })
 })

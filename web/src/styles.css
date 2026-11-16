@@ -1110,6 +1110,7 @@ body.graph-window .statusbar {
   overflow-x: hidden;
 }
 .axis-row {
+  position: relative;
   display: flex;
   border-bottom: 1px solid var(--line-soft);
 }
@@ -1160,6 +1161,29 @@ body.graph-window .statusbar {
   font-size: 16px;
   line-height: 18px;
   border-radius: 3px;
+}
+/* 그래프마다 오른쪽 위 — 이 그래프만 새 창 (11-16) */
+.axis-pop {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--text-muted);
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  opacity: 0.75;
+  cursor: pointer;
+}
+.axis-pop:hover {
+  opacity: 1;
+  color: var(--text-strong);
+  background: var(--raised);
 }
 .axis-x:hover {
   color: var(--text-strong);

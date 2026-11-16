@@ -77,11 +77,17 @@ export function toggleChannel(axes: string[][], ch: string): string[][] {
   return axes.length >= MAX_AXES ? axes : [...axes, [ch]]
 }
 
-// 그래프 새 창 — 창 이름으로 알아본다 (주소는 그대로라 링크 복사 · 새로고침에도 같은 화면). 새 창은 자기 확대 · 커서를 따로 가진다
+// 그래프 새 창 — 그래프마다 오른쪽 위 아이콘. 그 축 하나만 주소에 넣어 새 창으로 연다 (세션 · 랩 · 가로축은 그대로).
+// 창 이름으로 그래프 창을 알아본다 (새로고침 · 링크 복사에도 같은 화면). 새 창은 자기 확대 · 커서를 따로 가진다
 export const GRAPH_WINDOW = 'lefsite-graph'
 export const isGraphWindow = (): boolean => typeof window !== 'undefined' && window.name.startsWith(GRAPH_WINDOW)
+export function graphHref(href: string, axis: string[]): string {
+  const u = new URL(href)
+  u.searchParams.set('ax', axis.join(','))
+  return u.toString()
+}
 export function openGraphWindow(href: string): void {
-  window.open(href, `${GRAPH_WINDOW}-${Date.now()}`, 'popup,width=1280,height=820')
+  window.open(href, `${GRAPH_WINDOW}-${Date.now()}`, 'popup,width=1280,height=720')
 }
 
 // 채널 목록 묶음의 전체 선택 — 아직 안 그린 채널을 하나씩 새 축으로, 축이 MAX_AXES 개가 되면 멈춘다

@@ -13,7 +13,7 @@ import GG from '../analysis/GG'
 import LapPicker from '../analysis/LapPicker'
 import Plots from '../analysis/Plots'
 import TrackMap, { type MapMode } from '../analysis/TrackMap'
-import { addChannels, addToAxis, cmpKey, isGraphWindow, lastAnalysis, MAX_AXES, MAX_CMP, readState, recentSessions, remember, removeChannels, resolveState, toggleChannel, writeState, openGraphWindow,
+import { addChannels, addToAxis, cmpKey, graphHref, isGraphWindow, lastAnalysis, MAX_AXES, MAX_CMP, readState, recentSessions, remember, removeChannels, resolveState, toggleChannel, writeState, openGraphWindow,
          type AnalysisState, type CmpLap, type XMode } from '../analysis/state'
 import { DELTA, mergeDetail, tracesFor, type Trace } from '../analysis/traces'
 import { sameAxes, sheetAxes, workbook, WORKBOOK_GROUPS, WORKBOOKS } from '../analysis/workbooks'
@@ -164,7 +164,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
   const [cur, setCur] = useState<{ a: number | null; b: number | null }>({ a: null, b: null })
   const [mapMode, setMapMode] = useState<MapMode | null>(null)
   const [wide, setWide] = useState(false)
-  const pop = isGraphWindow() // 그래프 새 창 — 위 메뉴 · 아래 상태 줄 · 오른쪽(트랙맵 · 커서 값) · 랩 표를 숨기고 그래프를 크게
+  const pop = isGraphWindow() // 그래프 새 창 — 위 메뉴 · 상태 줄 · 워크시트 · 채널 목록 · 오른쪽(트랙맵 · 커서 값) · 랩 표를 숨기고 그 그래프만 크게
   useEffect(() => {
     document.body.classList.toggle('graph-window', pop)
     return () => document.body.classList.remove('graph-window')
@@ -366,21 +366,16 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
         {pop ? (
           <span className="muted">그래프 창 — 확대 · 커서는 이 창만</span>
         ) : (
-          <>
-            <Link className="btn btn-link" to={`/sessions/${encodeURIComponent(sid)}`}>
-              세션 개요
-            </Link>
-            <button type="button" className="btn" onClick={() => openGraphWindow(window.location.href)} title="지금 그래프(세션 · 랩 · 축)를 새 창으로 — 모니터 하나 더에 띄우기">
-              그래프 새 창
-            </button>
-          </>
+          <Link className="btn btn-link" to={`/sessions/${encodeURIComponent(sid)}`}>
+            세션 개요
+          </Link>
         )}
         <button type="button" className="btn" onClick={copyLink}>
           이 화면 링크 복사
         </button>
       </div>
 
-      <div className="sheet-tabs" role="tablist" aria-label="워크시트">
+      {!pop && <div className="sheet-tabs" role="tablist" aria-label="워크시트">
         <label htmlFor="wb" className="muted">
           워크북
         </label>
@@ -413,16 +408,17 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
             없는 워크시트 {sheets.filter((sh) => !sh.axes).length}개 숨김
           </span>
         )}
-      </div>
+      </div>}
 
       <div className="analysis-main">
-        <ChannelList channels={listChannels} blockTitles={new Map([...s.data_status.map((d): [string, string] => [d.block, d.title]), ['calc', '화면 계산 (엔진 값)']])}
+        {!pop && <ChannelList channels={listChannels} blockTitles={new Map([...s.data_status.map((d): [string, string] => [d.block, d.title]), ['calc', '화면 계산 (엔진 값)']])}
                      shown={new Set(axes.flat())} onToggle={(c) => set({ axes: toggleChannel(axes, c) })}
-                     onSet={(ids, on) => set({ axes: on ? addChannels(axes, ids) : removeChannels(axes, ids) })} room={MAX_AXES - axes.length} maxAxes={MAX_AXES} />
+                     onSet={(ids, on) => set({ axes: on ? addChannels(axes, ids) : removeChannels(axes, ids) })} room={MAX_AXES - axes.length} maxAxes={MAX_AXES} />}
         <div className="analysis-center">
           {series.error && <div className="banner">그래프 값 불러오기 실패 — {series.error}</div>}
           <Plots axes={axes} channels={channelMap} traces={traces} responses={series.data} deltas={deltas} x={x} quality={quality.data ?? []} colors={colors}
-                 theme={theme} group={group} onRemove={(i) => set({ axes: axes.filter((_, k) => k !== i) })} onRemoveChannel={(c) => set({ axes: toggleChannel(axes, c) })} onAdd={(i, c) => set({ axes: addToAxis(axes, i, c) })} />
+                 theme={theme} group={group} onRemove={(i) => set({ axes: axes.filter((_, k) => k !== i) })} onRemoveChannel={(c) => set({ axes: toggleChannel(axes, c) })} onAdd={(i, c) => set({ axes: addToAxis(axes, i, c) })}
+                 onPop={pop ? undefined : (i) => openGraphWindow(graphHref(window.location.href, axes[i]))} />
         </div>
         {!pop && <aside className={`side${wide ? ' wide' : ''}`} aria-label="트랙맵 · 커서 값 · g-g">
           {hasTrack && (

@@ -22,7 +22,17 @@ interface Props {
   onRemove: (axis: number) => void // 이 세션에 없는 채널만 남은 축
   onRemoveChannel: (channel: string) => void
   onAdd: (axis: number, channel: string) => void
+  onPop?: (axis: number) => void // 이 그래프만 새 창으로 (그래프 창 안에서는 없음)
 }
+
+// 새 창 아이콘 — 네모 + 오른쪽 위로 나가는 화살표
+const POP_ICON = (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M9 2.5h4.5V7" />
+    <path d="M13.5 2.5 7.5 8.5" />
+    <path d="M11.5 9.5v3.5a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V5a.5.5 0 0 1 .5-.5h3.5" />
+  </svg>
+)
 
 const HEAD_W = 170
 const X_AXIS_H = 24
@@ -187,6 +197,12 @@ function AxisRow(p: Props & { index: number; ids: string[]; width: number; heigh
                theme={p.theme} readout={readout} />
       ) : (
         <p className="panel-msg muted">{p.ids.includes(DELTA) ? '시간 차는 거리축에서 비교 랩을 고르면 표시' : '이 랩에는 이 채널 값 없음'}</p>
+      )}
+      {p.onPop && (
+        <button type="button" className="axis-pop" aria-label={`${chs.map((c) => c.label).join(' · ')} 새 창으로`} title="이 그래프만 새 창으로 크게"
+                onClick={() => p.onPop!(p.index)}>
+          {POP_ICON}
+        </button>
       )}
     </div>
   )
