@@ -970,6 +970,11 @@ ul.plain {
   opacity: 0.4;
   cursor: not-allowed;
 }
+/* 그래프 새 창 (11-16) — 그래프만 크게 */
+body.graph-window .appbar,
+body.graph-window .statusbar {
+  display: none;
+}
 .analysis-main {
   flex: 1;
   min-height: 0;

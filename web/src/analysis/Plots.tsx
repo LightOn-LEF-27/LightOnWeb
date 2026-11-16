@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Channel, DeltaResponse, QualityItem, SeriesResponse } from '../types'
-import Chart, { panBy, setRange, type ZoomGroup } from './Chart'
+import Chart, { PAN, panBy, setRange, type ZoomGroup } from './Chart'
 import { GRAPH_HIDDEN } from './lookup'
 import type { XMode } from './state'
 import { axisData, DELTA, shadeRanges, type Trace } from './traces'
@@ -99,7 +99,7 @@ function Navigator({ group, unit }: { group: ZoomGroup; unit: string }) {
     const start = toVal(e.clientX)
     const r0 = { ...r }
     const move = (ev: PointerEvent) => {
-      const d = toVal(ev.clientX) - start
+      const d = (toVal(ev.clientX) - start) * PAN.drag
       setRange(group, r0.min + d, r0.max + d)
     }
     const up = () => (window.removeEventListener('pointermove', move), window.removeEventListener('pointerup', up))
@@ -114,13 +114,13 @@ function Navigator({ group, unit }: { group: ZoomGroup; unit: string }) {
   }
   return (
     <div className="nav">
-      <button type="button" className="btn btn-sm" aria-label="왼쪽으로" disabled={!r} onClick={() => panBy(group, -0.5)}>
+      <button type="button" className="btn btn-sm" aria-label="왼쪽으로" disabled={!r} onClick={() => panBy(group, -PAN.button)}>
         ◀
       </button>
       <div className="nav-bar" ref={bar} onClick={jump} title={r ? '끌어서 옆으로 넘기기 · 빈 곳을 누르면 그리로' : '확대하면 여기서 옆으로 넘길 수 있음'}>
         <div className={`nav-win${r ? '' : ' full'}`} style={{ left: `${lo * 100}%`, width: `${w * 100}%` }} onPointerDown={drag} />
       </div>
-      <button type="button" className="btn btn-sm" aria-label="오른쪽으로" disabled={!r} onClick={() => panBy(group, 0.5)}>
+      <button type="button" className="btn btn-sm" aria-label="오른쪽으로" disabled={!r} onClick={() => panBy(group, PAN.button)}>
         ▶
       </button>
       <span className="muted nav-text">{r ? `${r.min.toFixed(unit === 's' ? 1 : 0)} ~ ${r.max.toFixed(unit === 's' ? 1 : 0)} ${unit}` : '전체'}</span>

@@ -13,7 +13,7 @@ import GG from '../analysis/GG'
 import LapPicker from '../analysis/LapPicker'
 import Plots from '../analysis/Plots'
 import TrackMap, { type MapMode } from '../analysis/TrackMap'
-import { addChannels, addToAxis, cmpKey, lastAnalysis, MAX_AXES, MAX_CMP, readState, recentSessions, remember, removeChannels, resolveState, toggleChannel, writeState,
+import { addChannels, addToAxis, cmpKey, isGraphWindow, lastAnalysis, MAX_AXES, MAX_CMP, readState, recentSessions, remember, removeChannels, resolveState, toggleChannel, writeState, openGraphWindow,
          type AnalysisState, type CmpLap, type XMode } from '../analysis/state'
 import { DELTA, mergeDetail, tracesFor, type Trace } from '../analysis/traces'
 import { sameAxes, sheetAxes, workbook, WORKBOOK_GROUPS, WORKBOOKS } from '../analysis/workbooks'
@@ -164,6 +164,11 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
   const [cur, setCur] = useState<{ a: number | null; b: number | null }>({ a: null, b: null })
   const [mapMode, setMapMode] = useState<MapMode | null>(null)
   const [wide, setWide] = useState(false)
+  const pop = isGraphWindow() // 그래프 새 창 — 위 메뉴 · 아래 상태 줄 · 오른쪽(트랙맵 · 커서 값) · 랩 표를 숨기고 그래프를 크게
+  useEffect(() => {
+    document.body.classList.toggle('graph-window', pop)
+    return () => document.body.classList.remove('graph-window')
+  }, [pop])
   const [adding, setAdding] = useState(false)
   const [zoom, setZoom] = useState<Range>(null)
   group.onPick = (v, which) => setCur((c) => ({ ...c, [which]: v }))
@@ -303,7 +308,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
     )
 
   return (
-    <div className="analysis">
+    <div className={`analysis${pop ? ' pop' : ''}`}>
       <div className="toolbar analysis-tools">
         <label htmlFor="sess">세션</label>
         <select id="sess" className="field sess-select" value={sid} onChange={(e) => setState({ sid: e.target.value, x: null, ref: null, cmp: [], axes: st.axes, wb: st.wb })}>
@@ -358,9 +363,18 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
           확대 초기화
         </button>
         <span style={{ flex: 1 }} />
-        <Link className="btn btn-link" to={`/sessions/${encodeURIComponent(sid)}`}>
-          세션 개요
-        </Link>
+        {pop ? (
+          <span className="muted">그래프 창 — 확대 · 커서는 이 창만</span>
+        ) : (
+          <>
+            <Link className="btn btn-link" to={`/sessions/${encodeURIComponent(sid)}`}>
+              세션 개요
+            </Link>
+            <button type="button" className="btn" onClick={() => openGraphWindow(window.location.href)} title="지금 그래프(세션 · 랩 · 축)를 새 창으로 — 모니터 하나 더에 띄우기">
+              그래프 새 창
+            </button>
+          </>
+        )}
         <button type="button" className="btn" onClick={copyLink}>
           이 화면 링크 복사
         </button>
@@ -410,7 +424,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
           <Plots axes={axes} channels={channelMap} traces={traces} responses={series.data} deltas={deltas} x={x} quality={quality.data ?? []} colors={colors}
                  theme={theme} group={group} onRemove={(i) => set({ axes: axes.filter((_, k) => k !== i) })} onRemoveChannel={(c) => set({ axes: toggleChannel(axes, c) })} onAdd={(i, c) => set({ axes: addToAxis(axes, i, c) })} />
         </div>
-        <aside className={`side${wide ? ' wide' : ''}`} aria-label="트랙맵 · 커서 값 · g-g">
+        {!pop && <aside className={`side${wide ? ' wide' : ''}`} aria-label="트랙맵 · 커서 값 · g-g">
           {hasTrack && (
             <section className="side-block">
               <h2 className="side-head">
@@ -445,10 +459,10 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
           {hasGG && gg.data && (
             <GG gg={gg.data} ch={ggCh} track={track.data} x={x} lapStart={lapStart} lapEnd={lapEnd} a={cur.a} onA={(v) => setCur((c) => ({ ...c, a: v }))} group={group} theme={theme} />
           )}
-        </aside>
+        </aside>}
       </div>
 
-      {lapNums.length > 0 ? (
+      {pop ? null : lapNums.length > 0 ? (
         <LapPicker table={laps.data} refLap={ref} cmp={sameLaps} max={MAX_CMP - otherCmp.length} colors={colors}
                    colorOf={(lap) => (lap === ref ? colors[0] : cmp.findIndex((c) => !c.sid && c.lap === lap) >= 0 ? colors[cmp.findIndex((c) => !c.sid && c.lap === lap) + 1] : 'transparent')}
                    onRef={(r) => set({ ref: r, x: r === 'all' ? 'time' : x, cmp: r === 'all' ? [] : cmp.filter((c) => c.sid || c.lap !== r) })}

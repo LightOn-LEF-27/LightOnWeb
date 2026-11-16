@@ -77,6 +77,13 @@ export function toggleChannel(axes: string[][], ch: string): string[][] {
   return axes.length >= MAX_AXES ? axes : [...axes, [ch]]
 }
 
+// 그래프 새 창 — 창 이름으로 알아본다 (주소는 그대로라 링크 복사 · 새로고침에도 같은 화면). 새 창은 자기 확대 · 커서를 따로 가진다
+export const GRAPH_WINDOW = 'lefsite-graph'
+export const isGraphWindow = (): boolean => typeof window !== 'undefined' && window.name.startsWith(GRAPH_WINDOW)
+export function openGraphWindow(href: string): void {
+  window.open(href, `${GRAPH_WINDOW}-${Date.now()}`, 'popup,width=1280,height=820')
+}
+
 // 채널 목록 묶음의 전체 선택 — 아직 안 그린 채널을 하나씩 새 축으로, 축이 MAX_AXES 개가 되면 멈춘다
 export function addChannels(axes: string[][], chs: string[]): string[][] {
   const out = [...axes]

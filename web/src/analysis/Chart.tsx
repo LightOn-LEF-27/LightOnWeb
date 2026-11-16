@@ -92,6 +92,9 @@ export function setRange(group: ZoomGroup, min: number, max: number): void {
   share(null, group, min, max)
 }
 
+// 옆으로 넘기는 양 — 보는 폭에 대한 비율 (11-16 사용자 요청으로 절반으로 줄임: 휠 0.15 → 0.075 · 버튼 0.5 → 0.25 · 아래 막대 끌기는 마우스의 절반)
+export const PAN = { wheel: 0.075, button: 0.25, drag: 0.5 }
+
 // 옆으로 넘기기 — 보는 폭의 frac 만큼 (− 왼쪽 · + 오른쪽)
 export function panBy(group: ZoomGroup, frac: number): void {
   const r = group.range
@@ -294,7 +297,7 @@ export default function Chart({ channels, axis, colors, width, height, showX, sh
       if (min == null || max == null) return
       if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
         const d = e.shiftKey ? e.deltaY : e.deltaX
-        return panBy(group, Math.sign(d) * 0.15)
+        return panBy(group, Math.sign(d) * PAN.wheel)
       }
       const at = u.posToVal(e.offsetX, 'x')
       const k = e.deltaY < 0 ? 0.8 : 1.25
