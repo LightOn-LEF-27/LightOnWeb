@@ -377,6 +377,9 @@ def get_series(sid: str, channel_ids, x: str = "time", t0: float | None = None, 
 
     duration = float(s["summary"]["duration_s"])
     row = _lap_row(sid, lap) if lap is not None else None
+    fallback = None
+    if x == "ref_distance" and s["summary"].get("lap_kind") == "gymkhana":     # 짐카나는 기준선이 없다 — 그 랩의 계측선부터 거리로 (시도끼리 겹쳐 보기)
+        x, fallback = "distance", "짐카나 시도는 기준선이 없어 ref_distance 대신 그 랩의 계측선부터 거리 (distance)"
     if x == "time":
         lo_t, hi_t = (float(row["t_start_s"]), float(row["t_end_s"])) if row is not None else (0.0, duration)
         lo = max(float(t0), 0.0) if t0 is not None else lo_t
@@ -444,7 +447,7 @@ def get_series(sid: str, channel_ids, x: str = "time", t0: float | None = None, 
     else:
         lap_marks = [{"lap": int(row["lap"]), "x_start": 0.0, "x_end": _num(length, 2)}]
     return {"sid": sid, "x": {"kind": x, "unit": unit, "values": _arr(centers, digits_x), "lap": int(row["lap"]) if row is not None else None,
-                  "frame_id": s["summary"].get("frame_id") if x != "time" else None},
+                  "frame_id": s["summary"].get("frame_id") if x != "time" else None, **({"fallback": fallback} if fallback else {})},
             "series": out_series, "laps": lap_marks,
             "reduced": {"from_points": native, "to_points": n, "method": "minmax", "smooth_s": smooth_s or None}}
 
@@ -457,8 +460,12 @@ def get_laps(sid: str) -> dict:
     laps = _laps(sid)
     cols = [c for c in s["lap_columns"] if c["key"] in laps.columns]
     keys = ["lap", "t_start_s", "t_end_s"] + [c["key"] for c in cols if c["key"] not in ("lap", "t_start_s", "t_end_s")]
-    notes = ["랩은 계측선 통과부터 다음 통과까지 (나가는 랩 · 들어오는 랩은 없음). 계측선은 데이터에서 고른 선 (실제 대회 계측선과 다를 수 있음)",
-             "t_start_s · t_end_s 는 세션 시간"]
+    gym = s["summary"].get("lap_kind") == "gymkhana"
+    notes = (["랩 = 짐카나 시도 한 번 — 코스 계측선을 넘어 들어가 다시 넘어 나올 때까지 (입구 = 출구). 그 사이 줄서기 · 돌아 나오는 길은 랩이 아니다",
+              "코스 = 이벤트 메모에 적은 계측선 순서 (course_no). 계측선으로 못 잡고 코스 구역으로 잡은 시도 (by_line = 0) 는 시각이 몇 초 어긋날 수 있음"]
+             if gym else
+             ["랩은 계측선 통과부터 다음 통과까지 (나가는 랩 · 들어오는 랩은 없음). 계측선은 데이터에서 고른 선 (실제 대회 계측선과 다를 수 있음)"]) \
+        + ["t_start_s · t_end_s 는 세션 시간"]
     fr = _frame_doc(s) if len(laps) else None
     table, summary = None, None
     if fr is not None:
@@ -474,6 +481,8 @@ def get_laps(sid: str) -> dict:
                    "mean": {key: _num(float(table[:, i].mean()), 3) for i, key in enumerate(skeys)}, "n_laps": len(nums),
                    "theoretical_best_s": _num(float(table[best_i, np.arange(k)].sum()), 3)}
         notes.append(f"구간 S1 ~ S{k} 은 기준 거리 위의 경계 (get_sectors 와 같다). 평균은 완주 랩 {len(nums)}개, 이론 최속 = 구간마다 최속의 합")
+    elif gym and len(laps):
+        notes.append("짐카나는 구간 비교 없음 — 같은 코스가 여러 곳이고 시도마다 길이 달라 기준선 하나로 비교하지 않는다")
     elif len(laps) and s["track"]["has_track"]:
         notes.append("구간 시간 없음 — frame(기준선 · 구간 경계) 파일이 없다. lefdata sessions 로 다시 만들 것")
     rows = []
