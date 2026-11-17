@@ -2220,7 +2220,8 @@ def _course_gates(notes: dict) -> list[course_gates.Gate]:
 def _course_laps(event_dir: Path, notes: dict, gates: list[course_gates.Gate], origin: dict, recs: list[str]) -> pd.DataFrame:
     """GPS 레코딩마다 코스 계측선 시도 (course_gates.find) → 한 표 (recording_id · lap 을 붙여). derived/course_laps.csv 로도 쓴다.
 
-    `[course_gates] reference = "<레코딩>"` 이 있으면 기록마다 GPS 밀림을 그 레코딩 궤적에 맞춘 뒤 센다 (선은 그 레코딩 기준으로 그린 것).
+    `[course_gates] reference = "<레코딩>"` 이 있으면 기록마다 GPS 밀림을 그 레코딩 궤적에 맞춰 본다 (선은 그 레코딩 기준으로 그린 것 —
+    맞춘 것 · 안 맞춘 것 중 계측선으로 잡힌 시도가 많은 쪽, course_gates.find_best).
     """
     def xy(rec):
         g = pq.read_table(event_dir / "normalized" / rec / "gps.parquet", columns=["t_rel_ms", "fix", "lat", "lon", "speed_kmh"]).to_pandas()
@@ -2233,8 +2234,8 @@ def _course_laps(event_dir: Path, notes: dict, gates: list[course_gates.Gate], o
     parts = []
     for rec in recs:
         t, x, y, v = xy(rec)
-        dx, dy, fit = (0.0, 0.0, 1.0) if ref is None or rec == ref else course_gates.align(x, y, rx, ry)
-        got = course_gates.find(t, x + dx, y + dy, v, gates)
+        mine = ref is None or rec == ref
+        got, dx, dy, fit = course_gates.find_best(t, x, y, v, gates, None if mine else rx, None if mine else ry)
         parts.append(got.assign(recording_id=rec, lap=np.arange(1, len(got) + 1), shift_x_m=dx, shift_y_m=dy, align_fit=round(fit, 3)))
     out = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["recording_id", "lap"] + course_gates.COLUMNS)
     out = out[["recording_id", "lap"] + course_gates.COLUMNS + ["shift_x_m", "shift_y_m", "align_fit"]] if len(out) else out

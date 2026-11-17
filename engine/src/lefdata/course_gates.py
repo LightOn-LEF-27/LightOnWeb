@@ -5,7 +5,8 @@
 
     gate      Gate(name, x1, y1, x2, y2, zone_x)  — 평면 좌표 (m, x 동 · y 북). 선을 (x1, y1) → (x2, y2) 로 볼 때 **오른쪽이 코스**.
               zone_x = (서쪽 끝, 동쪽 끝) — 코스 구역의 동서 범위 (같은 코스가 나란히 둘이면 둘을 가른다)
-    align     GPS 가 기록마다 통째로 몇 m 씩 밀린다 — 기준 기록의 궤적에 겹치는 (dx, dy) 를 ±shift_m 안에서 찾는다 (1 m 격자)
+    align     GPS 가 기록마다 통째로 몇 m 씩 밀린다 — 기준 기록의 궤적에 겹치는 (dx, dy) 를 ±shift_m 안에서 찾는다 (1 m 격자).
+              find_best 가 맞춘 것 · 안 맞춘 것 중 계측선으로 잡힌 시도가 많은 쪽을 고른다 (맞추기가 엉뚱한 자리로 끌릴 때가 있다)
     find      1) 선 (양쪽 extend_m 늘린 선분) 을 넘어 들어가 min_lap_m 넘게 달린 뒤 넘어 나온 것 — 시각이 정확하다 (how = "line")
               2) 코스 구역 (선의 코스 쪽 · zone_x 안) 에 들어갔다 나온 것 중 1) 과 시간이 안 겹치는 것 (how = "zone" — GPS 가 끊겼거나
                  코스를 놓쳐 선 밖으로 드나든 시도. 시각이 몇 초 어긋날 수 있다). GPS 기록의 처음 · 끝에 걸린 것은 뺀다 (반쪽)
@@ -80,6 +81,24 @@ def align(x: np.ndarray, y: np.ndarray, ref_x: np.ndarray, ref_y: np.ndarray, sh
             if score > best or (score == best and abs(dx) + abs(dy) < abs(arg[0]) + abs(arg[1])):
                 best, arg = score, (dx, dy)
     return float(arg[0]), float(arg[1]), best / len(k)
+
+
+def find_best(t, x, y, speed_kmh, gates: list[Gate], ref_x=None, ref_y=None) -> tuple[pd.DataFrame, float, float, float]:
+    """밀림을 맞춘 것과 안 맞춘 것 둘 다 세어, 계측선으로 잡힌 시도가 많은 쪽 (같으면 구역 시도가 적은 쪽, 그래도 같으면 안 맞춘 쪽).
+
+    밀림 맞추기는 궤적 전체를 겹치는데, 줄서기 · 돌아 나오는 길은 기록마다 다니는 곳이 달라 엉뚱한 자리로 끌릴 때가 있다
+    (2026-11-14 25Evo 17:29 — 맞추면 선을 못 지나 구역으로 잘못 자름). 어느 쪽이 맞는지는 선을 깔끔히 지난 시도의 수로 고른다.
+    → (시도 표, dx, dy, 겹친 비율 — 안 맞춘 쪽이면 dx = dy = 0)
+    """
+    raw = find(t, x, y, speed_kmh, gates)
+    if ref_x is None:
+        return raw, 0.0, 0.0, 1.0
+    dx, dy, fit = align(x, y, ref_x, ref_y)
+    if dx == 0 and dy == 0:
+        return raw, 0.0, 0.0, fit
+    moved = find(t, np.asarray(x) + dx, np.asarray(y) + dy, speed_kmh, gates)
+    key = lambda d: ((d["how"] == "line").sum(), -(d["how"] == "zone").sum())       # noqa: E731
+    return (moved, dx, dy, fit) if key(moved) > key(raw) else (raw, 0.0, 0.0, fit)
 
 
 def find(t: np.ndarray, x: np.ndarray, y: np.ndarray, speed_kmh: np.ndarray, gates: list[Gate], extend_m: float = EXTEND_M,

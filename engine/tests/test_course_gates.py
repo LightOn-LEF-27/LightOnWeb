@@ -66,3 +66,14 @@ def test_align_finds_a_whole_track_shift():
     t, x, y, v = drive(path(*QUEUE, *COURSE[1:], *LOOP[1:]))
     dx, dy, fit = cg.align(x + 7.0, y - 4.0, x, y)
     assert abs(dx + 7.0) <= cg.NEAR_M and abs(dy - 4.0) <= cg.NEAR_M and fit > 0.9           # 긴 직선은 NEAR_M 안에서 답이 여럿
+
+
+def test_find_best_uses_the_shift_only_when_it_catches_more_tries_at_the_line():
+    """선분 (0 ~ 10 m) 밖으로 18 m 밀린 기록 — 맞추면 선으로 잡히니 맞춘 쪽. 안 밀린 기록 — 그대로 (맞춘 쪽이 더 낫지 않으면 안 맞춘다)."""
+    gate = cg.Gate("짐카나", 0.0, 0.0, 10.0, 0.0)
+    pts = [(5, 40), (5, 3), (5, -20), (35, -60), (-25, -60), (5, -20), (6, 3), (40, 40)]
+    t, x, y, v = drive(path(*pts))
+    got, dx, dy, _ = cg.find_best(t, x + 18.0, y, v, [gate], x, y)
+    assert abs(dx + 18.0) <= cg.NEAR_M and list(got["how"]) == ["line"]
+    got, dx, dy, _ = cg.find_best(t, x, y, v, [gate], x, y)
+    assert (dx, dy) == (0.0, 0.0) and list(got["how"]) == ["line"]
