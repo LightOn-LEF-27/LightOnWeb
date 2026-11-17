@@ -532,6 +532,9 @@ def get_track(sid: str, lap: int | str | None = None, color: str | None = None, 
     fr = _frame_doc(s) if lap_no is not None else None
     if fr is not None:
         out["ref_m"] = _arr(_lap_ref(sid, lap_no, fr[1])[1], 2)
+    elif lap_no is not None and s["summary"].get("lap_kind") == "gymkhana":    # 기준선 없음 — get_series 의 ref_distance 대신과 같은 축 (그 랩의 계측선부터 거리)
+        out["ref_m"] = out["dist_m"]
+        out["ref_fallback"] = "짐카나 시도는 기준선이 없어 ref_m = 그 랩의 계측선부터 거리 (dist_m)"
     if spec is not None:
         ct, cv, cdt = _channel(sid, spec, (float(pt[0]), float(pt[-1])), smooth_s)
         levels = spec.get("levels")
