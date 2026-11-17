@@ -75,7 +75,7 @@ def summary(s: Session, blocks: list[DataBlock] | None = None) -> dict:
             "start": _iso(s.start), "duration_s": _num(s.duration_s, 2), "distance_km": st.get("distance_km"), "laps": st.get("laps_n"),
             "best_lap_s": st.get("best_lap_s"), "stats": {k: v for k, v in st.items() if k not in ("distance_km", "laps_n", "best_lap_s")},
             "frame_id": s.frame_id or None, "split_by": s.split_by, "has_track": s.track is not None, "run_no": s.run_no or None,
-            "purpose": s.purpose or None, "default_hidden": s.discipline == CHECK_DISCIPLINE, "blocks": blocks, "data_status": status}
+            "purpose": s.purpose or None, "default_hidden": s.discipline == CHECK_DISCIPLINE, "lap_kind": s.lap_kind or None, "blocks": blocks, "data_status": status}
 
 
 def _channel_specs(b: DataBlock) -> list[tuple[Channel, dict]]:
@@ -307,6 +307,8 @@ def write_frames(root: Path, reframe: bool = False, keys: set[str] | None = None
     rows = [json.loads(p.read_text(encoding="utf-8"))["summary"] for p in sorted(root.glob("*/session.json"))]
     groups: dict[str, list[dict]] = {}
     for r in rows:
+        if r.get("lap_kind") == "gymkhana":                    # 코스 계측선 시도 (짐카나) — 기준선 · 구간 비교를 하지 않는다
+            continue
         groups.setdefault(frame_key(r), []).append(r)
     written = []
     for key, members in groups.items():

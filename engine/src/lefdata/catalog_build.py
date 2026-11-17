@@ -51,7 +51,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from . import carconfig, em_laps, events as evmod, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
+from . import carconfig, course_gates, em_laps, events as evmod, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
 from .catalog import (CHECK_DISCIPLINE, HAVE, NONE, SEEK, WARN, Channel, CodeRef, DataBlock, Export, FileRef, LapColumn, Missing, Session,
                       code_html, size_text, to_markdown, write_session)
 
@@ -73,6 +73,7 @@ FULL_THROTTLE_PCT = 95.0    # 풀스로틀로 보는 값
 EM_REFINE_MIN_S = 1.0       # 에너지미터 전력에 다시 맞출 때는 이보다 크게 어긋난 것만 옮긴다 — 백업 로거 시각이 1 s 단위이고,
                             #   에너지미터 쪽도 긴 레코딩에서는 구간마다 조금 벗어난다 (그보다 작은 차이를 쫓지 않는다)
 ACCEL_LEAD_S = 10.0         # 가속 출발(정지)은 주행 구간 시작(10 km/h 를 넘는 순간)보다 앞이다 — 그만큼 앞까지 본다
+GYMKHANA_LAPS = "gymkhana"  # 세션 lap_kind — 랩 = 코스 계측선 시도 (들어가고 나오는 선, course_gates). 서킷 기준선과 비교하지 않는다
 GYMKHANA = "짐카나"         # 콘으로 만든 짧은 코스 — 정지에서 출발해 같은 자리로 돌아와 선다 (2026-11-14 트랙데이, events.gymkhana_runs)
 UNCLASSIFIED = "미분류"      # 랩 · 종목을 알아보지 못했지만 달린 주행 — 세션으로 넣고 '확인 필요' 경고 (사람이 [[session]] 으로 정하거나 skip)
 CHECK = CHECK_DISCIPLINE    # "점검" — 켜기만 하고 달리지 않은 기록 ([event] check_sessions = "auto", 2026-11-17)
@@ -231,7 +232,9 @@ class _Run:
         self.t0_abs = float(np.interp(self.t0, t, self.g_abs))
         self.laps = pd.DataFrame({"lap": laps["lap"].astype(int), "t_start_s": laps["t_start_s"] - self.t0,
                                   "t_end_s": laps["t_end_s"] - self.t0, "lap_time_s": laps["lap_time_s"],
-                                  "distance_m": laps["distance_m"], "vmax_kmh": laps["vmax_kmh"], "vmin_kmh": laps["vmin_kmh"]}
+                                  "distance_m": laps["distance_m"], "vmax_kmh": laps["vmax_kmh"], "vmin_kmh": laps["vmin_kmh"],
+                                  **({"course_no": laps["course_no"].astype(int), "by_line": (laps["how"] == "line").astype(int)}
+                                     if "course_no" in laps else {})}      # 코스 계측선 시도 (짐카나, course_gates) — 어느 코스 · 선으로 잡았나
                                  ).reset_index(drop=True)
 
     def lap_of(self, ts: np.ndarray) -> np.ndarray:
@@ -293,7 +296,9 @@ def _gps_block(r: _Run) -> DataBlock:
                         f"{len(table):,} 행")],
         channels=[speed], time_keys=["speed_kmh"], trace_keys=["speed_kmh"], map_key="speed_kmh",
         lap_columns=[LapColumn("lap_time_s", "랩타임", "s", 2, chart=True), LapColumn("vmax_kmh", "최고 속도", "km/h", 1, chart=True),
-                     LapColumn("vmin_kmh", "최저 속도", "km/h", 1), LapColumn("distance_m", "달린 거리", "m", 0)],
+                     LapColumn("vmin_kmh", "최저 속도", "km/h", 1), LapColumn("distance_m", "달린 거리", "m", 0)]
+        + ([LapColumn("course_no", "코스", "", 0), LapColumn("by_line", "계측선으로 잡음 (1) · 코스 구역으로 (0)", "", 0)]
+           if "course_no" in r.laps else []),
         cautions=list(r.extra("gps").get("cautions", [])), series=series)
 
 
@@ -1852,7 +1857,8 @@ def _gps_window(ctx: "_GpsCtx", x: _Rec, t0: float, t1: float, off: float):
     r0, r1 = (float(v) for v in np.interp([a0, a1], ab, t))
     m = (t >= r0) & (t <= r1)
     px, py = lapmod.to_local_m(g["lat"].to_numpy()[m], g["lon"].to_numpy()[m], ctx.origin["lat0"], ctx.origin["lon0"])
-    lp = ctx.laps[(ctx.laps["recording_id"] == x.rec) & (ctx.laps["t_start_s"] >= r0 - 1e-6) & (ctx.laps["t_end_s"] <= r1 + 1e-6)]
+    src = ctx.course_laps if ctx.course_laps is not None else ctx.laps     # 코스 계측선이 있는 이벤트는 랩 = 짐카나 시도
+    lp = src[(src["recording_id"] == x.rec) & (src["t_start_s"] >= r0 - 1e-6) & (src["t_end_s"] <= r1 + 1e-6)]
     lp = lp.sort_values("t_start_s").assign(lap=lambda d: np.arange(1, len(d) + 1))      # 주행 구간이 여러 개여도 겹치지 않게 다시 센다
     runs = ctx.runs[ctx.runs["recording_id"] == x.rec]
     inside = (np.minimum(runs["t_end_s"], r1) - np.maximum(runs["t_start_s"], r0)) / (runs["t_end_s"] - runs["t_start_s"]).clip(lower=1e-9)
@@ -2191,10 +2197,50 @@ class _GpsCtx:
         self.day_notes = self.ev.get("day_notes", {})
         self.clocks = _Clocks(notes) if self.ev.get("clock") else None        # 기준 시계가 있는 이벤트 — 시작 시각을 그 시계로 보인다
         self.gps_recs = {x.rec: x for x in _recordings(event_dir) if x.device in GPS_DEVICES} if self.clocks else {}
+        self.gates = _course_gates(notes)                                     # 코스 계측선 (짐카나) — 있으면 랩 = 시도 (course_gates)
+        self.course_laps = _course_laps(event_dir, notes, self.gates, self.origin, sorted(set(self.runs["recording_id"]))) if self.gates else None
 
     @staticmethod
     def available(event_dir: Path) -> bool:
         return all((Path(event_dir) / "derived" / n).exists() for n in ("runs.csv", "laps.csv", "gate.json"))
+
+
+def _course_gates(notes: dict) -> list[course_gates.Gate]:
+    """메모의 `[[course_gate]]` → 계측선들 (경기장 평면 좌표, m). line = [x1, y1, x2, y2] — (x1, y1) → (x2, y2) 의 오른쪽이 코스."""
+    out = []
+    for e in notes.get("course_gate", []):
+        line = [float(v) for v in e.get("line", [])]
+        if len(line) != 4 or not e.get("name"):
+            raise ValueError(f"{NOTES_NAME}: [[course_gate]] 에는 name 과 line = [x1, y1, x2, y2] 가 있어야 한다 — {e}")
+        zx = [float(v) for v in e.get("zone_x", [-np.inf, np.inf])]
+        out.append(course_gates.Gate(e["name"], *line, zone_x=(zx[0], zx[1])))
+    return out
+
+
+def _course_laps(event_dir: Path, notes: dict, gates: list[course_gates.Gate], origin: dict, recs: list[str]) -> pd.DataFrame:
+    """GPS 레코딩마다 코스 계측선 시도 (course_gates.find) → 한 표 (recording_id · lap 을 붙여). derived/course_laps.csv 로도 쓴다.
+
+    `[course_gates] reference = "<레코딩>"` 이 있으면 기록마다 GPS 밀림을 그 레코딩 궤적에 맞춘 뒤 센다 (선은 그 레코딩 기준으로 그린 것).
+    """
+    def xy(rec):
+        g = pq.read_table(event_dir / "normalized" / rec / "gps.parquet", columns=["t_rel_ms", "fix", "lat", "lon", "speed_kmh"]).to_pandas()
+        g = g[g["fix"] & (g["lat"] != 0)]
+        x, y = lapmod.to_local_m(g["lat"].to_numpy(), g["lon"].to_numpy(), origin["lat0"], origin["lon0"])
+        return g["t_rel_ms"].to_numpy() / 1000.0, x, y, g["speed_kmh"].to_numpy(float)
+
+    ref = (notes.get("course_gates") or {}).get("reference")
+    rx, ry = xy(ref)[1:3] if ref else (None, None)
+    parts = []
+    for rec in recs:
+        t, x, y, v = xy(rec)
+        dx, dy, fit = (0.0, 0.0, 1.0) if ref is None or rec == ref else course_gates.align(x, y, rx, ry)
+        got = course_gates.find(t, x + dx, y + dy, v, gates)
+        parts.append(got.assign(recording_id=rec, lap=np.arange(1, len(got) + 1), shift_x_m=dx, shift_y_m=dy, align_fit=round(fit, 3)))
+    out = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["recording_id", "lap"] + course_gates.COLUMNS)
+    out = out[["recording_id", "lap"] + course_gates.COLUMNS + ["shift_x_m", "shift_y_m", "align_fit"]] if len(out) else out
+    (event_dir / "derived").mkdir(exist_ok=True)
+    out.round(3).to_csv(event_dir / "derived" / "course_laps.csv", index=False, encoding="utf-8-sig")
+    return out
 
 
 def _gps_sessions(ctx: _GpsCtx, skip: set[tuple[str, int]] = frozenset(), report: dict | None = None) -> list[Session]:
@@ -2224,7 +2270,12 @@ def _gps_sessions(ctx: _GpsCtx, skip: set[tuple[str, int]] = frozenset(), report
             if ctx.ev.get("sessions") != "auto":
                 dropped.append({"recording": key[0], "run": key[1], "why": f"이름을 적지 않음 ({NOTES_NAME} 에 sessions = \"auto\" 없음)"})
             continue
-        mine = ctx.laps[(ctx.laps["recording_id"] == key[0]) & (ctx.laps["run"] == key[1])]
+        if ctx.course_laps is not None:                         # 코스 계측선 시도 — 그 주행 구간 안의 것 (번호는 다시 센다)
+            cl = ctx.course_laps
+            mine = cl[(cl["recording_id"] == key[0]) & (cl["t_start_s"] >= float(run["t_start_s"]) - 1e-6)
+                      & (cl["t_end_s"] <= float(run["t_end_s"]) + 1e-6)].assign(lap=lambda d: np.arange(1, len(d) + 1))
+        else:
+            mine = ctx.laps[(ctx.laps["recording_id"] == key[0]) & (ctx.laps["run"] == key[1])]
         e = ctx.run_e[(ctx.run_e["recording_id"] == key[0]) & (ctx.run_e["run"] == key[1])] if ctx.run_e is not None else pd.DataFrame()
         e = e.iloc[0] if len(e) and (e.iloc[0]["em_recording"], key[0]) in ctx.aligned and e.iloc[0]["cover_share"] >= em_laps.MIN_COVER else None
         lap_e = ctx.lap_e[(ctx.lap_e["recording_id"] == key[0]) & (ctx.lap_e["run"] == key[1])] if e is not None else None
@@ -2304,7 +2355,8 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
         sid="", car=ev.get("car", r.meta["car"]), day=f"{start:%Y-%m-%d}", name=info.get("name", ""), start=start, duration_s=r.t1 - r.t0,
         event_kind=ev.get("kind", ""), event_title=ev.get("title", ""), discipline=info.get("discipline", ""), place=ev.get("place", ""),
         driver=info.get("driver", ""), event_id=f"{event_dir.parent.name}/{event_dir.name}", stats=stats, laps=r.laps, track=track, gate=ctx.gate,
-        frame_id=ctx.gate_file.get("frame_id") or f"{event_dir.parent.name}/{event_dir.name}",
+        frame_id="" if ctx.gates else ctx.gate_file.get("frame_id") or f"{event_dir.parent.name}/{event_dir.name}",
+        lap_kind=GYMKHANA_LAPS if ctx.gates else "",                 # 코스 계측선 시도 — 서킷 기준선과 비교하지 않는다 (frame 없음)
         blocks=[b for b in blocks if b is not None],
         missing=[Missing(m["data"], m["status"], m["reason"], m.get("ask", ""), m.get("block", "")) for m in ctx.notes.get("missing", [])
                  if (not m.get("sessions") or info.get("name") in m["sessions"]) and m.get("block") not in {x.key for x in blocks if x is not None}],

@@ -168,6 +168,7 @@ class Session:
     split_by: str = "gps"                           # 세션을 나눈 방법 — "gps" (GPS 주행 구간) · "time" (시각 구간: Run Sheet 시각 · 장비 전원 주기)
     run_no: str = ""                                # 일정표(Run Sheet)의 R번호 — 짝이 맞았을 때만 (runsheet)
     purpose: str = ""                               # 일정표의 목적
+    lap_kind: str = ""                              # "" = 서킷 랩 (계측선 한 방향) · "gymkhana" = 코스 계측선 시도 (들어가고 나옴, frame 없음)
     anchor: str = ""                                # 시각이 옮겨져도 같은 세션을 알아볼 열쇠 (session_ids) — 레코딩 하나로 만든 시각 구간 세션은 "rec:<레코딩>"
 
     @property

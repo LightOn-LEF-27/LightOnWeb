@@ -261,7 +261,7 @@ def _frame_doc(s: dict, need: bool = False) -> tuple[dict, Path] | None:
     랩이 있는데 frame 파일이 없으면(저장소를 옛 코드로 만든 경우) need 일 때 오류, 아니면 None.
     """
     sid = s["summary"]["sid"]
-    if not s["track"]["has_track"] or _laps(sid).empty:
+    if not s["track"]["has_track"] or _laps(sid).empty or s["summary"].get("lap_kind") == "gymkhana":     # 짐카나 시도는 기준선 비교 없음
         return None
     key = store.frame_key(s["summary"])
     path = store.frame_path(_root(), key)
@@ -270,6 +270,15 @@ def _frame_doc(s: dict, need: bool = False) -> tuple[dict, Path] | None:
             raise EngineError("internal", f"세션 {sid} 의 frame(기준선 · 구간 경계) 파일이 없음 — lefdata sessions 로 다시 만들 것", {"frame": key})
         return None
     return _json(path), path
+
+
+def _no_frame(s: dict) -> EngineError:
+    """기준선이 없어 랩을 기준선 거리로 볼 수 없을 때의 오류 — 짐카나 시도 랩이면 그 까닭을 말한다."""
+    sid = s["summary"]["sid"]
+    if s["summary"].get("lap_kind") == "gymkhana":
+        return EngineError("bad_argument", f"세션 {sid} 의 랩은 짐카나 시도 (코스 계측선으로 들어가고 나온 것) — 기준선 · 구간 비교를 하지 않음",
+                           {"lap_kind": "gymkhana"})
+    return EngineError("bad_argument", f"세션 {sid} 에는 코스(위치) 기록이 없음")
 
 
 @lru_cache(maxsize=16)
@@ -388,7 +397,7 @@ def get_series(sid: str, channel_ids, x: str = "time", t0: float | None = None, 
         else:
             fr = _frame_doc(s, need=True)
             if fr is None:
-                raise EngineError("bad_argument", f"세션 {sid} 에는 코스(위치) 기록이 없음")
+                raise _no_frame(s)
             pt, sv = _lap_ref(sid, int(row["lap"]), fr[1])
             length = float(sv[-1])
 
@@ -578,7 +587,7 @@ def get_delta(sid: str, lap: int, ref_sid: str, ref_lap: int, mini_m: int = 25, 
                           {"frame_id": [s["summary"].get("frame_id"), r["summary"].get("frame_id")]})
     fr = _frame_doc(s, need=True)
     if fr is None:
-        raise EngineError("bad_argument", f"세션 {sid} 에는 코스(위치) 기록이 없음")
+        raise _no_frame(s)
     path = fr[1]
     length = _reference(path).length
     pa, sa = _lap_ref(sid, int(row["lap"]), path)
