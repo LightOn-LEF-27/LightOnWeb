@@ -43,6 +43,7 @@ MAX_CHANNELS = 16
 MAX_SMOOTH_S = 10.0
 SID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 GAP_FACTOR = 2.0            # 기록 간격 중앙값의 이 배보다 벌어진 곳은 잇지 않는다 (에너지미터의 '빠진 표본' 과 같은 기준)
+GAP_MIN_S = 0.1             #   그리고 이보다 오래 빈 곳만 — 간격이 들쭉날쭉한 빠른 채널(Monolith 가 받은 Orion CAN 8 ~ 49 ms)을 잘게 끊지 않게 (사용자 11-17)
 MINI_SIZES = (10, 25, 50)   # 미니 구간 크기 (m) — 사이트가 고른다
 FORMATS = [  # 계약 §7 — status: ingest = 판별 · 올리기 둘 다, detect = 판별만, not_started = 아직 (v0.10, E4)
     {"kind": "monolith_log", "label": "Monolith V2 .log (25Evo)", "status": "ingest"},
@@ -235,13 +236,13 @@ def _channel(sid: str, spec: dict, win: tuple[float, float], smooth_s: float | N
 
 
 def _breaks(t: np.ndarray, dt: float) -> np.ndarray:
-    """표본 i 와 i+1 사이가 끊겼는가 — 채널 전체의 기록 간격 dt 의 GAP_FACTOR 배보다 벌어진 곳 (계약 §6-4).
+    """표본 i 와 i+1 사이가 끊겼는가 — 채널 전체의 기록 간격 dt 의 GAP_FACTOR 배보다, 그리고 GAP_MIN_S 보다 벌어진 곳 (계약 §6-4).
 
     잘라 낸 조각의 간격으로 가리면, 긴 빈 틈 안쪽을 확대했을 때 조각에 틈 양옆 표본만 남아 틈이 '보통 간격' 이 되고 직선으로 이어진다.
     """
     if len(t) < 2:
         return np.zeros(0, bool)
-    return np.diff(t) > GAP_FACTOR * dt if np.isfinite(dt) else np.zeros(len(t) - 1, bool)
+    return np.diff(t) > max(GAP_FACTOR * dt, GAP_MIN_S) if np.isfinite(dt) else np.zeros(len(t) - 1, bool)
 
 
 def _laps(sid: str) -> pd.DataFrame:
