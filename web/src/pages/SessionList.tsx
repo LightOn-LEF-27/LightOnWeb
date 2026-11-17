@@ -6,7 +6,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { useApi } from '../api'
 import { blockCell, blockColumns, type Column } from '../sessions/blocks'
-import { applyFilters, facet, readFilters, SORTS, toggle, writeFilters, hasSeek, hasWarn, type FacetKey, type Filters, type SortKey } from '../sessions/filters'
+import { applyFilters, baseRows, facet, isHidden, readFilters, SORTS, toggle, writeFilters, hasSeek, hasWarn, type FacetKey, type Filters, type SortKey } from '../sessions/filters'
 import { formatDuration, formatNumber, formatStart, lapsCell, sessionName } from '../sessions/format'
 import type { SessionRow } from '../types'
 
@@ -47,8 +47,10 @@ export default function SessionList({ total }: { total: number | null }) {
     setParams(writeFilters({ ...f, q, ...g }), { replace: true })
   }
 
-  const all = useMemo(() => data ?? [], [data])
-  const shown = useMemo(() => applyFilters(all, { ...readFilters(params), q }), [all, params, q])
+  const every = useMemo(() => data ?? [], [data])
+  const all = useMemo(() => baseRows(every, f), [every, f.check])
+  const nHidden = every.filter(isHidden).length
+  const shown = useMemo(() => applyFilters(every, { ...readFilters(params), q }), [every, params, q])
   const cols = useMemo(() => blockColumns(shown), [shown])
 
   return (
@@ -112,6 +114,13 @@ export default function SessionList({ total }: { total: number | null }) {
                 <span>미보유 데이터가 있는 세션만</span>
                 <span className="count">{all.filter(hasSeek).length}</span>
               </label>
+              {nHidden > 0 && (
+                <label title="차를 켜기만 하고 달리지 않은 기록 (종목 점검) — 기본으로 뺌">
+                  <input type="checkbox" checked={f.check} onChange={() => set({ check: !f.check })} />
+                  <span>점검 기록도 보기</span>
+                  <span className="count">{nHidden}</span>
+                </label>
+              )}
             </div>
           </fieldset>
         </aside>

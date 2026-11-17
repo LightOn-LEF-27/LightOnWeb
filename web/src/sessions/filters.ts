@@ -22,6 +22,7 @@ export interface Filters {
   disc: string[] | null
   warn: boolean // 주의가 있는 세션만
   seek: boolean // 미보유 데이터가 있는 세션만
+  check: boolean // 점검 기록(default_hidden)도 보이기 — 기본은 뺀다
   sort: SortKey
 }
 
@@ -44,6 +45,7 @@ export function readFilters(p: URLSearchParams): Filters {
     disc: list(p.get('disc')),
     warn: p.get('warn') === '1',
     seek: p.get('seek') === '1',
+    check: p.get('check') === '1',
     sort: SORTS.some((s) => s.key === sort) ? (sort as SortKey) : 'start_desc',
   }
 }
@@ -54,12 +56,20 @@ export function writeFilters(f: Filters): URLSearchParams {
   for (const k of ['car', 'event', 'disc'] as const) if (f[k] !== null) p.set(k, f[k]!.join(','))
   if (f.warn) p.set('warn', '1')
   if (f.seek) p.set('seek', '1')
+  if (f.check) p.set('check', '1')
   if (f.sort !== 'start_desc') p.set('sort', f.sort)
   return p
 }
 
 export function hasWarn(r: SessionRow): boolean {
   return r.data_status.some((d) => d.status === 'warn' && !COMPUTED_KEYS.has(d.block)) // 추정 블록은 늘 주의라 빼고 본다
+}
+
+export const isHidden = (r: SessionRow) => r.default_hidden === true
+
+// 거르기의 바탕 — 점검 기록은 「점검 기록도 보기」 를 켰을 때만 (차량 · 이벤트 · 종목 칸의 수도 이것 기준)
+export function baseRows(rows: SessionRow[], f: Pick<Filters, 'check'>): SessionRow[] {
+  return f.check ? rows : rows.filter((r) => !isHidden(r))
 }
 
 export function hasSeek(r: SessionRow): boolean {
@@ -75,7 +85,7 @@ function matches(r: SessionRow, q: string): boolean {
 const nullsLast = (a: number | null, b: number | null) => (a === null ? (b === null ? 0 : 1) : b === null ? -1 : b - a)
 
 export function applyFilters(rows: SessionRow[], f: Filters): SessionRow[] {
-  const out = rows.filter(
+  const out = baseRows(rows, f).filter(
     (r) =>
       (['car', 'event', 'disc'] as const).every((k) => f[k] === null || f[k]!.includes(FACET_VALUE[k](r))) &&
       (!f.warn || hasWarn(r)) &&

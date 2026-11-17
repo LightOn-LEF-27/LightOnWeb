@@ -14,6 +14,7 @@ export const FRAME: Column[] = [
   { key: 'gps', label: 'GPS' },
   { key: 'imu', label: 'IMU' },
   { key: 'pedal', label: '페달' },
+  { key: 'brake', label: '제동' },
   { key: 'steer', label: '조향' },
   { key: 'wheel', label: '휠' },
   { key: 'battery', label: '팩' },

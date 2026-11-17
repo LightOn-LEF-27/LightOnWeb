@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DataStatus, SessionRow } from '../types'
 import { blockCell, blockColumns } from './blocks'
-import { applyFilters, facet, readFilters, toggle, writeFilters } from './filters'
+import { applyFilters, baseRows, facet, readFilters, toggle, writeFilters } from './filters'
 import { formatDuration, formatLapTime, formatStart, lapsCell, sessionName } from './format'
 
 function row(over: Partial<SessionRow> = {}, status: Record<string, DataStatus['status']> = { gps: 'have' }): SessionRow {
@@ -58,7 +58,7 @@ describe('블록 칸', () => {
     expect(c.columns.map((x) => x.key)).toEqual(['gps', 'bms', 'video'])
     expect(c.computed.map((x) => x.key)).toEqual(['drive'])
     expect(c.hidden.map((x) => x.key)).not.toContain('gps')
-    expect(c.hidden).toHaveLength(14 - 4)
+    expect(c.hidden).toHaveLength(15 - 4) // 틀 14 + 계산 1
   })
   it('모르는 블록은 엔진의 이름으로 끝에 붙는다', () => {
     const c = blockColumns([row({}, { gps: 'have', aero: 'have' })])
@@ -88,6 +88,14 @@ describe('거르기', () => {
     expect(sids(applyFilters(rows, { ...f, warn: true }))).toEqual(['b']) // 계산 블록(drive)의 ▲ 는 주의로 치지 않는다
     expect(sids(applyFilters(rows, { ...f, seek: true }))).toEqual(['c'])
     expect(sids(applyFilters(rows, { ...f, q: 'demo-2 가속' }))).toEqual(['c'])
+  })
+  it('점검 기록(default_hidden)은 기본으로 빼고, 켜면 보인다 · 주소에 남는다', () => {
+    const more = [...rows, row({ sid: 'k', start: '2027-05-10T10:00:00+09:00', discipline: '점검', default_hidden: true })]
+    expect(sids(applyFilters(more, f))).toEqual(['b', 'a', 'c'])
+    const on = readFilters(writeFilters({ ...f, check: true }))
+    expect(on.check).toBe(true)
+    expect(sids(applyFilters(more, on))).toEqual(['k', 'b', 'a', 'c'])
+    expect(baseRows(more, f).map((r) => r.discipline)).not.toContain('점검') // 종목 칸 수도 뺀 것 기준
   })
   it('거리순은 모르는 값을 끝에', () => {
     expect(sids(applyFilters(rows, { ...f, sort: 'distance' }))).toEqual(['c', 'a', 'b'])
