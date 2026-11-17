@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { LapColumn, LapRow, LapTable, SessionPage, SessionRow } from '../types'
-import { bandItems, fileUrl, formatBytes, formatValue, lapCell, lapEmptyText, lapFooter, statusGroups, summaryRows } from './model'
+import { bandItems, fileUrl, formatBytes, formatValue, lapCell, lapEmptyText, lapFooter, lapHead, statusGroups, summaryRows } from './model'
 
 const col = (key: string, digits = 2): LapColumn => ({ key, label: key, unit: 's', digits, block: 'gps' })
 const lapRow = (over: Partial<LapRow> = {}): LapRow => ({
@@ -24,6 +24,13 @@ describe('랩 표 칸', () => {
     expect(lapCell(lapRow(), col('s1_s')).text).toBe('19.20')
     expect(lapCell(lapRow(), col('net_wh', 0)).text).toBe('1,234')
     expect(lapCell(lapRow({ net_wh: null }), col('net_wh', 0)).text).toBe('—')
+  })
+  it('짐카나 — 코스 번호는 「코스 n」, 잡은 곳은 계측선 · ▲ 구역, 긴 머리는 짧게', () => {
+    expect(lapCell(lapRow({ course_no: 2 }), col('course_no', 0)).text).toBe('코스 2')
+    expect(lapCell(lapRow({ by_line: 1 }), col('by_line', 0)).text).toBe('계측선')
+    expect(lapCell(lapRow({ by_line: 0 }), col('by_line', 0)).text).toBe('▲ 구역')
+    expect(lapHead({ ...col('by_line', 0), label: '계측선으로 잡음 (1) · 코스 구역으로 (0)' })).toBe('잡은 곳')
+    expect(lapHead({ ...col('net_wh', 0), label: '순 에너지' })).toBe('순 에너지')
   })
   it('보라 = 세션 최속 랩의 랩타임 · 최속 구간만', () => {
     expect(lapCell(lapRow({ best: true }), col('lap_time_s')).best).toBe(true)

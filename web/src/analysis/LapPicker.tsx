@@ -15,7 +15,7 @@ interface Props {
   onCmp: (laps: number[]) => void
 }
 
-const SHOW = ['lap_time_s', 's1_s', 's2_s', 's3_s', 'vmax_kmh', 'net_wh', 'i_max_a', 'cell_t_max_c']
+const SHOW = ['course_no', 'lap_time_s', 's1_s', 's2_s', 's3_s', 'vmax_kmh', 'net_wh', 'i_max_a', 'cell_t_max_c']
 
 export default function LapPicker({ table, refLap, cmp, max, colors, colorOf, onRef, onCmp }: Props) {
   const cols = table.columns.filter((c) => SHOW.includes(c.key))

@@ -1,7 +1,7 @@
 // 랩 표 — 열 순서 · 자릿수는 엔진이 준 그대로 (랩 · 랩타임 · S1 ~ S3 · …). 보라 = 세션 최속 (랩타임 · 구간)
 
 import type { LapTable as Table } from '../types'
-import { lapCell, lapFooter } from './model'
+import { lapCell, lapFooter, lapHead } from './model'
 
 export default function LapTable({ table, empty }: { table: Table; empty: string | null }) {
   if (empty || table.rows.length === 0)
@@ -23,7 +23,7 @@ export default function LapTable({ table, empty }: { table: Table; empty: string
               <th className="num lap-no">랩</th>
               {cols.map((c) => (
                 <th key={c.key} className="num" title={[c.label, ...(c.cautions ?? [])].join('\n')}>
-                  {c.label}
+                  {lapHead(c)}
                   {c.unit && <span className="unit">{c.unit}</span>}
                 </th>
               ))}
@@ -74,7 +74,7 @@ export default function LapTable({ table, empty }: { table: Table; empty: string
         <span>
           <span className="best">보라</span> 세션 최속 (랩타임 · 구간)
         </span>
-        <span>S1 ~ S3 · 구간 시간</span>
+        {cols.some((c) => c.key === 's1_s') && <span>S1 ~ S3 · 구간 시간</span>}
         {s && <span>평균 · 완주 랩 {s.n_laps}개 · 이론 · 구간 최속의 합</span>}
       </div>
       {table.notes.length > 0 && (

@@ -4,7 +4,7 @@ import type { LiveEvent, LiveLap, LiveState, LiveTrack } from '../types'
 import { alertView, carOf, CARS, VIEW_TILES } from './cars'
 import {
   ageText, bridgeShort, clock, deviceView, emptyBuf, eventText, foldEvents, gapBands, gaugePos, hasLapValues, lampOf, lapPoints, lapText, linkView, mapBounds,
-  mergeChart, miniRange, niceAxis, offState, outageText, pathRuns, pctText, rateText, scaleOf, shownStatus, signedText, sinceOf, sourceWord,
+  mergeChart, miniRange, niceAxis, offState, outageText, pathRuns, pctText, rateText, regNote, scaleOf, shownStatus, signedText, sinceOf, sourceWord,
   sparkPoints, tileOr, tileSource, TRACK_MIN_MS, trackWait, trail, valueAt, worstLamp,
 } from './model'
 
@@ -315,5 +315,19 @@ describe('계기판 — 연결 불 · 작은 그래프 축 · 랩 꼭짓점 (§6
     expect(valueAt(b, 'gps.speed_kmh', 2.2)).toBeNull()
     expect(valueAt(b, 'gps.speed_kmh', 99)).toBe(8)
     expect(valueAt(b, 'none', 1)).toBeNull()
+  })
+})
+
+describe('인버터 레지스터 갱신', () => {
+  const reg = (over = {}) => ({ id: 'motor.ready', label: 'RDY', unit: '', sign: '', digits: 0, value: 1, age_s: 0.4, status: 'ok' as const, alert: null, ...over })
+  it('10 s 안이면 표시 없음, 넘으면 몇 초 전, 엔진 한도를 넘으면 낡음, 없으면 수신 없음', () => {
+    expect(regNote(reg(), false)).toBeNull()
+    expect(regNote(reg({ age_s: 54 }), false)).toBe('54 s 전')
+    expect(regNote(reg({ age_s: 200, status: 'stale' }), false)).toBe('낡음 · 3분 전')
+    expect(regNote(reg({ age_s: null, status: 'none', value: null }), false)).toBe('수신 없음')
+  })
+  it('칸이 없거나 서버 응답이 끊겼으면 표시 없음 (머리의 갱신 멈춤 하나로)', () => {
+    expect(regNote(undefined, false)).toBeNull()
+    expect(regNote(reg({ age_s: 54 }), true)).toBeNull()
   })
 })

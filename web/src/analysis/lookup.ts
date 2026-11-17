@@ -41,14 +41,19 @@ export function valueAt(resp: SeriesResponse | undefined, channel: string, x: nu
 }
 
 // 그래프의 x → 트랙맵 점: 거리축은 기준 거리(ref_m), 시간축은 세션 시간(t_s)으로 찾는다
+// 거리축의 트랙맵 거리 — 기준 거리, 없으면 (짐카나 시도) 그 랩이 달린 거리. 세션 전체 궤적(lap 없음)은 null → 시각으로
+const distOf = (t: TrackResponse) => t.ref_m ?? (t.lap === null ? null : t.dist_m)
+
 export function trackIndex(track: TrackResponse, x: number, mode: XMode, lapStart: number): number {
-  if (mode === 'distance' && track.ref_m) return nearestIndex(track.ref_m, x)
+  const d = mode === 'distance' ? distOf(track) : null
+  if (d) return nearestIndex(d, x)
   return nearestIndex(track.t_s, x + lapStart)
 }
 
 // 트랙맵 점 → 그래프의 x (진행 막대 · 재생에서 커서 A 를 옮길 때)
 export function xOfTrackPoint(track: TrackResponse, i: number, mode: XMode, lapStart: number): number {
-  return mode === 'distance' && track.ref_m ? track.ref_m[i] : track.t_s[i] - lapStart
+  const d = mode === 'distance' ? distOf(track) : null
+  return d ? d[i] : track.t_s[i] - lapStart
 }
 
 // ---------------------------------------------------------------- 트랙맵 색 (사이트_설계.md §7)

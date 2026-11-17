@@ -35,6 +35,9 @@ export interface ViewCtx {
 }
 
 // 칸의 한도 · 주의 (tiles[].scale — 엔진 문턱, 없으면 정해진 규정 한도)
+// 인버터 레지스터 칸 — 엔진이 준 것만 (없는 칸은 표시 없음)
+const invRegs = (c: ViewCtx) => ({ ena: c.tiles.get('motor.enabled'), rdy: c.tiles.get('motor.ready'), err: c.tiles.get('motor.error_raw') })
+
 function limitsOf(t: LiveTile): Limit[] {
   const s = scaleOf(t)
   const out: Limit[] = []
@@ -133,7 +136,7 @@ export function MainView({ c }: { c: ViewCtx }) {
         </div>
         <div className="lv-pair">
           <LapEnergy laps={c.s.laps} />
-          <InverterLine inv={c.s.inverter} frozen={c.frozen} />
+          <InverterLine inv={c.s.inverter} frozen={c.frozen} regs={invRegs(c)} />
         </div>
         <EventLine rows={c.events} car={c.car} />
       </div>
@@ -341,7 +344,7 @@ export function PowertrainView({ c }: { c: ViewCtx }) {
         </div>
       </div>
       <div className="lv-col">
-        <InverterPanel inv={c.s.inverter} frozen={c.frozen} />
+        <InverterPanel inv={c.s.inverter} frozen={c.frozen} regs={invRegs(c)} />
         <GraphLink c={c} what="속도 · 회전수 · 가속페달 · 온도" />
       </div>
     </div>

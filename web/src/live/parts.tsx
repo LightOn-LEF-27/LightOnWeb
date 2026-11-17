@@ -9,7 +9,7 @@ import type { LiveLap, LiveScale, LiveSource, LiveState, LiveStatus, LiveTile } 
 import { alertView, type LiveCar, VIEW_NAMES, type ViewKey } from './cars'
 import {
   ageText, clock, deviceView, eventText, type EventRow, gaugePos, lapText, linkView, onOff, outageText, pctText, rateText,
-  receiverView, scaleOf, shownStatus, signedText, STATUS_WORD, type TileKind, tileValue,
+  receiverView, regNote, scaleOf, shownStatus, signedText, STATUS_WORD, type TileKind, tileValue,
 } from './model'
 
 // ---------------------------------------------------------------- 타일
@@ -379,8 +379,22 @@ function staleNote(st: LiveStatus, age: number | null, frozen: boolean) {
   return <span className="muted"> · {st === 'none' ? '수신 없음' : frozen ? '갱신 멈춤' : ageText(age)}</span>
 }
 
+// 인버터 레지스터 칸 (엔진 tiles[] 의 motor.enabled · ready · error_raw) — 레지스터마다 마지막 갱신 시각
+export interface InverterRegs {
+  ena?: LiveTile
+  rdy?: LiveTile
+  err?: LiveTile
+}
+
+function RegAge({ t, frozen }: { t?: LiveTile; frozen: boolean }) {
+  const note = regNote(t, frozen)
+  return note ? <small className={`live-reg-age${t?.status === 'stale' || t?.status === 'none' ? ' stale' : ''}`}>{note}</small> : null
+}
+
+const regTitle = '레지스터마다 마지막으로 값이 들어온 때 — 회전수가 꾸준히 와도 상태 · 오류 레지스터는 오래 안 올 수 있음'
+
 // 메인 — 한 줄: ENA · RDY · 오류
-export function InverterLine({ inv, frozen }: { inv: LiveState['inverter']; frozen: boolean }) {
+export function InverterLine({ inv, frozen, regs = {} }: { inv: LiveState['inverter']; frozen: boolean; regs?: InverterRegs }) {
   const st = shownStatus(inv.status, frozen)
   const lamp = (v: boolean | null) => (v === null || st === 'stale' || st === 'none' ? 'none' : v ? 'ok' : 'off')
   return (
@@ -389,29 +403,35 @@ export function InverterLine({ inv, frozen }: { inv: LiveState['inverter']; froz
         인버터
         {staleNote(st, inv.age_s, frozen)}
       </h2>
-      <div className="live-invline">
+      <div className="live-invline" title={regTitle}>
         <span className={`live-flag ${lamp(inv.enabled)}`}>
           <span className="live-dot" aria-hidden="true" />
           ENA
+          <RegAge t={regs.ena} frozen={frozen} />
         </span>
         <span className={`live-flag ${lamp(inv.ready)}`}>
           <span className="live-dot" aria-hidden="true" />
           RDY
+          <RegAge t={regs.rdy} frozen={frozen} />
         </span>
-        <span className={inv.errors.length ? 'live-err' : 'muted'}>{st === 'none' ? '—' : inv.errors.length ? inv.errors.join(' · ') : '오류 없음'}</span>
+        <span className={inv.errors.length ? 'live-err' : 'muted'}>
+          {st === 'none' ? '—' : inv.errors.length ? inv.errors.join(' · ') : '오류 없음'}
+          <RegAge t={regs.err} frozen={frozen} />
+        </span>
       </div>
     </section>
   )
 }
 
 // 인버터 · 모터 뷰 — ENA · RDY 등 + 오류 · 경고 이름
-export function InverterPanel({ inv, frozen }: { inv: LiveState['inverter']; frozen: boolean }) {
+export function InverterPanel({ inv, frozen, regs = {} }: { inv: LiveState['inverter']; frozen: boolean; regs?: InverterRegs }) {
   const st = shownStatus(inv.status, frozen)
-  const lamp = (name: string, v: boolean | null) => (
-    <div className={`live-lamp ${v === null || st === 'stale' || st === 'none' ? 'none' : v ? 'ok' : 'off'}`}>
+  const lamp = (name: string, v: boolean | null, t?: LiveTile) => (
+    <div className={`live-lamp ${v === null || st === 'stale' || st === 'none' ? 'none' : v ? 'ok' : 'off'}`} title={regTitle}>
       <span className="live-dot" aria-hidden="true" />
       {name}
       <strong>{onOff(v)}</strong>
+      <RegAge t={t} frozen={frozen} />
     </div>
   )
   return (
@@ -421,12 +441,15 @@ export function InverterPanel({ inv, frozen }: { inv: LiveState['inverter']; fro
         {staleNote(st, inv.age_s, frozen)}
       </h2>
       <div className="live-lamps">
-        {lamp('ENA', inv.enabled)}
-        {lamp('RDY', inv.ready)}
+        {lamp('ENA', inv.enabled, regs.ena)}
+        {lamp('RDY', inv.ready, regs.rdy)}
       </div>
       <dl className="live-facts">
         <dt>오류</dt>
-        <dd className={inv.errors.length ? 'live-err' : ''}>{st === 'none' ? '—' : inv.errors.length ? inv.errors.join(' · ') : '없음'}</dd>
+        <dd className={inv.errors.length ? 'live-err' : ''} title={regTitle}>
+          {st === 'none' ? '—' : inv.errors.length ? inv.errors.join(' · ') : '없음'}
+          <RegAge t={regs.err} frozen={frozen} />
+        </dd>
         <dt>경고</dt>
         <dd className={inv.warnings.length ? 'live-warn-text' : ''}>{st === 'none' ? '—' : inv.warnings.length ? inv.warnings.join(' · ') : '없음'}</dd>
       </dl>

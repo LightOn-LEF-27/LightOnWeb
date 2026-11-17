@@ -35,6 +35,7 @@ export interface SessionRow {
   day_order: number | null // v0.9 — 그 차 · 그날 몇 번째 (화면용, 바뀔 수 있다)
   run_no: string | null // v0.12 — 일정표의 R번호 (일정표와 짝이 맞은 세션만)
   purpose: string | null // v0.12 — 일정표의 목적
+  lap_kind?: 'gymkhana' | null // 11-17 — 짐카나 시도: frame 없음 · 구간 비교 · 시간 차 · 기준 거리 없음 (계약 §6-1). 옛 저장소엔 없음 = 서킷 랩
   default_hidden?: boolean // 11-17 — true 면 목록 기본 화면에서 뺀다 (점검 세션). 옛 저장소엔 없음 = false
 }
 

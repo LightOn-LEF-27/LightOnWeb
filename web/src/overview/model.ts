@@ -29,10 +29,16 @@ export function formatBytes(n: number | undefined): string {
 export function lapCell(row: LapRow, col: LapColumn): { text: string; best: boolean } {
   const v = row[col.key]
   if (col.key === 'lap_time_s') return { text: formatLapTime(typeof v === 'number' ? v : null), best: row.best }
+  if (col.key === 'course_no') return { text: typeof v === 'number' ? `코스 ${v}` : '—', best: false } // 짐카나 코스 번호 (계약 §6-1)
+  if (col.key === 'by_line') return { text: v === 1 ? '계측선' : v === 0 ? '▲ 구역' : '—', best: false }
   const sector = SECTORS.indexOf(col.key as SectorKey)
   if (sector >= 0) return { text: formatValue(v, col.digits), best: row.best_sectors.includes(sector + 1) }
   return { text: formatValue(v, col.digits), best: false }
 }
+
+// 칸 머리 — 엔진 이름이 긴 칸만 짧게 (풀이는 풍선 도움말에 엔진 이름 그대로)
+const SHORT_HEAD: Record<string, string> = { by_line: '잡은 곳' }
+export const lapHead = (col: LapColumn) => SHORT_HEAD[col.key] ?? col.label
 
 // 랩 표 아래 줄 — 평균(완주 랩) · 이론 최속. 엔진이 준 값만 (없는 칸은 비운다)
 export function lapFooter(t: LapTable, col: LapColumn): { mean: string; theoretical: string } {

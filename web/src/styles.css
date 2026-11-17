@@ -2792,3 +2792,15 @@ body.graph-window .statusbar {
     overflow-x: auto;
   }
 }
+
+/* 인버터 레지스터마다 마지막 갱신 (ENA · RDY · 오류 옆 작은 글씨) */
+.live-reg-age {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.live-reg-age.stale {
+  color: var(--text-label);
+  font-style: italic;
+}

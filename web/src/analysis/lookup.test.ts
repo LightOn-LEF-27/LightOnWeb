@@ -28,8 +28,11 @@ describe('가까운 칸 찾기', () => {
     const t = track()
     expect(trackIndex(t, 19, 'distance', 100)).toBe(2)
     expect(trackIndex(t, 1.2, 'time', 100)).toBe(1)
-    expect(trackIndex(track({ ref_m: null }), 101.2, 'distance', 0)).toBe(1) // 세션 전체 궤적은 시각으로
+    expect(trackIndex(track({ ref_m: null, lap: null }), 101.2, 'distance', 0)).toBe(1) // 세션 전체 궤적(lap 없음)은 시각으로
     expect(xOfTrackPoint(t, 3, 'distance', 100)).toBe(30)
+    const gym = track({ ref_m: null, lap: 2, dist_m: [0, 5, 9, 14, 20] }) // 짐카나 시도 — 기준 거리 없음 → 달린 거리
+    expect(trackIndex(gym, 10, 'distance', 100)).toBe(2)
+    expect(xOfTrackPoint(gym, 3, 'distance', 100)).toBe(14)
     expect(xOfTrackPoint(t, 3, 'time', 100)).toBe(3)
   })
 })

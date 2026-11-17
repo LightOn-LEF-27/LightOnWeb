@@ -110,6 +110,16 @@ export function tileValue(tile: LiveTile): string {
   return tile.value === null ? '—' : formatValue(tile.value, tile.digits)
 }
 
+// 인버터 레지스터(ENA · RDY · 오류)마다 마지막 갱신 — 0x181 은 ID 로는 꾸준히 와도(회전수) 상태 · 오류 레지스터는
+// 수십 초 ~ 몇 분씩 안 올 수 있다 (총괄 #2d89). 10 s 넘게 안 바뀌었으면 몇 초 전 값인지, 엔진 한도를 넘으면 낡음
+export const REG_AGE_NOTE_S = 10
+export function regNote(t: LiveTile | undefined, frozen: boolean): string | null {
+  if (!t || frozen) return null // 서버 응답이 끊긴 때는 머리의 「갱신 멈춤」 하나로
+  if (t.status === 'none' || t.age_s === null) return '수신 없음'
+  if (t.status === 'stale') return `낡음 · ${ageText(t.age_s)}`
+  return t.age_s >= REG_AGE_NOTE_S ? ageText(t.age_s) : null
+}
+
 export function ageText(age: number | null): string {
   if (age === null) return ''
   if (age < 10) return `${age.toFixed(1)} s 전`

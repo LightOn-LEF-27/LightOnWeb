@@ -23,6 +23,7 @@ interface Props {
   onRemoveChannel: (channel: string) => void
   onAdd: (axis: number, channel: string) => void
   onPop?: (axis: number) => void // 이 그래프만 새 창으로 (그래프 창 안에서는 없음)
+  ownDistance?: boolean // 짐카나 시도 — 거리축이 기준 거리가 아니라 그 시도가 달린 거리
 }
 
 // 새 창 아이콘 — 네모 + 오른쪽 위로 나가는 화살표
@@ -62,7 +63,7 @@ export default function Plots(p: Props) {
   const refLap = p.traces[0]?.lap ?? null
   const n = Math.max(p.axes.length, 1)
   const h = Math.max(MIN_H, Math.floor((size.h - X_AXIS_H - 1) / n))
-  const xLabel = p.x === 'distance' ? '기준 거리 (계측선부터, 기준 랩 주행선 위) m' : refLap === null ? '세션 시간 s' : '랩 시작부터 시간 s'
+  const xLabel = p.x === 'distance' ? (p.ownDistance ? '시도 시작부터 달린 거리 m (시도마다 제 주행선)' : '기준 거리 (계측선부터, 기준 랩 주행선 위) m') : refLap === null ? '세션 시간 s' : '랩 시작부터 시간 s'
 
   return (
     <div className="plots">

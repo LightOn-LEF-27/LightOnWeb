@@ -70,9 +70,9 @@ interface Fetched {
   key: string // 어느 계열 · 채널 · 가로축으로 받은 값인가 (확대 범위 빼고)
 }
 
-function useSeriesFetch(traces: Trace[], channels: string[], have: Map<string, Set<string>>, x: XMode, zoom: Range, starts: Map<string, number>, on: boolean): Fetched {
+function useSeriesFetch(traces: Trace[], channels: string[], have: Map<string, Set<string>>, x: XMode, zoom: Range, starts: Map<string, number>, on: boolean, dist: DistAxis): Fetched {
   const [state, setState] = useState<Fetched>({ data: new Map(), error: null, loading: false, key: '' })
-  const base = JSON.stringify([traces.map((t) => [t.key, t.sid, t.lap]), channels, [...have].map(([s, c]) => [s, c.size]), x, [...starts]])
+  const base = JSON.stringify([traces.map((t) => [t.key, t.sid, t.lap]), channels, [...have].map(([s, c]) => [s, c.size]), x, [...starts], dist])
   const key = JSON.stringify([base, zoom, on])
   useEffect(() => {
     if (!on || !channels.length || !traces.length) return setState({ data: new Map(), error: null, loading: false, key: base })
@@ -82,8 +82,9 @@ function useSeriesFetch(traces: Trace[], channels: string[], have: Map<string, S
       traces.map((t) => {
         const chs = channels.filter((c) => have.get(t.sid)?.has(c))
         if (!chs.length) return Promise.resolve(null)
-        // 거리축은 기준 거리(ref_distance) — 시간 차 · 구간 · 트랙맵과 같은 축이라 랩끼리 위치가 맞는다 (계약 §4 · F5)
-        const q = new URLSearchParams([...chs.map((c): [string, string] => ['ch', c]), ['x', x === 'distance' ? 'ref_distance' : 'time'], ['max_points', String(MAX_POINTS)]])
+        // 거리축은 기준 거리(ref_distance) — 시간 차 · 구간 · 트랙맵과 같은 축이라 랩끼리 위치가 맞는다 (계약 §4 · F5).
+        // 짐카나 시도는 기준선이 없어 그 시도가 달린 거리(distance) 그대로 (계약 §6-1 lap_kind)
+        const q = new URLSearchParams([...chs.map((c): [string, string] => ['ch', c]), ['x', x === 'distance' ? dist : 'time'], ['max_points', String(MAX_POINTS)]])
         if (x === 'distance') {
           if (t.lap !== null) q.set('lap', String(t.lap))
           if (zoom) (q.set('d0', String(zoom.min)), q.set('d1', String(zoom.max)))
@@ -106,12 +107,17 @@ function useSeriesFetch(traces: Trace[], channels: string[], have: Map<string, S
 
 // 처음 범위의 값(base)은 늘 들고 있고, 확대하면 그 범위의 촘촘한 값(detail)을 끼워 넣는다 —
 // 옆으로 넘기거나 확대를 바꾸는 동안 새 값이 오기 전에도 빈 화면 대신 처음 값이 보인다
-function useSeriesSet(traces: Trace[], channels: string[], have: Map<string, Set<string>>, x: XMode, zoomed: Range, starts: Map<string, number>, full: Range) {
+type DistAxis = 'ref_distance' | 'distance'
+
+function useSeriesSet(traces: Trace[], channels: string[], have: Map<string, Set<string>>, x: XMode, zoomed: Range, starts: Map<string, number>, full: Range, dist: DistAxis) {
   // 확대 범위보다 앞뒤로 반 폭씩 넉넉히 받는다 — 옆으로 조금 넘겨도 바로 촘촘하게 (처음 범위 밖은 자른다)
   const pad = zoomed ? (zoomed.max - zoomed.min) / 2 : 0
-  const zoom: Range = zoomed && { min: Math.max(full?.min ?? -Infinity, zoomed.min - pad), max: Math.min(full?.max ?? Infinity, zoomed.max + pad) }
-  const base = useSeriesFetch(traces, channels, have, x, null, starts, true)
-  const detail = useSeriesFetch(traces, channels, have, x, zoom, starts, zoom !== null)
+  const lo = zoomed && Math.max(full?.min ?? -Infinity, Math.min(zoomed.min, zoomed.max) - pad)
+  const hi = zoomed && Math.min(full?.max ?? Infinity, Math.max(zoomed.min, zoomed.max) + pad)
+  // 끝이 시작보다 앞이면 (처음 범위 밖에 남은 옛 확대 — 랩을 바꾼 뒤 등) 촘촘히 받지 않고 처음 값으로 (엔진은 t0 > t1 을 400 으로 거절)
+  const zoom: Range = zoomed && lo !== null && hi !== null && hi > lo ? { min: lo, max: hi } : null
+  const base = useSeriesFetch(traces, channels, have, x, null, starts, true, dist)
+  const detail = useSeriesFetch(traces, channels, have, x, zoom, starts, zoom !== null, dist)
   const zoomedNow = zoom !== null
   const data = useMemo(() => {
     if (!zoomedNow || detail.key !== base.key || !detail.data.size) return base.data
@@ -194,7 +200,8 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
   const others = useMemo(() => [...new Set(cmp.filter((c) => c.sid).map((c) => c.sid!))], [cmpId]) // cmpId = 비교 랩 목록을 글자로
   const otherLaps = useMany<LapTable>(others, (s) => `/api/sessions/${encodeURIComponent(s)}/laps`)
   const otherChans = useMany<Channel[]>(others, (s) => `/api/sessions/${encodeURIComponent(s)}/channels`)
-  const deltaOk = x === 'distance' && cmp.length > 0
+  const gym = page.data?.summary.lap_kind === 'gymkhana' // 짐카나 시도 — 구간 · 시간 차 비교 없음
+  const deltaOk = x === 'distance' && cmp.length > 0 && !gym
   const available = useMemo(() => new Set([...channelMap.keys()].filter((c) => c !== DELTA || deltaOk)), [channelMap, deltaOk])
   const axes = useMemo(
     () => (st.axes ?? (page.data ? defaultAxes(page.data, x, available) : [])).map((a) => a.filter((c) => channelMap.has(c))).filter((a) => a.length),
@@ -216,17 +223,18 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
     }
     return m
   }, [traces, lapTableOf])
-  const series = useSeriesSet(traces, needed, have, x, zoom, starts, group.full)
+  const series = useSeriesSet(traces, needed, have, x, zoom, starts, group.full, gym ? 'distance' : 'ref_distance')
   const set = (patch: Partial<AnalysisState>) => setState({ ...st, x, ref, cmp, axes, ...patch })
 
   // 오른쪽 패널 — 트랙맵(코스가 있는 세션) · 구간 · 시간 차 · g-g
   const hasTrack = page.data?.summary.has_track ?? false
   const hasLaps = lapNums.length > 0 && ref !== 'all'
-  const mode: MapMode = mapMode ?? (hasLaps ? 'pace' : 'ch:gps.speed_kmh')
+  const paceOk = hasLaps && !gym
+  const mode: MapMode = mapMode && (paceOk || (mapMode !== 'pace' && mapMode !== 'delta')) ? mapMode : paceOk ? 'pace' : 'ch:gps.speed_kmh'
   const track = useApi<TrackResponse>(hasTrack && laps.data ? `${base}/track?lap=${ref}` : null)
   const colored = useApi<TrackResponse>(hasTrack && laps.data && mode.startsWith('ch:') ? `${base}/track?lap=${ref}&color=${encodeURIComponent(mode.slice(3))}` : null)
-  const sectors = useApi<SectorsResponse>(hasTrack && hasLaps ? `${base}/sectors` : null)
-  const deltas = useDeltas(sid, ref, traces, deltaOk || mode === 'delta')
+  const sectors = useApi<SectorsResponse>(hasTrack && paceOk ? `${base}/sectors` : null)
+  const deltas = useDeltas(sid, ref, traces, !gym && (deltaOk || mode === 'delta'))
   // g-g 는 500 ms 평균 채널 — 없는 세션은 원래 채널을 엔진이 0.5 s 로 부드럽게 (같은 평균)
   const ggAvg = channelMap.has('imu.lat_500ms_g') && channelMap.has('imu.long_500ms_g')
   const ggCh: [string, string] = ggAvg ? ['imu.lat_500ms_g', 'imu.long_500ms_g'] : ['imu.lat_g', 'imu.long_g']
@@ -258,6 +266,12 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
     group.range = null
     group.full = null
   }, [x, ref, group])
+  // 비교 랩을 더하거나 바꿔도 확대는 푼다 (옛 확대 범위가 새 랩의 범위 밖에 남지 않게). 커서는 기준 랩 위라 그대로
+  useEffect(() => {
+    setZoom(null)
+    group.range = null
+    group.full = null
+  }, [cmpId, group])
   useEffect(() => {
     group.cursorA = cur.a
     group.cursorB = cur.b
@@ -359,6 +373,11 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
             거리
           </button>
         </div>
+        {gym && (
+          <span className="muted" title="짐카나 시도 = 코스 계측선으로 들어가 나온 한 번. 기준선이 없어 거리축은 그 시도가 달린 거리, 구간 시간 · 시간 차 비교는 없음">
+            짐카나 — 구간 · 시간 차 비교 없음
+          </span>
+        )}
         <button type="button" className="btn" onClick={() => resetZoom(group)}>
           확대 초기화
         </button>
@@ -416,7 +435,7 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
                      onSet={(ids, on) => set({ axes: on ? addChannels(axes, ids) : removeChannels(axes, ids) })} room={MAX_AXES - axes.length} maxAxes={MAX_AXES} />}
         <div className="analysis-center">
           {series.error && <div className="banner">그래프 값 불러오기 실패 — {series.error}</div>}
-          <Plots axes={axes} channels={channelMap} traces={traces} responses={series.data} deltas={deltas} x={x} quality={quality.data ?? []} colors={colors}
+          <Plots axes={axes} channels={channelMap} traces={traces} responses={series.data} deltas={deltas} x={x} ownDistance={gym} quality={quality.data ?? []} colors={colors}
                  theme={theme} group={group} onRemove={(i) => set({ axes: axes.filter((_, k) => k !== i) })} onRemoveChannel={(c) => set({ axes: toggleChannel(axes, c) })} onAdd={(i, c) => set({ axes: addToAxis(axes, i, c) })}
                  onPop={pop ? undefined : (i) => openGraphWindow(graphHref(window.location.href, axes[i]))} />
         </div>
@@ -432,8 +451,8 @@ function Workspace({ st, setState, search }: { st: AnalysisState; setState: (s: 
                   색
                 </label>
                 <select id="mapc" className="field" value={mode} onChange={(e) => setMapMode(e.target.value as MapMode)}>
-                  {hasLaps && <option value="pace">구간 시간</option>}
-                  {hasLaps && cmp.length > 0 && <option value="delta">시간 차 (비교 1)</option>}
+                  {paceOk && <option value="pace">구간 시간</option>}
+                  {paceOk && cmp.length > 0 && <option value="delta">시간 차 (비교 1)</option>}
                   {mapChannels.map((c) => (
                     <option key={c} value={`ch:${c}`}>
                       {channelMap.get(c)!.label}
