@@ -28,6 +28,7 @@ import pandas as pd
 
 HAVE, WARN, SEEK, NONE = "있음", "있음 (주의)", "찾는 중", "기록 안 됨"
 ATTACH_MAX_BYTES = 5 * 1024 * 1024     # 이보다 큰 파일은 페이지에 붙이지 않고 있는 곳만 적는다 (노션 무료 요금제의 파일 한도)
+CHECK_DISCIPLINE = "점검"              # 차를 켜기만 하고 달리지 않은 기록 — 세션 목록의 기본 화면에서 숨긴다 (summary.default_hidden, 2026-11-17)
 
 
 @dataclass
@@ -167,6 +168,7 @@ class Session:
     split_by: str = "gps"                           # 세션을 나눈 방법 — "gps" (GPS 주행 구간) · "time" (시각 구간: Run Sheet 시각 · 장비 전원 주기)
     run_no: str = ""                                # 일정표(Run Sheet)의 R번호 — 짝이 맞았을 때만 (runsheet)
     purpose: str = ""                               # 일정표의 목적
+    anchor: str = ""                                # 시각이 옮겨져도 같은 세션을 알아볼 열쇠 (session_ids) — 레코딩 하나로 만든 시각 구간 세션은 "rec:<레코딩>"
 
     @property
     def title(self) -> str:

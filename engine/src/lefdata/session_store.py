@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 from . import catalog_build, drive, paths, sectors, series as ser, session_ids as ids
-from .catalog import HAVE, NONE, SEEK, WARN, Channel, DataBlock, FileRef, Session
+from .catalog import CHECK_DISCIPLINE, HAVE, NONE, SEEK, WARN, Channel, DataBlock, FileRef, Session
 
 STORE_FORMAT = 1
 DEFAULT_ROOT = Path(os.environ.get("LEF_SESSION_ROOT", paths.DATA_ROOT / "_sessions"))
@@ -75,7 +75,7 @@ def summary(s: Session, blocks: list[DataBlock] | None = None) -> dict:
             "start": _iso(s.start), "duration_s": _num(s.duration_s, 2), "distance_km": st.get("distance_km"), "laps": st.get("laps_n"),
             "best_lap_s": st.get("best_lap_s"), "stats": {k: v for k, v in st.items() if k not in ("distance_km", "laps_n", "best_lap_s")},
             "frame_id": s.frame_id or None, "split_by": s.split_by, "has_track": s.track is not None, "run_no": s.run_no or None,
-            "purpose": s.purpose or None, "blocks": blocks, "data_status": status}
+            "purpose": s.purpose or None, "default_hidden": s.discipline == CHECK_DISCIPLINE, "blocks": blocks, "data_status": status}
 
 
 def _channel_specs(b: DataBlock) -> list[tuple[Channel, dict]]:
@@ -355,8 +355,8 @@ def write_event(sessions: list[Session], event_id: str, root: Path | None = None
     reg = ids.load(root)
     if any(s.event_id != event_id for s in sessions):
         raise ValueError(f"세션의 event_id 가 이벤트 폴더와 다르다 — {event_id}: {sorted({s.event_id for s in sessions})}")
-    sids, retired = ids.assign(reg, event_id, [{"car": s.car, "day": s.day, "start": s.start, "duration_s": s.duration_s, "title": s.title}
-                                               for s in sessions])
+    sids, retired = ids.assign(reg, event_id, [{"car": s.car, "day": s.day, "start": s.start, "duration_s": s.duration_s, "title": s.title,
+                                                "anchor": s.anchor} for s in sessions])
     for s, sid in zip(sessions, sids):
         s.sid = sid
     rows = [write_session(s, root, data_root) for s in sessions]

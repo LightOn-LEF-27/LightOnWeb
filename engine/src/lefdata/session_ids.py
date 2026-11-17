@@ -7,6 +7,9 @@
                   둘 중 짧은 세션의 SAME_MIN_SHARE 이상. 짝은 겹친 길이가 긴 것부터 하나씩 (옛 세션 하나 ↔ 새 세션 하나).
                   그래서 쪼개지면 옛 구간을 가장 많이 가진 조각이, 합쳐지면 가장 많이 들어간 옛 세션이 sid 를 갖는다 (같으면 앞의 것).
                   장비 · 나눈 방법(`split_by`)은 보지 않는다 — Run Sheet 시각 세션에 나중에 GPS 가 붙어도 같은 sid
+    열쇠 먼저     세션에 열쇠(`anchor`, 예: "rec:<레코딩>" — 레코딩 하나로 만든 시각 구간 세션)가 있고 옛 세션 중 같은 열쇠가 하나뿐이면
+                  시간을 보지 않고 그 짝을 먼저 맺는다 (2026-11-17 — 켠 뒤 시각만 있는 로그의 전원 켬을 고치면 세션 전체가 옮겨져 시간으로는
+                  못 알아봤다). 같은 열쇠가 여럿(한 레코딩을 나눈 세션들)이면 그 사이는 시간으로. 열쇠는 등록부에 남긴다
     새 세션       그 차 · 그날 번호 중 가장 큰 것 + 1 (없어진 번호도 다시 쓰지 않는다). 시간상 앞이어도 뒤 번호가 될 수 있다
     없어진 세션   짝이 없는 옛 세션. status = retired. why = replaced (새 세션 하나가 덮음 — 합쳐짐 · 경계 이동) · split (둘 이상) · removed (덮는 세션 없음).
                   replaced_by = 그 구간의 NEXT_MIN_SHARE 이상을 덮는 새 세션들. removed 세션의 구간이 다시 나타나면 같은 sid 로 되살린다
@@ -116,6 +119,26 @@ def _pairs(old: list[str], new: list[dict], ents: dict, taken_new: set[int]) -> 
     return out
 
 
+def _anchor_pairs(old: list[str], new: list[dict], ents: dict, taken_new: set[int]) -> list[tuple[str, int]]:
+    """같은 열쇠(anchor)가 옛 쪽 · 새 쪽에 하나씩뿐이면 시간을 보지 않고 짝 (같은 차끼리). 여럿이면 시간 짝에 맡긴다."""
+    by_new: dict[tuple[str, str], list[int]] = {}
+    for i, n in enumerate(new):
+        if n.get("anchor") and i not in taken_new:
+            by_new.setdefault((n["car"], n["anchor"]), []).append(i)
+    by_old: dict[tuple[str, str], list[str]] = {}
+    for sid in old:
+        e = ents[sid]
+        if e.get("anchor"):
+            by_old.setdefault((e["car"], e["anchor"]), []).append(sid)
+    out = []
+    for key, ii in by_new.items():
+        olds = by_old.get(key, [])
+        if len(ii) == 1 and len(olds) == 1:
+            taken_new.add(ii[0])
+            out.append((olds[0], ii[0]))
+    return out
+
+
 def assign(reg: dict, event_id: str, sessions: list[dict]) -> tuple[list[str], list[str]]:
     """이벤트 하나를 새로 만든 세션들(car · day · start · duration_s · title) → (세션마다 sid, 이번에 없어진 sid). reg 를 고친다.
 
@@ -130,7 +153,9 @@ def assign(reg: dict, event_id: str, sessions: list[dict]) -> tuple[list[str], l
     gone = [sid for sid in mine if ents[sid]["status"] == RETIRED and ents[sid].get("why") == "removed"]
     taken: set[int] = set()
     sids: list[str | None] = [None] * len(new)
-    for sid, i in _pairs(live, new, ents, taken) + _pairs(gone, new, ents, taken):
+    keyed = _anchor_pairs(live + gone, new, ents, taken)
+    done = {sid for sid, _ in keyed}
+    for sid, i in keyed + _pairs([s for s in live if s not in done], new, ents, taken) + _pairs([s for s in gone if s not in done], new, ents, taken):
         sids[i] = sid
     for i in sorted((i for i in range(len(new)) if sids[i] is None), key=lambda i: (new[i]["start"], i)):
         sids[i] = make_sid(new[i]["car"], new[i]["day"], _next_number(reg, new[i]["car"], new[i]["day"]))
@@ -141,6 +166,10 @@ def assign(reg: dict, event_id: str, sessions: list[dict]) -> tuple[list[str], l
             e.pop(k, None)
         e.update({"event_id": event_id, "car": n["car"], "start": n["start"], "duration_s": round(float(n["duration_s"]), 3),
                   "title": n.get("title", ""), "status": ACTIVE, "last_built": today})
+        if n.get("anchor"):
+            e["anchor"] = n["anchor"]
+        else:
+            e.pop("anchor", None)
         e.setdefault("first_built", today)
     retired = [sid for sid in live if sid not in sids]
     for sid in retired:

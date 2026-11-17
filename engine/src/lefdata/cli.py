@@ -115,6 +115,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--root", type=Path, help="저장소 위치 (기본: LEF_SESSION_ROOT 또는 07_데이터/_sessions)")
     p.add_argument("--reframe", action="store_true", help="그 이벤트들의 frame(기준선 · 구간 경계)을 다시 정한다 — 구간 시간 · 시간 차가 바뀐다")
 
+    p = sub.add_parser("config", help="차량 설정 판 (07_데이터/_cars/<차>.toml) — 판 목록 · 레코딩마다 고른 판 · 다시 변환할 레코딩")
+    p.add_argument("--car", required=True, help="LEF-26 · LEF-25evo …")
+    p.add_argument("--assign", nargs=2, metavar=("레코딩", "판"), help="그 레코딩을 그 판으로 읽게 지정 표(<차>_assign.toml)에 적는다")
+    p.add_argument("--unassign", metavar="레코딩", help="지정을 지운다 (날짜로 고르게)")
+
+    p = sub.add_parser("review", help="데이터 넣기 확인 페이지 — 정해 줄 것 · 시간축 · 세션 카드 · 레코딩 → <이벤트>/derived/review/index.html")
+    p.add_argument("--event", required=True, type=Path)
+    p.add_argument("--store", type=Path, default=None, help="세션 저장소 (기본 07_데이터/_sessions)")
+    p.add_argument("--out", type=Path, default=None)
     p = sub.add_parser("detect", help="올릴 파일이 무엇인지 — 형식 · 차량 짐작 · 시작 시각 · 길이 (파일은 읽기만)")
     p.add_argument("files", type=Path, nargs="+")
 
@@ -368,6 +377,31 @@ def main(argv: list[str] | None = None) -> None:
         done = catalog_build.write_root(paths.DATA_ROOT)
         print(f"  세션 {len(done['sessions'])}개 · 변환된 레코딩 {done['recordings']}개 · 코드 페이지 {len(catalog_build.CODE_PAGES)}개 → {done['root']}")
         print(f"[catalog] {time.perf_counter()-t0:.1f}s")
+
+    elif args.cmd == "config":
+        from . import carconfig
+        root = paths.DATA_ROOT / carconfig.NAME
+        if args.assign or args.unassign:
+            rec, period = (args.assign[0], args.assign[1]) if args.assign else (args.unassign, None)
+            print(f"[config] {args.car}: {rec} → {period or '(지정 지움 — 날짜로)'} · {carconfig.assign(root, args.car, rec, period).name}")
+        book = carconfig.load(args.car, root)
+        if book is None:
+            raise SystemExit(f"[config] {args.car} 의 설정 파일이 없다: {root / (args.car + '.toml')}")
+        print(f"[config] {book.path}")
+        for per in book.periods:
+            print(f"  {per.start:%Y-%m-%d %H:%M}  {per.name}  (hash {per.hash}) — 바뀐 칸: {', '.join(per.own) or '-'}")
+        rows = carconfig.status(paths.DATA_ROOT, args.car)
+        for r in rows:
+            mark = "세션에서 읽음" if r["at_session"] else "다시 변환" if r["reconvert"] else "같음"
+            extra = (f" · 판과 데이터가 다름 {r['mismatch']}곳" if r["mismatch"] else "") + (" · 가장 가까운 판" if r["basis"] == "nearest" else "")
+            print(f"  {r['event']} / {r['recording']}: {r['period']} ({r['basis']}) — {mark}{extra}")
+        todo = sorted({r["event"] for r in rows if r["reconvert"]})
+        print(f"  다시 변환할 이벤트: {', '.join(todo) or '없음'}")
+
+    elif args.cmd == "review":
+        from . import review, session_store
+        out = review.build(args.event, args.store or session_store.DEFAULT_ROOT, args.out)
+        print(f"[review] → {out}")
 
     elif args.cmd == "sessions":
         from . import catalog_build, session_ids, session_store

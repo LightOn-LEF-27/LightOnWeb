@@ -52,6 +52,29 @@ def test_a_clock_shift_of_a_few_seconds_keeps_the_sid():
     assert ids.assign(reg, EV, moved) == ([S(1), S(2)], [])
 
 
+def keyed(*spans, shift_min=0):
+    """레코딩 하나로 만든 시각 구간 세션들 (열쇠 rec:r0 …) — 전원 켬을 고치면 shift_min 만큼 통째로 옮겨진다."""
+    return [{**r, "start": r["start"] + pd.Timedelta(minutes=shift_min), "anchor": f"rec:r{k}"} for k, r in enumerate(runs(*spans))]
+
+
+def test_moving_the_power_on_time_keeps_sids_of_recording_sessions():
+    """켠 뒤 시각만 있는 로그 — 전원 켬을 13:00 → 14:00 으로 고쳐도 레코딩으로 알아본다 (2026-11-17, 오후 세션 4개가 새 번호를 받은 일)."""
+    reg = fresh()
+    ids.assign(reg, EV, keyed((0, 200), (10, 700), (30, 3000)))
+    assert ids.assign(reg, EV, keyed((0, 200), (10, 700), (30, 3000), shift_min=60)) == ([S(1), S(2), S(3)], [])
+    assert reg["sessions"][S(2)]["anchor"] == "rec:r1"
+    plain = [{k: v for k, v in r.items() if k != "anchor"} for r in keyed((0, 200), shift_min=200)]
+    assert ids.assign(reg, EV, plain)[0] == [S(4)]                            # 열쇠가 없으면 지금처럼 시간으로 — 안 겹치면 새 번호
+
+
+def test_a_recording_split_into_several_sessions_is_paired_by_time():
+    """같은 열쇠가 여럿 (한 레코딩을 나눈 세션들) — 그 사이는 시간으로 짝."""
+    reg = fresh()
+    ids.assign(reg, EV, keyed((0, 600)))
+    two = [{**r, "anchor": "rec:r0"} for r in runs((0, 120), (5, 200))]
+    assert ids.assign(reg, EV, two) == ([S(2), S(1)], [])                    # 쪼개기와 같다 — 옛 구간을 더 많이 가진 조각이 sid
+
+
 def test_split_keeps_the_sid_on_the_part_with_most_of_the_old_run():
     reg = fresh()
     ids.assign(reg, EV, runs((0, 600)))

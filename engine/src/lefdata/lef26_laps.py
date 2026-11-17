@@ -121,6 +121,7 @@ class Logger:
     yaw_dps: np.ndarray | None = None   # 요레이트 (좌회전 +) — 영상이 없는 세션에서 로거로 차량 거동을 낼 때
     pack: pd.DataFrame | None = None    # 0x6B4 팩 전류 · 전류 한계 (새 펌웨어 로그만, 유효한 줄)
     log_format: str = ""                # "log_on" = 새 펌웨어 로그 (레지스터마다 10 ms · 반복 없음)
+    config: dict | None = None          # meta 의 config — 읽은 차량 설정 판 (period · basis · effective · mismatch)
 
 
 def _smooth(x: np.ndarray, n: int) -> np.ndarray:
@@ -149,6 +150,7 @@ def read_video(rec_dir: Path) -> Video:
 
 
 def read_logger(rec_dir: Path, cm: lc.ClockMap | None, win_true: np.ndarray) -> Logger:
+    meta = json.loads((rec_dir / "meta.json").read_text(encoding="utf-8"))
     imu = pq.read_table(rec_dir / "imu.parquet", columns=["t_rel_ms", "ax_lat_g", "ay_long_g", "yaw_dps"]).to_pandas()
     lin = pq.read_table(rec_dir / "lin.parquet", columns=["t_rel_ms", "lin_rl_mm", "lin_rr_mm"]).to_pandas()
     bms_cols = ["t_rel_ms", "valid", "cell_max_v", "cell_min_v", "soc_pct", "temp_c"]
@@ -165,8 +167,7 @@ def read_logger(rec_dir: Path, cm: lc.ClockMap | None, win_true: np.ndarray) -> 
     return Logger(rec_dir.name, cm, win_true, imu["t_rel_ms"].to_numpy() / 1000.0, imu["ay_long_g"].to_numpy(),
                   -imu["ax_lat_g"].to_numpy(),              # 로거의 X 는 우회전에서 양수다 → 좌회전 양수로 뒤집는다
                   lin if len(lin) else None, bms, therm, {k: v for k, v in m.groupby("signal")}, imu["yaw_dps"].to_numpy(),
-                  pack if pack is not None and len(pack) else None,
-                  json.loads((rec_dir / "meta.json").read_text(encoding="utf-8")).get("source", {}).get("log_format", ""))
+                  pack if pack is not None and len(pack) else None, meta.get("source", {}).get("log_format", ""), meta.get("config"))
 
 
 def _cut(df: pd.DataFrame | None, r0: float, r1: float) -> pd.DataFrame | None:

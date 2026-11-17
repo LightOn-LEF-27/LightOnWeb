@@ -115,6 +115,55 @@ pytest                                # 테스트 (아래 §테스트)
   (이벤트 코스를 40 % 넘게 지나지 않은 것) 순서로 정한다. 코스를 많이 지난 것은 미분류로 두고 짐카나 기록은 메모로 (일정표가 종목을 정한다)
 - 서로 다른 GPS(주기가 다른 수신기)끼리는 출발 순간 판정이 달라질 수 있어, 0.1 s 단위의 차량 간 비교에는 쓰지 않는다
 
+## 점검 세션 (`[event] check_sessions = "auto"`)
+
+켜기만 하고 달리지 않은 기록(LV 만 켬 · 몇 초 · 모터가 돈 적 없음)을 세션 목록의 기본 화면에서 빼되 지우지는 않는다. 메모에 `check_sessions = "auto"` 를 적은 이벤트에서
+모터 속도를 아는 장비(LEF-26 로거 · Monolith CAN)의 레코딩 중 어느 세션에도 안 들어가고 모터가 1 s 넘게 돈 적 없는 것을, 같은 장비에서 2 분 안으로 이어지면 하나로 묶어
+종목 `점검` 세션을 만든다 (이름 `점검 HH:MM`, 요약의 `default_hidden = true`). 기준 시계(`[event] clock`)가 있어야 한다
+
+## 데이터 넣기 확인 페이지 (`lefdata review`)
+
+변환 · 세션 만들기가 끝난 이벤트를 사람이 눈으로 보고 고칠 곳을 고르는 HTML 한 장 → `<이벤트>/derived/review/index.html`.
+
+```bash
+lefdata review --event <이벤트 폴더> [--store <세션 저장소>] [--out <파일>]
+```
+
+- **정해 줄 것** — 추정 기준 시각 (메모의 `clock_label` 에 「추정 · 가정」), 종목 미분류 세션, 세션에 안 들어간 레코딩, 세션 경고(`warn`) 묶음
+- **날마다 시간축** — 레코딩 (세션 만들기와 같은 시계: 장비 시계 차 · 전원 켬 + 켠 뒤 시각) · 세션
+- **세션 카드** — 길이 · 랩 · 최고 속도 · 전류 · 에너지, 미리보기 그래프 둘 (회전수 · 속도 · 전류 … 중 있는 것, 세로축은 모든 세션이 같음)
+- **레코딩 표** — 장비 · 시작 · 길이 · 차량 설정 판 · 판과 다른 곳 · 들어간 세션
+- 읽기만 한다 (세션 저장소 · `normalized/*/meta.json` · 메모). 고친 뒤에는 `lefdata sessions` → 다시 `lefdata review`
+
+## 차량 설정 판 (`lefdata.carconfig`)
+
+같은 차라도 로거 펌웨어 · 컨트롤러가 보내는 레지스터 목록 · BMS 프레임 모양 같은 설정이 날짜에 따라 바뀐다. 데이터 폴더의
+`_cars/<차>.toml` 에 **날짜별 판**을 적으면, 변환기 · 세션이 레코딩 날짜의 판대로 읽는다 — 새 판을 더해도 옛 데이터는 옛 판으로 읽힌다.
+
+```toml
+car = "LEF-26"
+
+[[period]]
+name = "옛 펌웨어"
+from = 2026-08-01                # 날짜, 또는 날짜 시각 (시간대가 없으면 KST)
+logger.format = "config_on"
+bamocar.registers = ["0x30", "0x22", "0x27"]
+bms.profile = "checksum"
+
+[[period]]
+name = "새 펌웨어"
+from = 2026-11-12
+logger.format = "log_on"         # 바뀐 칸만 적는다 — 나머지는 앞 판을 물려받는다
+```
+
+- 판 고르기: 지정 표 `_cars/<차>_assign.toml` (레코딩 → 판) > 레코딩 날짜. 첫 판보다 앞선 날짜는 가장 가까운 판으로 읽고 알린다 (`config_nearest`)
+- 데이터 모양 보기(로그 형식 · 체크섬 통과율 · 실제로 오는 레지스터)는 **판과 데이터가 맞나 검사**가 된다 — 안 맞으면 값은 판대로 읽고
+  meta 의 `config.mismatch` · 세션 경고 `config_mismatch` 로 알린다. 판 파일이 없는 차는 예전처럼 데이터 모양으로 고른다
+- 어느 판으로 읽었는지 · 그 판의 `hash` 를 meta 의 `config` 에 남긴다. 판을 고치면 hash 가 바뀐다 →
+  `lefdata config --car <차>` 가 판 목록 · 레코딩마다 고른 판 · 다시 변환할 이벤트를 보여 준다 (`--assign <레코딩> <판>` · `--unassign <레코딩>`)
+- 지금 읽는 칸: LEF-26 — `logger.format` · `logger.rtc` · `bamocar.registers` · `bamocar.vout` · `bamocar.n100_rpm` · `bms.profile` · `bms.pack_frame`
+  (`lef26.SETTING_KEYS`), LEF-25evo — `monolith.ain1` (`brake_pressure_v` 면 세션에 `brake` 블록)
+
 ## 장비끼리 시계 맞추기
 
 같은 물리량(요레이트 · 속도 · 전압 · 전력)을 잰 두 장비라면 파형으로 시계 관계를 구한다 (`sync`).

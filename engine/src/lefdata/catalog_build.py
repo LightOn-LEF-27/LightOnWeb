@@ -51,9 +51,9 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from . import em_laps, events as evmod, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
-from .catalog import (HAVE, NONE, SEEK, WARN, Channel, CodeRef, DataBlock, Export, FileRef, LapColumn, Missing, Session, code_html,
-                      size_text, to_markdown, write_session)
+from . import carconfig, em_laps, events as evmod, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
+from .catalog import (CHECK_DISCIPLINE, HAVE, NONE, SEEK, WARN, Channel, CodeRef, DataBlock, Export, FileRef, LapColumn, Missing, Session,
+                      code_html, size_text, to_markdown, write_session)
 
 G = 9.80665
 TZ = "Asia/Seoul"
@@ -75,6 +75,10 @@ EM_REFINE_MIN_S = 1.0       # 에너지미터 전력에 다시 맞출 때는 이
 ACCEL_LEAD_S = 10.0         # 가속 출발(정지)은 주행 구간 시작(10 km/h 를 넘는 순간)보다 앞이다 — 그만큼 앞까지 본다
 GYMKHANA = "짐카나"         # 콘으로 만든 짧은 코스 — 정지에서 출발해 같은 자리로 돌아와 선다 (2026-11-14 트랙데이, events.gymkhana_runs)
 UNCLASSIFIED = "미분류"      # 랩 · 종목을 알아보지 못했지만 달린 주행 — 세션으로 넣고 '확인 필요' 경고 (사람이 [[session]] 으로 정하거나 skip)
+CHECK = CHECK_DISCIPLINE    # "점검" — 켜기만 하고 달리지 않은 기록 ([event] check_sessions = "auto", 2026-11-17)
+CHECK_GAP_S = 120.0         #   같은 장비의 안 달린 기록이 이 안으로 이어지면 점검 세션 하나로 묶는다
+CHECK_MOVE_PCT = 5.0        #   모터 실제 속도가 N-100 % 의 이 비율을 넘은 시간이
+CHECK_MOVE_S = 1.0          #   이보다 길면 '달린 기록' (점검이 아니다)
 UNCLASSIFIED_COVER = 0.4    # 이벤트 코스(기준 랩의 주행선)의 이 비율 이상을 지났거나 — 피트 이동은 코스의 일부만 지난다
 UNCLASSIFIED_KMH = 60.0     #   최고 속도가 이 값 이상이면 미분류로 넣는다 (짧아도 빨리 달린 것 — 놓친 가속 시도 등)
 UNCLASSIFIED_M = 500.0      # 완주 랩이 하나도 없어 코스를 모르는 이벤트는 덮은 비율 대신 달린 거리
@@ -546,6 +550,34 @@ def _can_times(log) -> tuple[np.ndarray, np.ndarray]:
     return t, np.ones(len(t))
 
 
+def _n100(log) -> float:
+    """그 로거 레코딩을 읽은 판의 컨트롤러 N-100 % (rpm). 판 기록이 없으면 lef26.N_MAX_RPM."""
+    return float(((getattr(log, "config", None) or {}).get("effective") or {}).get("bamocar.n100_rpm") or lef26.N_MAX_RPM)
+
+
+def _rpm_signal(log):
+    """n_act_pct (컨트롤러 % — 전진이 −) → 회전수 rpm (전진 +), 레코딩마다 그 판의 N-100 % 로."""
+    t, v = _motor_signal("n_act_pct")(log)
+    return (None, None) if t is None else (t, (0.0 - v) / 100 * _n100(log))
+
+
+def _config_notes(logs: list, used: list) -> tuple[list[str], list[dict]]:
+    """쓴 로거 레코딩들의 차량 설정 판 → (블록 '확인' 글, 경고). 판 기록이 없는 레코딩은 건너뛴다."""
+    checks, findings = [], []
+    for log in logs:
+        c = getattr(log, "config", None) or {}
+        if log.rec not in used or not c.get("period"):
+            continue
+        checks.append(f"해독 설정 판: {c['period']} ({ {'date': '날짜로', 'assigned': '지정 표로', 'nearest': '가장 가까운 판'}.get(c.get('basis'), c.get('basis')) })")
+        if c.get("basis") == "nearest":
+            findings.append({"level": "info", "code": "config_nearest", "t_ranges": [],
+                             "message": f"{log.rec}: 레코딩 날짜가 첫 설정 판보다 앞 — 가장 가까운 판 '{c['period']}' 으로 읽음"})
+        if c.get("mismatch"):
+            findings.append({"level": "warn", "code": "config_mismatch", "t_ranges": [],
+                             "message": f"{log.rec}: 설정 판과 데이터가 다름 — " + " · ".join(c["mismatch"]) + " (값은 판대로 읽음 — 판 날짜 · 내용을 확인)"})
+    return list(dict.fromkeys(checks)), findings
+
+
 def _motor_signal(name: str):
     def pick(log):
         df = log.motor.get(name)
@@ -604,13 +636,17 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
     blocks = []
 
     # 모터 · 인버터 (BAMOCAR 0x181)
-    sig = {k: _gather(r, logs, _motor_signal(k))[:2] for k in ("n_act_pct", "iq_act_a", "iq_cmd_a", "id_act_a", "id_cmd_a", "vdc_v", "t_igbt_c", "t_motor_c")}
+    sig = {k: _gather(r, logs, _motor_signal(k))[:2] for k in ("iq_act_a", "iq_cmd_a", "id_act_a", "id_cmd_a", "vdc_v", "t_igbt_c", "t_motor_c")}
+    sig["rpm"] = _gather(r, logs, _rpm_signal)[:2]
+    n100s = sorted({_n100(log) for log in logs if log.rec in used})
+    cfg_checks, cfg_findings = _config_notes(logs, used)
+    findings += cfg_findings
     if logs and all(getattr(log, "log_format", "") == "log_on" for log in logs):      # 새 펌웨어 — 레지스터마다 10 ms, 빠짐 · 반복 없음
         sparse = "새 로거 펌웨어 — 레지스터마다 10 ms (온도 100 ms), 빠짐 · 같은 프레임 반복 없음"
     series = []
     flip = lambda v: 0.0 - v                                       # noqa: E731 — 이 차는 전진 · 구동이 컨트롤러의 − 방향
-    spec = (("n_act_pct", "rpm", "모터 회전수", "rpm", lambda v: (0.0 - v) / 100 * lef26.N_MAX_RPM, ROT_SIGN, 0,
-             [f"컨트롤러 설정값 N-100 % = {lef26.N_MAX_RPM:.0f} rpm 기준으로 바꾼 값", ROT_FLIP, sparse]),
+    spec = (("rpm", "rpm", "모터 회전수", "rpm", lambda v: v, ROT_SIGN, 0,
+             [f"컨트롤러 설정값 N-100 % = {' · '.join(f'{x:.0f}' for x in n100s) or f'{lef26.N_MAX_RPM:.0f}'} rpm 기준으로 바꾼 값", ROT_FLIP, sparse]),
             ("iq_act_a", "iq_a", "토크 전류", "A", flip, TORQUE_SIGN, 1, ["모터 상전류(교류)의 토크 성분 — 배터리 전류 아님", TORQUE_FLIP, sparse]),
             ("iq_cmd_a", "iq_cmd_a", "토크 전류 지령", "A", flip, TORQUE_SIGN, 1, [TORQUE_FLIP, sparse]),
             ("id_act_a", "id_a", "자속 전류 (Id)", "A", flip, "토크 전류와 같은 부호 규칙", 1,
@@ -622,7 +658,7 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
     for src, key, label, unit, conv, sign, d, cautions in spec:
         t, v = sig[src]
         if len(t):
-            how = "−n_act_pct ÷ 100 × 설정 최대 회전수" if key == "rpm" else "−(기록값)" if conv else ""
+            how = "−n_act_pct ÷ 100 × 설정 최대 회전수 (레코딩의 설정 판)" if key == "rpm" else "−(기록값)" if conv else ""
             series.append(Channel(key, label, unit, t, conv(v) if conv else v, sign=sign, derived=conv is not None,
                                   derivation=how, cautions=cautions, source=", ".join(used), digits=d))
     phase = _phase_current(sig["iq_act_a"], sig["id_act_a"])
@@ -650,7 +686,7 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
                                 raw=raw, code=code, outputs=[FileRef("변환된 표 (로거 레코딩 전체)", "motor.parquet", note="signal · value · raw", where=where)],
                                 channels=series, time_keys=[k for k in ("rpm", "iq_a", "inverter_c") if k in keys],
                                 trace_keys=[k for k in ("iq_a",) if k in keys], map_key="iq_a" if "iq_a" in keys else None, lap_columns=cols,
-                                checks=[clock], cautions=[sparse], series=series, findings=findings))
+                                checks=[clock] + cfg_checks, cautions=[sparse], series=series, findings=findings))
 
     # 배터리 전압 · 전류 (새 펌웨어 로그 — 0x6B4 팩 전류 · 0x6B1 팩 전압)
     bat = _logger_battery(r, logs, used, raw, code, where, clock)
@@ -663,7 +699,7 @@ def _logger_blocks(r, logs: list, how: str = LOGGER_BY_VIDEO) -> list[DataBlock]
     series = [Channel(k, label, unit, *bms[k], sign=sign, cautions=[note] if note else [], source=", ".join(used), digits=d)
               for k, label, unit, sign, note, d in (("cell_max_v", "셀 최고 전압", "V", "", "", 4), ("cell_min_v", "셀 최저 전압", "V", "", "", 4),
                                                     ("soc_pct", "SOC", "%", "", "BMS 가 보고한 값", 1),
-                                                    ("temp_c", "BMS 온도", "°C", "", "BMS 가 보고한 온도 (셀 하나하나는 셀 온도 블록)", 0))
+                                                    ("temp_c", "BMS 온도", "°C", "", "BMS 가 보고한 온도 (0x6B1 — 셀 최고 온도 쪽, 최저 셀 아님. 셀 하나하나 · 최저 셀은 셀 온도 블록)", 0))
               if len(bms[k][0])]
     series += [Channel(k, label, "A", *lim[k], cautions=["Orion 이 0x6B4 로 낸 한계 — 이만큼 넘게 쓰면 BMS 가 방전 · 충전을 끊을 수 있음"], source=", ".join(used), digits=0)
                for k, label in (("dcl_a", "방전 전류 한계 (DCL)"), ("ccl_a", "충전 전류 한계 (CCL)")) if len(lim[k][0])] if series else []
@@ -1062,6 +1098,33 @@ def _corr_at(t, v, t_ref, v_ref) -> float:
     m = np.interp(t, np.asarray(t_ref, float), np.asarray(v_ref, float), left=np.nan, right=np.nan)
     ok = np.isfinite(m) & np.isfinite(v)
     return float(np.corrcoef(v[ok], m[ok])[0, 1]) if ok.sum() > 30 and np.std(v[ok]) > 0 and np.std(m[ok]) > 0 else np.nan
+
+
+def _evo_choice(event_dir: Path, rec: str, meta: dict):
+    """25Evo Monolith 레코딩 → 그 날짜의 차량 설정 판 (`_cars/LEF-25evo.toml`, 없으면 None)."""
+    book = carconfig.load("LEF-25evo", carconfig.root_for(event_dir))
+    start = (meta.get("time") or {}).get("t_abs_start")
+    return book.choose(pd.Timestamp(start).tz_convert(TZ).to_pydatetime() if start else meta.get("recording_id", rec)[:10], rec) if book else None
+
+
+def _brake_block(r, analog: pd.DataFrame | None, choice) -> DataBlock | None:
+    """Monolith 아날로그 입력 AIN1 — 그 판이 브레이크 압력 센서라고 할 때만 (25Evo 는 2026-11-13 부터). 전압 그대로 (압력 환산식은 센서 모델을 받은 뒤)."""
+    if choice is None or choice.get("monolith.ain1") != "brake_pressure_v" or analog is None or "ain1_v" not in analog:
+        return None
+    d = analog[analog["valid"].astype(bool)] if "valid" in analog else analog
+    if len(d) < 10:
+        return None
+    t, v = d["t_s"].to_numpy(), d["ain1_v"].to_numpy(float)
+    rest = float(np.nanpercentile(v, 5))
+    series = [Channel("ain1_v", "브레이크 압력 센서 전압", "V", t, v, sign="밟을수록 +", source=r.rec, digits=3,
+                      cautions=["센서 전압 그대로 — 압력(bar) 환산식은 센서 모델을 받은 뒤", f"쉴 때 약 {rest:.2f} V (5 % 분위)"])]
+    return DataBlock("brake", "브레이크 압력", HAVE, "25Evo Monolith 아날로그 입력 AIN1 (브레이크 압력 센서)",
+                     [f"센서 전압 {np.nanmin(v):.2f} ~ {np.nanmax(v):.2f} V · 쉴 때 약 {rest:.2f} V"],
+                     code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "아날로그 입력 → 브레이크 압력 센서 전압, 세션 구간만")],
+                     outputs=[FileRef("변환된 표 (레코딩 전체)", "analog.parquet", note="ain1_v ~ ain6_v (V)", where=r.where(f"normalized/{r.rec}/"))],
+                     channels=series, time_keys=["ain1_v"], trace_keys=["ain1_v"],
+                     checks=[f"AIN1 의 뜻은 차량 설정 판 '{choice.period.name}' (monolith.ain1)"], cautions=list(r.extra("brake").get("cautions", [])),
+                     series=series)
 
 
 def _pedal_block(r: _Run, apps: pd.DataFrame, ref: dict | None) -> DataBlock:
@@ -1685,21 +1748,27 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
             blocks.append(em)
             stats.update(st)
     orion, orion_ref = _orion_block(w, of("orion"), f"Connect 시각을 기준 시계로 옮김 — {said(of('orion'))}") if of("orion") else (None, None)
-    can_motor = can_pedal = None
+    can_motor = can_pedal = can_brake = can_bat = can_bms = None
     mono = [(x, clocks.offset(x)) for x in recs if x.device in CAN_DEVICES and clocks.known(x)
             and x.t0 + clocks.offset(x) < w.t1_abs and x.t1 + clocks.offset(x) > w.t0_abs]
-    if mono:                                                           # Monolith 가 받은 차량 CAN (모터 컨트롤러 · 가속페달)
+    if mono:                                                           # Monolith 가 받은 차량 CAN (모터 컨트롤러 · 가속페달 · Orion BMS)
         wm = copy.copy(w)
         wm.rec = mono[0][0].rec
-        bam, apps, oc = (_window_can(w, mono, k) for k in ("bamocar", "apps", "orion_can"))
+        bam, apps, oc, ost = (_window_can(w, mono, k) for k in ("bamocar", "apps", "orion_can", "orion_stream"))
         can_motor = _can_motor_block(wm, bam, oc) if bam is not None else None
         can_pedal = _pedal_block(wm, apps, em_ref) if apps is not None and len(apps) else None
-        for b in (can_motor, can_pedal):
+        can_brake = _brake_block(wm, _window_can(w, mono, "analog"), _evo_choice(w.event_dir, mono[0][0].rec, mono[0][0].meta))
+        if em is None and ost is not None:                             # 에너지미터가 없으면 Orion CAN 의 팩 전압 · 전류 (GPS 세션과 같게, 2026-11-17)
+            can_bat, can_st, _ = _can_battery_block(wm, ost, oc)
+            if can_bat is not None:
+                stats.update(can_st)
+        can_bms = _orion_can_block(wm, oc, ost) if oc is not None and orion is None else None
+        for b in (can_motor, can_pedal, can_brake, can_bat, can_bms):
             if b is not None:
                 b.checks.insert(0, f"Monolith 가 받은 차량 CAN — Monolith 시각을 기준 시계로 옮김 ({said(mono)})")
     part = of("stm32")
     if part:
-        skip = tuple(k for k, b in (("battery", em), ("bms", orion), ("motor", can_motor)) if b is not None)
+        skip = tuple(k for k, b in (("battery", em or can_bat), ("bms", orion or can_bms), ("motor", can_motor)) if b is not None)
         made = _stm32_make(w, {x.rec: off for x, off in part},
                            f"백업 로거 시각(lefdata evo-stm32 가 다른 장비에 맞춰 둔 것)을 기준 시계로 옮김 — {said(part)}", skip=skip, ref=em_ref)
         bat = next((b for b in made if b.key == "battery"), None)
@@ -1718,8 +1787,14 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
             _add_check(orion, _agree(orion_ref["t"], orion_ref["amp"], em_ref["t"], em_ref["amp"], "orion",
                                      "Orion 팩 전류를 에너지미터 전류와 대 봄"))
         blocks.append(orion)
+    if can_bat is not None:
+        blocks.append(can_bat)
+    if can_bms is not None:
+        blocks.append(can_bms)
     if can_pedal is not None:
         blocks.append(can_pedal)
+    if can_brake is not None:
+        blocks.append(can_brake)
     part = of("lef26_logger")
     if part:
         logs = [lef26_laps.read_logger(x.dir, lef26_clock.ClockMap(np.array([0.0, x.t1 - x.t0]), np.array([x.t0 + off, x.t1 + off]), 1.0, 1.0),
@@ -1834,6 +1909,8 @@ def _timed(event_dir: Path, notes: dict, made: dict, ctx: "_GpsCtx | None",
         if got_s is None:
             soft.append((e, "그 시각에 기록이 남은 장비 없음 (시계 차를 모르는 장비는 제외)"))
             continue
+        if e.get("recording") and not (e.get("start") or e.get("end")):
+            got_s.anchor = f"rec:{e['recording']}"     # 그 레코딩이 켜져 있던 동안 — 전원 켬 · 시계 차를 고쳐도 같은 세션 (session_ids)
         out.append(got_s)
     return out, covered
 
@@ -1893,6 +1970,81 @@ def _timed_one(e: dict, event_dir: Path, notes: dict, made: dict, ctx, ev: dict,
         missing=[Missing(m["data"], m["status"], m["reason"], m.get("ask", ""), m.get("block", "")) for m in notes.get("missing", [])
                  if not m.get("sessions") or e.get("name") in m["sessions"]],
         notes=list(e.get("notes", [])) + lines + list(day_notes.get(f"{start:%Y-%m-%d}", [])), made=made, split_by="time")
+
+
+def _moving_s(x: _Rec) -> float | None:
+    """그 레코딩에서 모터가 돈 시간 (실제 속도 > N-100 % 의 CHECK_MOVE_PCT). 모터 속도를 모르는 장비는 None (점검인지 판단하지 않는다)."""
+    if x.device == "lef26_logger":
+        f = x.dir / "motor.parquet"
+        if not f.exists():
+            return 0.0
+        m = pd.read_parquet(f, columns=["t_rel_ms", "signal", "value"])
+        m = m[m["signal"] == "n_act_pct"]
+        t, pct = m["t_rel_ms"].to_numpy(float) / 1000, np.abs(m["value"].to_numpy(float))
+    elif x.device == "monolith":
+        f = x.dir / "bamocar.parquet"
+        if not f.exists():
+            return 0.0
+        b = pd.read_parquet(f, columns=["t_rel_ms", "reg", "raw"])
+        b = b[b["reg"] == evo_can.REG_SPEED]
+        raw = b["raw"].to_numpy(np.int64)
+        raw = np.where(raw > 32767, raw - 65536, raw)                  # 0x30 은 int16
+        t, pct = b["t_rel_ms"].to_numpy(float) / 1000, np.abs(raw) / 32767 * 100
+    else:
+        return None
+    if len(t) < 2:
+        return 0.0
+    dt_s = np.clip(np.diff(t, append=t[-1]), 0.0, 1.0)                  # 기록이 끊긴 틈은 1 s 까지만 센다
+    return float(dt_s[pct > CHECK_MOVE_PCT].sum())
+
+
+def _check_sessions(event_dir: Path, notes: dict, made: dict, ctx: "_GpsCtx | None", sessions: list[Session]) -> list[Session]:
+    """세션에 안 들어간 '안 달린 켜기 기록' → 점검 세션 (`[event] check_sessions = "auto"`, 2026-11-17 사용자 결정).
+
+    모터 속도를 아는 장비(LEF-26 로거 · Monolith CAN)의 레코딩 중 모터가 CHECK_MOVE_S 넘게 돈 적 없고 어느 세션과도 겹치지 않는 것을,
+    같은 장비에서 CHECK_GAP_S 안으로 이어지면 하나로 묶는다. 종목 `점검` — 세션 목록이 기본 화면에서 숨긴다 (summary.default_hidden).
+    열쇠는 첫 레코딩 (`chk:<레코딩>` — 전원 켬 · 시계 차를 고쳐도 같은 sid).
+    """
+    ev = notes.get("event", {})
+    clocks = _Clocks(notes)
+    recs = _recordings(event_dir)
+    by_id = {x.rec: x for x in recs}
+    taken = [(s.start.timestamp(), s.start.timestamp() + s.duration_s, s.name) for s in sessions]
+    cand = []
+    for x in recs:
+        if not clocks.known(x):
+            continue
+        a, b = x.t0 + clocks.offset(x), x.t1 + clocks.offset(x)
+        if any(a < s1 and b > s0 for s0, s1, _ in taken):
+            continue
+        moved = _moving_s(x)
+        if moved is None or moved >= CHECK_MOVE_S:
+            continue
+        cand.append((a, b, x))
+    groups: list[dict] = []
+    for a, b, x in sorted(cand, key=lambda c: (c[2].device, c[0])):
+        g = groups[-1] if groups else None
+        if g is not None and g["device"] == x.device and a - g["t1"] <= CHECK_GAP_S:
+            g["t1"] = max(g["t1"], b)
+            g["recs"].append(x.rec)
+        else:
+            groups.append({"device": x.device, "t0": a, "t1": b, "recs": [x.rec]})
+    split = set(ctx.runs["recording_id"]) if ctx is not None else set()
+    out = []
+    for g in groups:
+        start = pd.Timestamp(g["t0"], unit="s", tz="UTC").tz_convert(TZ)
+        end = pd.Timestamp(max(g["t1"], g["t0"] + 1.0), unit="s", tz="UTC").tz_convert(TZ)
+        e = {"start": start.isoformat(), "end": end.isoformat(), "name": f"{CHECK} {start:%H:%M}", "discipline": CHECK,
+             "notes": [f"안 달린 켜기 기록 {len(g['recs'])}개 ({', '.join(g['recs'])}) — 모터가 {CHECK_MOVE_S:g} s 넘게 돈 적이 없다. "
+                       "엔진이 묶은 점검 세션 (세션 목록 기본 화면에서 숨김)"]}
+        try:
+            s = _timed_one(e, event_dir, notes, made, ctx, ev, clocks, recs, by_id, ev.get("day_notes", {}), split, taken, set(), strict=False)
+        except ValueError:
+            continue
+        if s is not None:
+            s.anchor = f"chk:{g['recs'][0]}"
+            out.append(s)
+    return out
 
 
 RUNSHEET_CLOCK = "phone"         # 일정표의 시각 — 폰 시계
@@ -1993,6 +2145,10 @@ def build_event(event_dir: Path, report: dict | None = None) -> list[Session]:
         runsheet.write_check(event_dir, check)
         if report is not None:
             report["runsheet"] = check
+    if ev.get("check_sessions") == "auto":                      # 안 달린 켜기 기록 → 점검 세션 (기본 목록에서 숨김)
+        if not ev.get("clock"):
+            raise ValueError(f"{NOTES_NAME}: check_sessions = \"auto\" 에는 [event] clock (기준 시계) 이 있어야 한다")
+        sessions = sorted(sessions + _check_sessions(event_dir, notes, made, ctx, sessions), key=lambda s: s.start)
     auto: dict[tuple, int] = {}
     for s in sessions:                                          # 자동 이름: 그날 종목별 순서 ("트랙 2")
         if not s.name:
@@ -2118,6 +2274,10 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
         blocks.append(can_bms)
     if can["apps"] is not None:
         blocks.append(_pedal_block(r, can["apps"], ref))
+    if (r.rec_dir / "analog.parquet").exists():                 # 25Evo 브레이크 압력 (판이 AIN1 을 그렇게 말할 때만)
+        brake = _brake_block(r, _can_frame(r, "analog"), _evo_choice(ctx.event_dir, r.rec, r.meta))
+        if brake is not None:
+            blocks.append(brake)
     blocks.append(_video_block(r))
     if int(run.get("off_course_laps", 0) or 0) > 0:             # 경기장 코스와 다른 코스를 달린 주행 — 그 랩은 laps 가 뺐다 (N4)
         venue_name = ctx.gate_file.get("venue", "")

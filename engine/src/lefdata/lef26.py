@@ -49,6 +49,12 @@
       0x6B4 = 전류 한계 상태 비트 · CCL · DCL (A) · **팩 전류** (int16 빅 엔디언 0.1 A, 방전 +) → `pack` 표 (새 형식 레코딩만).
       0x8A 출력 전압은 26팀 정의대로 바이트 1-2 int16 의 부호를 뒤집은 값 (새 형식 레코딩만 — raw 는 4 바이트 그대로)
 
+차량 설정 판 (2026-11-16, `carconfig` — `<데이터>/_cars/LEF-26.toml`)
+    - 펌웨어마다 다른 것(로거 형식 · RTC · BAMOCAR 레지스터 목록 · 0x8A 읽는 법 · N-100 % · BMS 프로파일 · 0x6B4)은
+      **레코딩 날짜의 판**으로 정한다 (SETTING_KEYS). 위의 데이터 모양 보기는 '판과 데이터가 맞나' 검사가 되어,
+      안 맞으면 meta 의 config.mismatch 에 적는다 (값은 판대로 읽는다). 판 파일이 없으면 예전처럼 모양으로 고른다
+    - 어느 판으로 읽었는지 · 그 판의 hash 를 meta 의 config 에 남긴다 (판을 고치면 hash 가 바뀐다 → 다시 변환할 레코딩)
+
 CAN 프레임 분류 (2026-10-01)
     - 펌웨어는 표준 ID 칸만 적는다. 확장 ID 프레임은 **직전 프레임의 ID 로 찍혀 있다** → 내용으로 가린다
     - Orion 써미스터 확장 모듈의 프레임(0x1839F380 · 0x1838F380, 그리고 표준 ID 0x80)은 `thermistor` 표로,
@@ -69,7 +75,7 @@ import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
-from . import __version__
+from . import __version__, carconfig
 from .writer import TZ, T_ABS_TYPE, dir_bytes, fresh_dir, write_index, write_json
 
 KST = dt.timezone(dt.timedelta(hours=9))
@@ -82,6 +88,21 @@ BMS_CHECK_MIN = 20
 BMS_CELL_V = (2.0, 4.5)     # 체크섬 없는 판에서 유효로 보는 셀 전압 범위
 BMS_PACK_V = (50.0, 1000.0)
 PACK_LIMIT_A = 2000.0       # 0x6B4 의 CCL · DCL · |전류| 가 이보다 크면 BMS 프레임이 아니다
+
+# --- 차량 설정 판 (carconfig) 에서 읽는 칸과 받는 값. 판에 없는 칸은 데이터 모양으로 정한다 (예전과 같다)
+CAR = "LEF-26"
+SETTING_KEYS = {
+    "logger.format": ("config_on", "log_on"),       # CONFIG ON · RTC-UTC SYNC 줄 / LOG ON · LOG OFF · STAT 줄
+    "logger.rtc": ("lsi", "lse"),                   # 내부 RC (혼자 돌면 7 % 느림) / 크리스털 (BAMOCAR 주기로 잰다)
+    "bamocar.registers": None,                      # 푸는 레지스터 목록 ["0x30", …] — MOTOR_REGS 에 있는 것만
+    "bamocar.vout": ("u32_raw", "int16_neg"),       # 0x8A — 4 바이트 원시값 / 바이트 1-2 int16 부호 반전 (26팀 정의)
+    "bamocar.n100_rpm": None,                       # 컨트롤러 N-100 % (rpm) — 세션의 회전수 환산
+    "bms.profile": ("checksum", "pack_v"),          # 0x6B1 바이트 7 = 체크섬 / 바이트 6-7 = 팩 전압
+    "bms.pack_frame": (True, False),                # 0x6B4 (전류 한계 · 팩 전류) 를 푼다
+}
+REG_MISMATCH_MIN, REG_MISMATCH_SHARE = 1000, 0.01   # 판에 없는 레지스터가 이만큼 (그리고 0x181 의 이 비율) 넘게 오면 검사 경고
+BMS_MISMATCH_SHARE = 0.9                             # BMS 줄의 이 비율 넘게 무효면 판의 bms.profile 이 데이터와 다를 수 있다
+                                                     # (판이 틀리면 99 % 넘게 무효 — 옛 로거는 판이 맞아도 짧은 레코딩에서 절반쯤 무효인 때가 있다)
 
 # BAMOCAR-PG-D3-400-400 (Unitek). 출처: Unitek "CAN-BUS" 매뉴얼 2025/V1
 #   §7.1 Automatic CAN transmission — 로거용으로 미리 정해진 8개 변수가 주기 전송된다
@@ -394,6 +415,17 @@ class Recording:
     bms_n: int = 0                              # 0x6B1 8 바이트 프레임 수 · 그중 체크섬이 맞은 수 (새 형식만 센다)
     bms_ok: int = 0
     bms_profile: str = "checksum"               # checksum = 바이트 7 이 체크섬 · pack_v = 바이트 6-7 이 팩 전압
+    # 차량 설정 판 — _settle 이 정한다 (판이 없으면 데이터 모양으로)
+    fw_observed: bool | None = None             # 데이터에 LOG ON · STAT 줄이 있었나 (판과 대 볼 것)
+    choice: object = None                       # carconfig.Choice (판 · 고른 근거) — 판 파일이 없으면 None
+    rtc: str = ""
+    regs: frozenset = frozenset()
+    vout: str = ""
+    pack_frame: bool = False
+    n100: float = 0.0
+    bms_cfg: str | None = None
+    bms_observed: str | None = None
+    mismatch: list = field(default_factory=list)  # 판과 데이터가 안 맞는 곳 (meta 의 config.mismatch)
 
 
 def trust(t_raw: str, via_sync: bool) -> tuple[bool, str]:
@@ -404,7 +436,8 @@ def trust(t_raw: str, via_sync: bool) -> tuple[bool, str]:
     return True, "ok"
 
 
-def scan_time_plan(path: Path) -> list[Recording]:
+def scan_time_plan(path: Path, decide=None) -> list[Recording]:
+    """decide = 레코딩 → carconfig.Choice (판). None 이면 판 없이 데이터 모양으로 정한다."""
     recs: list[Recording] = []
     cur: Recording | None = None
     prev_secs = None
@@ -507,6 +540,8 @@ def scan_time_plan(path: Path) -> list[Recording]:
             start = e + 1
 
     for r in recs:
+        _settle(r, decide(r) if decide else None)
+    for r in recs:
         r.clock = measure_clock(r)
     new = [r for r in recs if r.new_fw]
     _pool_short(new)
@@ -515,10 +550,58 @@ def scan_time_plan(path: Path) -> list[Recording]:
             _trust_v3(r)
         build_offsets(r)
     _power_cycles(new)
-    for r in new:
-        if r.bms_n >= BMS_CHECK_MIN and r.bms_ok < BMS_CHECK_SHARE * r.bms_n:
-            r.bms_profile = "pack_v"
+    for r in recs:                                          # BMS 프로파일 — 판 > 데이터 (새 형식 레코딩의 체크섬 통과율)
+        if r.fw_observed and r.bms_n >= BMS_CHECK_MIN:
+            r.bms_observed = "pack_v" if r.bms_ok < BMS_CHECK_SHARE * r.bms_n else "checksum"
+        r.bms_profile = r.bms_cfg or r.bms_observed or "checksum"
+        if r.choice is not None and r.bms_cfg and r.bms_observed and r.bms_observed != r.bms_cfg:
+            r.mismatch.append(f"판은 bms.profile = {r.bms_cfg} 인데 0x6B1 체크섬이 {r.bms_ok / r.bms_n:.0%} 맞음 "
+                              f"(데이터로는 {r.bms_observed})")
     return recs
+
+
+def _reg(x) -> int:
+    return int(x, 0) if isinstance(x, str) else int(x)
+
+
+def _settle(r: Recording, choice) -> None:
+    """레코딩의 설정을 정한다 — 판(choice)에 적힌 칸은 판대로, 없는 칸은 데이터 모양으로 (판 파일이 없을 때의 예전 동작)."""
+    r.fw_observed, r.choice = r.new_fw, choice
+
+    def get(key, default):
+        if choice is None or choice.get(key) is None:       # 판에 없는 칸 — 데이터 모양으로 정한 기본값
+            return default
+        v = choice.get(key)
+        allowed = SETTING_KEYS[key]
+        if allowed is not None and v not in allowed:
+            raise ValueError(f"{CAR} 설정 판 '{choice.period.name}': {key} = {v!r} — 받는 값 {allowed}")
+        return v
+
+    fmt = get("logger.format", "log_on" if r.new_fw else "config_on")
+    r.new_fw = fmt == "log_on"
+    if choice is not None and r.rows and r.new_fw != r.fw_observed:
+        r.mismatch.append(f"판은 logger.format = {fmt} 인데 데이터에 LOG ON · STAT 줄이 {'있음' if r.fw_observed else '없음'}")
+    r.rtc = get("logger.rtc", "lse" if r.new_fw else "lsi")
+    regs = get("bamocar.registers", None)
+    if regs is None:
+        r.regs = frozenset(MOTOR_REGS) - (frozenset() if r.new_fw else NEW_FW_REGS)
+    else:
+        r.regs = frozenset(_reg(x) for x in regs)
+        unknown = sorted(r.regs - set(MOTOR_REGS))
+        if unknown:
+            raise ValueError(f"{CAR} 설정 판 '{choice.period.name}': 엔진이 읽는 법을 모르는 레지스터 {[hex(x) for x in unknown]} "
+                             f"(MOTOR_REGS 에 더할 것)")
+    r.vout = get("bamocar.vout", "int16_neg" if r.new_fw else "u32_raw")
+    r.pack_frame = bool(get("bms.pack_frame", r.new_fw))
+    r.n100 = float(get("bamocar.n100_rpm", N_MAX_RPM))
+    r.bms_cfg = get("bms.profile", None)
+
+
+def _effective(r: Recording) -> dict:
+    """그 레코딩을 실제로 읽은 설정 (meta 의 config.effective — 판 이름이 같아도 판 내용이 바뀌었는지 이것과 hash 로 안다)."""
+    return {"logger.format": "log_on" if r.new_fw else "config_on", "logger.rtc": r.rtc,
+            "bamocar.registers": [f"0x{x:X}" for x in sorted(r.regs)], "bamocar.vout": r.vout, "bamocar.n100_rpm": r.n100,
+            "bms.profile": r.bms_profile, "bms.pack_frame": r.pack_frame}
 
 
 def _bms_checks(b: Batch) -> tuple[np.ndarray, np.ndarray]:
@@ -664,7 +747,7 @@ def measure_clock(r: Recording) -> dict:
                 "sync_spans": 0, "sync_span_s": None, "rtc_per_tick": None}
     pps_share = float(np.clip(1 - (r.late_rows / r.rows) / FREE_LATE_SHARE, 0, 1))
     mode = clock_mode(pps_share)
-    if r.new_fw:                                            # 시계 모델 v3 — SD 동기화 주기(8월 펌웨어의 틱)는 쓰지 않는다
+    if r.rtc == "lse":                                      # 시계 모델 v3 — SD 동기화 주기(8월 펌웨어의 틱)는 쓰지 않는다
         cp = can_period(np.concatenate(r.can_t)) if r.can_t else None
         if mode == "gps_pps":
             f, basis = 1.0, "gps_pps"
@@ -809,17 +892,22 @@ def _gather_bytes(arr: pa.Array, width: int) -> np.ndarray:
     return flat[offs[:-1, None] + np.arange(width)[None, :]].astype(np.int64)
 
 
-def decode_motor(can_bin: pa.Array, can_len: np.ndarray, pos: np.ndarray, new_fw: bool = False):
-    """0x181 프레임들 → (해독된 행의 pos 내 인덱스, 신호 코드(MOTOR_REGS 순번), 물리값, raw). NEW_FW_REGS 는 new_fw 일 때만."""
+def decode_motor(can_bin: pa.Array, can_len: np.ndarray, pos: np.ndarray, regs=None, vout: str = "u32_raw"):
+    """0x181 프레임들 → (해독된 행의 pos 내 인덱스, 신호 코드(MOTOR_REGS 순번), 물리값, raw, {레지스터: 온 프레임 수}).
+
+    regs = 푸는 레지스터 (None 이면 NEW_FW_REGS 를 뺀 전부 — 예전 펌웨어), vout = 0x8A 읽는 법 (SETTING_KEYS).
+    """
     if not len(pos):
-        return np.array([], dtype=np.int64), [], np.array([]), np.array([], dtype=np.int64)
+        return np.array([], dtype=np.int64), [], np.array([]), np.array([], dtype=np.int64), {}
+    regs = frozenset(MOTOR_REGS) - NEW_FW_REGS if regs is None else regs
     ln = can_len[pos]
     usable = np.flatnonzero(ln >= 4)
     b = _gather_bytes(pc.take(can_bin, pa.array(pos[usable])), 4)
     reg = b[:, 0]
+    seen = dict(zip(*(x.tolist() for x in np.unique(reg, return_counts=True))))
     keep, names, values, raws = [], [], [], []
     for code, (rid, (name, nbytes, scale)) in enumerate(MOTOR_REGS.items()):
-        if rid in NEW_FW_REGS and not new_fw:
+        if rid not in regs:
             continue
         m = (reg == rid) & (ln[usable] == nbytes + 2)
         if not m.any():
@@ -832,24 +920,27 @@ def decode_motor(can_bin: pa.Array, can_len: np.ndarray, pos: np.ndarray, new_fw
             b6 = _gather_bytes(pc.take(can_bin, pa.array(pos[idx])), 5)
             raw = b6[:, 1] | (b6[:, 2] << 8) | (b6[:, 3] << 16) | (b6[:, 4] << 24)
         val = igbt_temp_c(raw) if scale == "igbt" else raw * scale
-        if new_fw and rid == 0x8A:                                   # 26팀 정의: 바이트 1-2 int16, 부호 반전 (raw 는 4 바이트 그대로)
+        if rid == 0x8A and vout == "int16_neg":                     # 26팀 정의: 바이트 1-2 int16, 부호 반전 (raw 는 4 바이트 그대로)
             s16 = b[m, 1] | (b[m, 2] << 8)
             val = -np.where(s16 > 32767, s16 - 65536, s16).astype(float)
         keep.append(idx); raws.append(raw); values.append(val); names.append(np.full(len(idx), code))
     if not keep:
-        return np.array([], dtype=np.int64), [], np.array([]), np.array([], dtype=np.int64)
+        return np.array([], dtype=np.int64), [], np.array([]), np.array([], dtype=np.int64), seen
     keep, values, raws, names = np.concatenate(keep), np.concatenate(values), np.concatenate(raws), np.concatenate(names)
     order = np.argsort(keep, kind="stable")
-    return keep[order], names[order], values[order], raws[order]
+    return keep[order], names[order], values[order], raws[order], seen
 
 
-def convert_file(path: Path, out_root: Path) -> list[dict]:
+def convert_file(path: Path, out_root: Path, cars="auto") -> list[dict]:
+    """통합본 하나 → 레코딩별 표. cars = 차량 설정 판 폴더 ("auto" = 원본에서 위로 찾는 `_cars`, None = 판 없이 데이터 모양으로)."""
     t_start = time.perf_counter()
     session, day = session_of(path)
     day_epoch_ms = int(dt.datetime(day.year, day.month, day.day, tzinfo=KST).timestamp() * 1000)
 
+    book = carconfig.load(CAR, carconfig.root_for(path) if cars == "auto" else cars)   # 차량 설정 판 — 없으면 None (데이터 모양으로)
+    decide = (lambda r: book.choose(day, f"{session}_r{r.index:02d}")) if book is not None else None
     print(f"  [{session}] 1차 스캔 (시간 계획)...", flush=True)
-    recs = scan_time_plan(path)
+    recs = scan_time_plan(path, decide)
     t_scan = time.perf_counter() - t_start
     print(f"  [{session}] 레코딩 {len(recs)}개, 스캔 {t_scan:.0f}s → 2차 변환", flush=True)
 
@@ -863,14 +954,14 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
     seg_trel = np.concatenate([r.seg_abs_trel for r in recs if r.anchors] or [np.array([])])
     rec_f = np.array([r.clock["f"] for r in recs])                  # 레코딩별 시계 속도 (v2)
     rec_pack_v = np.array([r.bms_profile == "pack_v" for r in recs], dtype=bool)   # 0x6B1 바이트 6-7 이 팩 전압인 레코딩
-    rec_new = np.array([r.new_fw for r in recs], dtype=bool)
+    rec_pack = np.array([r.pack_frame for r in recs], dtype=bool)   # 0x6B4 를 푸는 레코딩 (판의 bms.pack_frame)
 
     ids = [f"{session}_r{r.index:02d}" for r in recs]
     outs = [fresh_dir(out_root / i) for i in ids]
     writers = [RecWriter(o) for o in outs]
     stats = [{"frames": 0, "dup": 0, "by_source": {}, "bms_rows": 0, "bms_rows_nodup": 0, "motor_rows_nodup": 0, "motor_decoded": 0,
               "bms_invalid": 0, "bms_invalid_nodup": 0, "t_abs_null": 0,
-              "kinds": {}, "thermistor_rows": 0, "legacy_bad": 0, "pack_rows": 0, "pack_valid": 0,
+              "kinds": {}, "thermistor_rows": 0, "legacy_bad": 0, "pack_rows": 0, "pack_valid": 0, "regs": {},
               "t_abs_min": None, "t_abs_max": None} for _ in recs]
 
     q_names = pa.array(QUALITY)
@@ -1080,7 +1171,7 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
                 st["thermistor_rows"] += len(rows)
 
             # 팩 전류 · 전류 한계 0x6B4 (새 펌웨어 레코딩만, 중복 제외). 같은 ID 로 찍힌 써미스터 모듈 프레임은 내용으로 뺀다
-            if rec_new[ri]:
+            if rec_pack[ri]:
                 prow = np.flatnonzero((can_id[sl] == PACK_ID) & ~dup[sl] & (ckind[sl] != -1) & ~is_tem[sl]) + lo
                 if len(prow):
                     x = bytes8[prow]
@@ -1096,7 +1187,9 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
             # 모터 컨트롤러 0x181 (중복 제외). 레지스터마다 따로 오므로 긴 형식(signal, value)으로 둔다
             mrows = np.flatnonzero((can_id[sl] == MOTOR_ID) & ~dup[sl]) + lo
             if len(mrows):
-                k, names, values, raws = decode_motor(can_bin, can_len, order[mrows], new_fw=recs[ri].new_fw)
+                k, names, values, raws, seen = decode_motor(can_bin, can_len, order[mrows], recs[ri].regs, recs[ri].vout)
+                for rid_, n_ in seen.items():
+                    st["regs"][rid_] = st["regs"].get(rid_, 0) + n_
                 st["motor_rows_nodup"] += len(mrows)
                 st["motor_decoded"] += len(k)
                 if len(k):
@@ -1199,6 +1292,16 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
             meta["counts"].update(bms_checksum_ok=r.bms_ok, bms_frames_8=r.bms_n, pack_rows=st["pack_rows"], pack_valid=st["pack_valid"])
             meta["time"].update(power_cycle=r.power_cycle, boot=r.boot, since_boot_s=r.since_boot_s,
                                 duration_s=None if r.last_trel is None else round(r.last_trel / r.clock["f"], 3))
+        if r.choice is not None:                            # 판과 데이터가 맞나 — 변환한 뒤에야 보이는 것
+            if st["bms_rows"] >= 50 and st["bms_invalid"] > BMS_MISMATCH_SHARE * st["bms_rows"]:
+                r.mismatch.append(f"BMS 줄의 {st['bms_invalid'] / st['bms_rows']:.0%} 가 무효 — 판의 bms.profile = {r.bms_profile} 이 데이터와 다를 수 있음")
+            total = sum(st["regs"].values())
+            extra = {rid_: n_ for rid_, n_ in st["regs"].items() if rid_ in MOTOR_REGS and rid_ not in r.regs
+                     and n_ >= max(REG_MISMATCH_MIN, REG_MISMATCH_SHARE * total)}
+            if extra:
+                r.mismatch.append("판의 bamocar.registers 에 없는 레지스터가 옴: " + " · ".join(f"0x{k_:X} {v_:,}개" for k_, v_ in sorted(extra.items())))
+        meta["config"] = {**(r.choice.record() if r.choice is not None else {"basis": "none"}), "effective": _effective(r), "mismatch": list(r.mismatch)}
+        meta["counts"]["motor_regs_seen"] = {f"0x{k_:X}": v_ for k_, v_ in sorted(st["regs"].items())}
         write_json(meta, out / "meta.json")
         index_rows.append({
             "recording_id": rid, "session": session, "t_abs_start": meta["time"]["t_abs_start"],
@@ -1209,6 +1312,8 @@ def convert_file(path: Path, out_root: Path) -> list[dict]:
             "anchors": len(r.anchors), "clock_mode": r.clock["mode"], "clock_f": r.clock["f"],
             "clock_f_basis": r.clock["f_basis"], "thermistor_rows": st["thermistor_rows"],
             "output_bytes": meta["perf"]["output_bytes"],
+            "config_period": r.choice.period.name if r.choice is not None else None,
+            "config_basis": r.choice.basis if r.choice is not None else "none", "config_mismatch": len(r.mismatch),
             **({"power_cycle": r.power_cycle, "since_boot_s": r.since_boot_s, "boot_basis": r.boot.get("basis"),
                 "bms_profile": r.bms_profile, "pack_rows": st["pack_rows"]} if r.new_fw else {}),
         })
