@@ -727,6 +727,13 @@ def test_vdc_fast_is_register_0x66_with_the_0xeb_scale():
     assert dict(live.decode_frame(ec.BAMOCAR, 4, bamo(ec.REG_VDC, 16000, 4)))["motor.vdc_v"] == got["motor.vdc_fast_v"]
 
 
+def test_iq_id_currents_flip_sign_like_rpm():
+    got = dict(live.decode_frame(ec.BAMOCAR, 4, bamo(0x27, -1000, 4)))
+    assert got == {"motor.iq_a": pytest.approx(1000 * live.BAMOCAR_I_A_PER_NUM)}         # 기록 − = 구동 → +
+    assert dict(live.decode_frame(ec.BAMOCAR, 4, bamo(0x28, 300, 4)))["motor.id_a"] == pytest.approx(-300 * live.BAMOCAR_I_A_PER_NUM)
+    assert {"motor.iq_a", "motor.id_a"} <= set(live.TILES) and {"motor.iq_a", "motor.id_a"} <= set(live.CHART)
+
+
 def test_chart_grid_follows_the_send_period():
     for period, step in ((500, 0.5), (100, 0.1), (50, 0.1), (250, 0.25)):
         L = live.Live()

@@ -54,7 +54,7 @@ from . import evo_can as ec
 from . import venue as venue_mod
 from .evo_stm32 import RPM_FULL_SCALE, motor_temp_c
 from .laps import COURSE_SHARE, COURSE_TOL_M, MIN_LAP_S, MOVING_KMH, Gate, distance_to_line, gate_crossings, to_local_m
-from .lef26 import BAMOCAR_VDC_V_PER_NUM, igbt_temp_c
+from .lef26 import BAMOCAR_I_A_PER_NUM, BAMOCAR_VDC_V_PER_NUM, igbt_temp_c
 from .monolith import ADC_FSR_V, T_ANALOG, T_CAN, T_GPS, T_SYS, checksum_ok, nmea_to_deg
 
 CONTRACT = "0.16"
@@ -73,6 +73,7 @@ APPS_ADC_V = 3.3 / 4095         # APPS 보드 ADC 원시값 → 보드 핀 전�
 LV_V_PER_RAW = 12.1 / 2690      # Monolith 공급 전압 raw → V [추정 환산 — 25Evo 테스트위크에서 12.1 V 고정 공급일 때 2,690]
 OFFLINE = b"OFFLINE"
 REG_VDC_FAST = 0x66             # BAMOCAR DC 버스 전압 — 필터 없는 값 (0xEB 는 저역 필터를 거친 값). 배율은 0xEB 와 같다
+REG_IQ, REG_ID = 0x27, 0x28     # BAMOCAR 토크 전류 · 자속 전류 (실제값, Arms). 기록은 구동할 때 − 라 회전수처럼 부호를 뒤집는다 (LEF-26 세션과 같다)
 # DC 링크 전압 튐 (계약 §12-4 spikes) — 필터 없는 0x66 이 팩 전압보다 이만큼 넘게 높으면 한 번으로 센다.
 # 평소에도 팩보다 몇 V 위로 흔들리고, 회생 없이 HV 를 끊으면 조금 오른다 — 그보다 크게 잡은 [정한 값]
 SPIKE_OVER_V = 30.0
@@ -150,6 +151,8 @@ CHANNELS = {c.id: c for c in (
     Ch("motor.vdc_v", "DC 버스 전압", "V", "", 0, 40.0, "inverter"),
     # 0x66 — 누가 요청할 때만 온다 (25Evo 는 킬스위치 시험용 APPS 설정). 빨리 튀는 전압을 보려고 그래프에 칸마다 최고값도 준다 (CHART_PEAK)
     Ch("motor.vdc_fast_v", "DC 버스 전압 (필터 없음)", "V", "", 0, 5.0, "inverter"),
+    Ch("motor.iq_a", "토크 전류 (Iq)", "A", "구동 +, 회생 −", 0, 5.0, "inverter"),       # 0x27 · 0x28 도 요청할 때만 온다
+    Ch("motor.id_a", "자속 전류 (Id)", "A", "", 0, 5.0, "inverter"),
     Ch("motor.rpm", "회전수 (로거 환산)", "rpm", "전진 +", 0, 5.0, "inverter"),     # 기록은 전진할 때 − — 엔진 세션 값처럼 뒤집는다
     Ch("motor.enabled", "구동 허용 (Ena)", "", "", 0, 180.0, "inverter"),
     Ch("motor.ready", "운전 준비 (Rdy)", "", "", 0, 180.0, "inverter"),
@@ -172,14 +175,14 @@ TILES = ("gps.speed_kmh", "battery.power_kw", "battery.voltage_v", "battery.curr
          "motor.vdc_v", "motor.rpm", "motor.enabled", "motor.ready", "motor.error_raw",
          "pedal.torque_cmd_pct", "pedal.apps1_pct", "pedal.apps2_pct", "pedal.fault_raw",
          "brake.ain1_v", "pedal.apps1_v", "pedal.apps2_v",     # 11-13 추가 (브레이크 압력 센서 AIN1 · 가속페달 센서 전압)
-         "motor.vdc_fast_v")                                   # 11-18 추가 (킬스위치 시험 — 총괄 #2d5a · 모노리스 #5dfe)
+         "motor.vdc_fast_v", "motor.iq_a", "motor.id_a")       # 11-18 추가 (킬스위치 시험 — 총괄 #2d5a · 모노리스 #5dfe · APPS 요청 목록에 Iq · Id)
 CHART = ("gps.speed_kmh", "battery.power_kw", "battery.current_a", "bms.temp_max_c", "motor.t_motor_c", "motor.t_igbt_c",
          "bms.soc_pct", "gps.x_m", "gps.y_m",
          # v0.16 추가 (사이트 #38fa — 뷰마다 최근 5분)
          "bms.cell_min_v", "bms.temp_min_c", "motor.rpm", "pedal.apps_pct", "pedal.torque_cmd_pct",
          "brake.ain1_v",
          # 11-18 추가 (킬스위치 시험)
-         "battery.voltage_v", "motor.vdc_v", "motor.vdc_fast_v", "motor.enabled", "motor.ready")
+         "battery.voltage_v", "motor.vdc_v", "motor.vdc_fast_v", "motor.enabled", "motor.ready", "motor.iq_a", "motor.id_a")
 # 격자 칸마다 그 칸 앞에 받은 표본 중 최고 (묶음 안 표본을 솎지 않고 튄 값을 남긴다) — 시리즈 이름 → 채널
 CHART_PEAK = (("motor.vdc_fast_max_v", "motor.vdc_fast_v"),)
 PEAK_CH = frozenset(ch for _, ch in CHART_PEAK)
@@ -332,6 +335,10 @@ def decode_frame(can_id: int, dlc: int, d: bytes) -> list[tuple[str, float]]:
             out.append(("motor.vdc_v", raw * BAMOCAR_VDC_V_PER_NUM))
         elif reg == REG_VDC_FAST:
             out.append(("motor.vdc_fast_v", raw * BAMOCAR_VDC_V_PER_NUM))
+        elif reg == REG_IQ:
+            out.append(("motor.iq_a", 0.0 - raw * BAMOCAR_I_A_PER_NUM))
+        elif reg == REG_ID:
+            out.append(("motor.id_a", 0.0 - raw * BAMOCAR_I_A_PER_NUM))
         elif reg == ec.REG_T_IGBT:
             out.append(("motor.t_igbt_c", float(igbt_temp_c(raw))))
         elif reg == ec.REG_T_MOTOR:
