@@ -118,11 +118,11 @@ class LiveFeed:
                     self.live.feed(r)
         return len(rows)
 
-    def state(self, since: float | None = None, laps_after: int | None = None, laps_key: float | None = None) -> dict:
+    def state(self, since: float | None = None, laps_after: int | None = None, laps_key: float | None = None,
+              fast_since: float | None = None) -> dict:
+        extra = {k: v for k, v in (("laps_after", laps_after), ("laps_key", laps_key), ("fast_since", fast_since)) if v is not None}
         with self.lock:
-            if laps_after is None and laps_key is None:
-                return self.live.state(self.clock(), since)
-            return self.live.state(self.clock(), since, laps_after=laps_after, laps_key=laps_key)
+            return self.live.state(self.clock(), since, **extra)      # 준 인자만 넘긴다 — 엔진이 옛 판이어도 인자 없는 부름은 그대로 된다
 
     def track(self) -> dict | None:
         with self.lock:
@@ -169,10 +169,11 @@ def router(feed: LiveFeed | None) -> APIRouter:
 
     @r.get("/state")
     def state(since: float | None = None, laps_after: int | None = None, laps_key: float | None = None,
-              user: User = Depends(require("view"))) -> dict:
+              fast_since: float | None = None, user: User = Depends(require("view"))) -> dict:
         """화면 상태 (계약 §12-4) — 0.5 s 마다. since = 화면이 가진 그래프의 마지막 t (그 뒤 줄만 받는다).
-        laps_after · laps_key = 화면이 가진 마지막 랩 번호 · laps.key (그 뒤 랩 줄만 받는다 — 맞지 않으면 엔진이 전부 준다)."""
-        return need().state(since, laps_after, laps_key)
+        laps_after · laps_key = 화면이 가진 마지막 랩 번호 · laps.key (그 뒤 랩 줄만 받는다 — 맞지 않으면 엔진이 전부 준다).
+        fast_since = 화면이 가진 솎지 않는 표본(fast)의 마지막 t (그 뒤 표본만)."""
+        return need().state(since, laps_after, laps_key, fast_since)
 
     @r.get("/track")
     def track(user: User = Depends(require("view"))) -> dict:

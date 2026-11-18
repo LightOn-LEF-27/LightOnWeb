@@ -779,6 +779,23 @@ def test_dc_link_spike_counted_against_pack_voltage():
     assert len(ev) == 1 and ev[0]["peak_v"] == s["peak_v"] and "399 V" in ev[0]["text"]
 
 
+def test_fast_samples_are_all_kept_in_time_order():
+    volts = lambda v: round(v / live.BAMOCAR_VDC_V_PER_NUM)
+    def bundle(k, dev):                                           # 묶음마다 0x66 20개 (5 ms) — 순서를 뒤섞고, 마지막 하나는 같은 기록을 한 번 더
+        recs = [can_rec(dev - 100 + 5 * i, ec.BAMOCAR, bamo(0x66, volts(250 + i), 4), 4) for i in range(20)]
+        return recs[10:] + recs[:10] + recs[-1:]
+    L = live.Live()
+    t = fast_car(L, 500, 40, bundle)
+    f = L.state(t)["fast"]
+    assert f["keep_s"] == live.FAST_KEEP_S
+    s = f["series"]["motor.vdc_fast_v"]
+    assert len(s["t"]) == 20 * 40 and s["t"] == sorted(s["t"]) and len(set(s["t"])) == len(s["t"])
+    assert np.allclose(np.diff(s["t"][:20]), 0.005) and s["v"][:3] == pytest.approx([250, 251, 252], abs=0.1)
+    new = L.state(t, fast_since=s["t"][-21])["fast"]["series"]["motor.vdc_fast_v"]
+    assert new["t"] == s["t"][-20:]                               # 화면이 가진 것 뒤만
+    assert live.Live().state(0.0)["fast"]["series"]["motor.vdc_fast_v"] == {"t": [], "v": []}
+
+
 def test_spike_without_pack_voltage_is_not_counted():
     L = live.Live()
     t = fast_car(L, 100, 20, lambda k, dev: [can_rec(dev - 50, ec.BAMOCAR, bamo(0x66, 20000, 4), 4)])

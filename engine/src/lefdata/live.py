@@ -186,6 +186,10 @@ CHART = ("gps.speed_kmh", "battery.power_kw", "battery.current_a", "bms.temp_max
 # 격자 칸마다 그 칸 앞에 받은 표본 중 최고 (묶음 안 표본을 솎지 않고 튄 값을 남긴다) — 시리즈 이름 → 채널
 CHART_PEAK = (("motor.vdc_fast_max_v", "motor.vdc_fast_v"),)
 PEAK_CH = frozenset(ch for _, ch in CHART_PEAK)
+# 솎지 않는 표본 (계약 §12-4 fast) — 받은 표본을 장치 시각 그대로 다 준다 (게시판 시험판은 0x66 을 프레임마다 보낸다)
+FAST_CH = ("motor.vdc_fast_v",)
+FAST_KEEP_S = 120.0             # 이만큼만 들고 있다
+FAST_DEFAULT_S = 60.0           # fast_since 가 없으면 최근 이만큼
 # 수신률 기록 (0 ~ 1) — 격자마다 그 순간의 link.rate_10s · sources[].rate_10s · fix_10s
 RATE_SERIES = ("rate.link", "rate.bms", "rate.inverter", "rate.pedal", "rate.gps_fix")
 SERIES = CHART + tuple(s for s, _ in CHART_PEAK) + RATE_SERIES   # chart.series 의 순서
@@ -465,6 +469,7 @@ class Live:
         self.chart: deque[tuple[float, tuple]] = deque(maxlen=int(CHART_KEEP_S / GRID_MIN_S))   # CHART_KEEP_S 보다 옛 줄은 시각으로도 버린다
         self.grid_t: float | None = None
         self.peak: dict[str, float] = {}                         # CHART_PEAK 채널 → 이번 칸에 받은 표본 중 최고
+        self.fast: dict[str, deque[tuple[float, float]]] = {ch: deque() for ch in FAST_CH}   # (서버 시계로 옮긴 장치 시각, 값), 시각 순
 
     # ------------------------------------------------------------ 받기
 
@@ -720,6 +725,8 @@ class Live:
             if can_id == ec.BAMOCAR:
                 self._seen("inverter", ts)
             for ch, v in decode_frame(can_id, int(r[14]), r[16:24].tobytes()):
+                if ch in self.fast:
+                    self._fast(ch, ts, v)
                 if ch in PEAK_CH:
                     self.peak[ch] = max(self.peak.get(ch, v), v)  # 묶음 안 순서 · 시각과 상관없이 — 받은 표본은 다 본다
                 if ch == "motor.vdc_fast_v":
@@ -790,6 +797,21 @@ class Live:
             self._event(ts, "alert", f"{text} ({_fmt(_r(v, CHANNELS[rule.channel].digits))} {CHANNELS[rule.channel].unit})".replace(" )", ")"))
         else:
             cur["value"] = _r(v)
+
+    def _fast(self, ch: str, ts: float, v: float) -> None:
+        """솎지 않는 표본 — 시각 순으로 넣는다 (묶음 안 순서가 뒤섞여도). 같은 장치 시각은 한 번만 (펌웨어가 같은 기록을 다시 보낼 때)."""
+        dq = self.fast[ch]
+        if not dq or ts > dq[-1][0]:
+            dq.append((ts, v))
+        else:
+            i = len(dq)
+            while i > 0 and dq[i - 1][0] > ts:
+                i -= 1
+            if i > 0 and dq[i - 1][0] == ts:
+                return
+            dq.insert(i, (ts, v))
+        while dq and dq[0][0] < dq[-1][0] - FAST_KEEP_S:
+            dq.popleft()
 
     def _spike(self, ts: float, v: float) -> None:
         """DC 링크 전압 튐 — 0x66 표본마다 (묶음 안 표본을 다 본다). 기준은 그때의 팩 전압 (Orion, 2 s 안의 값)."""
@@ -1012,8 +1034,10 @@ class Live:
             return list(self.lap_rows), None                      # 처음 · 다른 날 (첫 통과가 다름) · 화면이 가진 것보다 랩이 적음 — 전부 (화면은 갈아 끼운다)
         return self.lap_rows[int(after):], int(after)
 
-    def state(self, now: float, since: float | None = None, laps_after: int | None = None, laps_key: float | None = None) -> dict:
-        """since = 화면이 가진 그래프의 마지막 t (그 뒤 줄만). laps_after · laps_key = 화면이 가진 마지막 랩 번호 · laps.key (그 뒤 랩 줄만)."""
+    def state(self, now: float, since: float | None = None, laps_after: int | None = None, laps_key: float | None = None,
+              fast_since: float | None = None) -> dict:
+        """since = 화면이 가진 그래프의 마지막 t (그 뒤 줄만). laps_after · laps_key = 화면이 가진 마지막 랩 번호 · laps.key (그 뒤 랩 줄만).
+        fast_since = 화면이 가진 솎지 않는 표본의 마지막 t (그 뒤 표본만, 없으면 최근 FAST_DEFAULT_S)."""
         link = self._link(now)
         if link["status"] == "lost":
             self._log_lost(self._limits()[1])                     # 끊긴 동안 화면이 물으면 그때 "<송신 장치> no data" (다시 받으면 _periodic 이 같은 것을)
@@ -1094,7 +1118,19 @@ class Live:
                 "position": position, "track_rev": self.path_rev if self.venue is not None else None, "laps": laps, "alerts": [{k: v for k, v in a.items() if k != "channel"} for a in alerts],
                 "events": list(reversed(self.events)), "chart": chart,
                 "spikes": {"over_v": SPIKE_OVER_V, "rows": list(self.spikes),     # 닫힌 튐, 앞 것부터 (최근 20개)
-                           "open": None if self.spike_cur is None else {"t": _r(self.spike_cur["t"], 3), "peak_v": _r(self.spike_cur["peak_v"], 1)}}}
+                           "open": None if self.spike_cur is None else {"t": _r(self.spike_cur["t"], 3), "peak_v": _r(self.spike_cur["peak_v"], 1)}},
+                "fast": self._fast_out(now, fast_since)}
+
+    def _fast_out(self, now: float, since: float | None) -> dict:
+        lo = since if since is not None else now - FAST_DEFAULT_S
+        series = {}
+        for ch, dq in self.fast.items():
+            i = len(dq)
+            while i > 0 and dq[i - 1][0] > lo:                    # 뒤에서부터 — 0.5 s 마다 물으면 새 표본만 훑는다
+                i -= 1
+            pts = list(dq)[i:] if i < len(dq) else []
+            series[ch] = {"t": [round(t, 3) for t, _ in pts], "v": [_r(v, CHANNELS[ch].digits + 1) for _, v in pts]}
+        return {"keep_s": FAST_KEEP_S, "series": series}
 
     def _path(self, ts: float, x: float, y: float, kmh: float) -> None:
         """주행 중인 GPS 점을 PATH_STEP_M 마다 하나씩 모은다. 오래 비었거나 위치가 튀면 선을 끊는다."""

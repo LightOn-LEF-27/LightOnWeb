@@ -91,6 +91,9 @@ def test_lap_params_reach_the_engine(live_client):
     assert c.get("/api/live/state", params={"laps_after": 3, "laps_key": 1794000000.25}).status_code == 200
     assert seen == [(5.0, {}), (None, {"laps_after": 3, "laps_key": 1794000000.25})]
     assert c.get("/api/live/state", params={"laps_after": "x"}).status_code == 422      # 숫자가 아니면 FastAPI 가 막는다
+    seen.clear()
+    assert c.get("/api/live/state", params={"fast_since": 1794000000.5}).status_code == 200
+    assert seen == [(None, {"fast_since": 1794000000.5})]
 
 
 def test_partial_last_line_waits_for_the_rest(live_client):
