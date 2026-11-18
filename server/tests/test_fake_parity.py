@@ -14,6 +14,9 @@ try:
 except Exception:   # 엔진이 없거나 저장소가 비었다
     real, rows = None, []
 
+# 서킷 랩 세션 — 짐카나 시도(lap_kind = gymkhana)는 구간 · 기준 거리가 없어 가짜(서킷 랩만)와 칸이 다르다
+circuit = [r for r in rows if r["laps"] and not r.get("lap_kind")]
+
 pytestmark = pytest.mark.skipif(not rows, reason="엔진 · 세션 저장소 없음 (데이터가 있는 PC 에서만)")
 
 
@@ -70,7 +73,7 @@ def test_resolve(fake):
 
 
 def test_laps(fake):
-    lapped = [r["sid"] for r in rows if r["laps"]][:3]
+    lapped = [r["sid"] for r in circuit][:3]
     real_laps = [real.get_laps(sid) for sid in lapped]
     fake_laps = [fake.get_laps(r["sid"]) for r in fake.list_sessions()]
     assert keys(fake_laps) == keys(real_laps)
@@ -88,7 +91,7 @@ def test_quality(fake):
 
 
 def test_files(fake):
-    real_page = real.get_session(rows[0]["sid"])
+    real_page = next(p for p in (real.get_session(r["sid"]) for r in rows) if any(b["exports"] for b in p["blocks"]))  # 내보낸 파일이 있는 세션
     fake_page = fake.get_session(fake.list_sessions()[0]["sid"])
     for kind in ("raw", "exports", "outputs"):
         r = [f for b in real_page["blocks"] for f in b[kind]]
@@ -101,7 +104,7 @@ def test_files(fake):
 
 
 def test_series(fake):
-    sid = next(r["sid"] for r in rows if r["laps"])
+    sid = circuit[0]["sid"]
     lap = real.get_laps(sid)["rows"][0]["lap"]
     for kw in ({"x": "time"}, {"x": "time", "lap": lap}, {"x": "distance", "lap": lap}):
         a = real.get_series(sid, ["gps.speed_kmh"], max_points=50, **kw)
@@ -114,7 +117,7 @@ S4_FAKE = "DEMO-1_2027-05-08_S4"
 
 
 def test_track_sectors_delta(fake):
-    sid = next(r["sid"] for r in rows if r["laps"])
+    sid = circuit[0]["sid"]
     laps = [r["lap"] for r in real.get_laps(sid)["rows"]]
     a, b = real.get_track(sid, lap=laps[0], color="gps.speed_kmh"), fake.get_track(S4_FAKE, lap=1, color="gps.speed_kmh")
     assert a.keys() == b.keys() and a["gate"].keys() == b["gate"].keys() and a["color"].keys() == b["color"].keys()

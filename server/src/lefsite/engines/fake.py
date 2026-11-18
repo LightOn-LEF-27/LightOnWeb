@@ -214,6 +214,7 @@ def _row(s: FakeSession, day_order: dict[str, int]) -> dict:
         "start": s.start, "duration_s": s.duration_s, "distance_km": s.distance_km, "laps": s.laps, "best_lap_s": s.best_lap_s,
         "stats": stats, "frame_id": s.event.frame_id if s.has_track else None, "split_by": s.split_by, "has_track": s.has_track,
         "run_no": s.run_no, "purpose": s.purpose, "blocks": blocks, "data_status": _data_status(s), "day_order": day_order.get(s.sid),
+        "lap_kind": None, "default_hidden": False,  # 계약 §6-1 (11-17) — 가짜는 서킷 랩 · 점검 세션 없음
     }
 
 

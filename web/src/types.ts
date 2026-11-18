@@ -268,6 +268,8 @@ export interface LiveState {
   device: {
     status: 'on' | 'off' | 'disconnected' | 'unknown'; boot_at: number | null; firmware: string | null; boots: number
     errors?: string[] | null; fatal?: string[] | null // v0.16 — Monolith 부품 상태 비트 이름, /d 를 받기 전엔 null
+    board?: boolean // v0.16 (11-17) — 게시판 펌웨어(lef27)인가
+    rt_lost?: { queue: number; board: number } | null // v0.16 (11-17) — 게시판 펌웨어가 부팅 뒤 실시간으로 못 보낸 누적 수 (SD 엔 남음). 게시판 펌웨어가 아니면 null
   }
   link: { status: 'ok' | 'late' | 'lost' | 'none'; age_s: number | null; period_s: number; rate_10s: number | null; outages: number; longest_s: number | null; since_s: number | null }
   sources: LiveSource[]

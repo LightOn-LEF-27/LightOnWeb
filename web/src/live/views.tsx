@@ -492,7 +492,21 @@ function DevicePanel({ c }: { c: ViewCtx }) {
           {s.device.boot_at !== null && ` (마지막 ${clock(s.device.boot_at)})`}
         </dd>
         <dt>펌웨어</dt>
-        <dd>{s.device.firmware ?? '—'}</dd>
+        <dd>
+          {s.device.firmware ?? '—'}
+          {s.device.board && ' · 게시판 펌웨어'}
+        </dd>
+        {s.device.rt_lost && (
+          <>
+            <dt>실시간으로 못 보냄 (부팅 뒤 누적)</dt>
+            <dd title="큐 넘침 = 전부 보내는 칸의 큐가 넘침 · 게시판 꽉 참 = 새 칸을 못 넣음. 둘 다 SD 에는 남음">
+              <span className={`live-flag ${tone(s.device.rt_lost.queue + s.device.rt_lost.board > 0 ? 'warn' : 'ok')}`}>
+                <span className="live-dot" aria-hidden="true" />
+                큐 넘침 {s.device.rt_lost.queue} · 게시판 꽉 참 {s.device.rt_lost.board}
+              </span>
+            </dd>
+          </>
+        )}
         <dt>부품 상태</dt>
         <dd>
           <PartsState errors={s.device.errors} fatal={s.device.fatal} tone={tone} />
