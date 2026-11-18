@@ -273,6 +273,8 @@ export const TEST_PANELS: Panel[] = [
   ] },
   { key: 'ena', title: 'ENA · RDY', series: [{ id: 'motor.enabled', label: 'ENA', color: 0, step: true }, { id: 'motor.ready', label: 'RDY', color: 2, step: true }] },
   { key: 'amp', title: '팩 전류 · 회전수', series: [{ id: 'battery.current_a', color: 0 }, { id: 'motor.rpm', right: true, color: 2 }] },
+  // 인버터 전류 (텔레메트리 #481b) — 토크 전류 Iq (구동 + · 회생 −, 킬스위치 순간의 회생이 보임) · 자속 전류 Id. 팩 전류와 크기가 달라 칸을 나눔
+  { key: 'iq', title: '토크 전류 Iq · 자속 전류 Id', series: [{ id: 'motor.iq_a', color: 0 }, { id: 'motor.id_a', color: 2, dash: true }] },
 ]
 export const TEST_RANGES: [number, string][] = [[20, '20초'], [60, '1분'], [300, '5분']]
 
@@ -325,7 +327,7 @@ const OFF_TILES: [string, string, string, number][] = [
   ['bms.dod_pct', '방전 깊이 (DoD)', '%', 1], ['motor.vdc_v', 'DC 버스 전압', 'V', 0], ['motor.rpm', '회전수 (로거 환산)', 'rpm', 0],
   ['pedal.torque_cmd_pct', '토크 명령', '%', 0], ['pedal.apps1_pct', '가속페달 센서 1', '%', 1], ['pedal.apps2_pct', '가속페달 센서 2', '%', 1],
   ['pedal.apps1_v', '가속페달 센서 1 전압 (보드 ADC)', 'V', 2], ['pedal.apps2_v', '가속페달 센서 2 전압 (보드 ADC)', 'V', 2],
-  ['motor.vdc_fast_v', 'DC 버스 전압 (필터 없음)', 'V', 0],
+  ['motor.vdc_fast_v', 'DC 버스 전압 (필터 없음)', 'V', 0], ['motor.iq_a', '토크 전류 (Iq)', 'A', 0], ['motor.id_a', '자속 전류 (Id)', 'A', 0],
 ]
 const offTile = ([id, label, unit, digits]: [string, string, string, number]): LiveTile =>
   ({ id, label, unit, sign: '', digits, value: null, age_s: null, status: 'none', alert: null })

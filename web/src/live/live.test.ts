@@ -120,6 +120,7 @@ describe('차량 · 뷰', () => {
     expect(spikeList(null)).toEqual([])
     expect(TEST_PANELS[0].series.map((s) => s.id)).toEqual(['motor.vdc_fast_max_v', 'motor.vdc_fast_v', 'motor.vdc_v', 'battery.voltage_v'])
     expect(TEST_PANELS.find((p) => p.key === 'ena')!.series.every((s) => s.step)).toBe(true)
+    expect(TEST_PANELS.map((p) => p.key)).toEqual(['vdc', 'ena', 'amp', 'iq']) // 시각 눈금은 맨 아래 칸
   })
 })
 
