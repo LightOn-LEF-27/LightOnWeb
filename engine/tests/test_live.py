@@ -708,6 +708,47 @@ def test_igbt_over_temperature_warns_at_the_bamocar_thresholds():
     assert tile(L.state(t), "motor.t_igbt_c")["status"] == "danger"
 
 
+def fast_car(L, period_ms, n, bundle=lambda k, dev: []):
+    """period_ms 마다 /d 와 /d/can (bundle 이 주는 기록) 을 보낸다."""
+    dev, t = 10_000, None
+    for k in range(n):
+        dev += period_ms
+        t = 1_000_000.0 + dev / 1000 + 0.2
+        L.feed(row(t, "d", logbuf(dev)))
+        recs = bundle(k, dev)
+        if recs:
+            L.feed(row(t, "d/can", b"".join(recs)))
+    return t
+
+
+def test_vdc_fast_is_register_0x66_with_the_0xeb_scale():
+    got = dict(live.decode_frame(ec.BAMOCAR, 4, bamo(0x66, 16000, 4)))
+    assert got == {"motor.vdc_fast_v": pytest.approx(16000 * live.BAMOCAR_VDC_V_PER_NUM)}
+    assert dict(live.decode_frame(ec.BAMOCAR, 4, bamo(ec.REG_VDC, 16000, 4)))["motor.vdc_v"] == got["motor.vdc_fast_v"]
+
+
+def test_chart_grid_follows_the_send_period():
+    for period, step in ((500, 0.5), (100, 0.1), (50, 0.1), (250, 0.25)):
+        L = live.Live()
+        t = fast_car(L, period, 400, lambda k, dev: [can_rec(dev - 10, ec.ORION_SUMMARY, summary())])
+        ch = L.state(t, since=t - 20)["chart"]
+        assert ch["step_s"] == step and np.allclose(np.diff(ch["t"]), step)
+        assert all(v is not None for v in ch["series"]["battery.power_kw"][1:])      # 주기와 같은 격자라 칸이 비지 않는다
+    assert len(L.state(t, since=0)["chart"]["t"]) <= live.CHART_KEEP_S / 0.25 + 1    # 10 분보다 옛 줄은 버린다
+
+
+def test_chart_peak_keeps_every_sample_in_the_bundle():
+    volts = lambda v: round(v / live.BAMOCAR_VDC_V_PER_NUM)
+    def bundle(k, dev):                                           # 5 ms 마다 하나 — 30번째 묶음 가운데에 377 V 스파이크
+        return [can_rec(dev - 100 + 5 * i, ec.BAMOCAR, bamo(0x66, volts(377 if (k, i) == (30, 7) else 250), 4), 4) for i in range(20)]
+    L = live.Live()
+    t = fast_car(L, 100, 60, bundle)
+    ch = L.state(t, since=0)["chart"]["series"]
+    assert max(v for v in ch["motor.vdc_fast_max_v"] if v is not None) == pytest.approx(377, abs=0.05)
+    assert max(v for v in ch["motor.vdc_fast_v"] if v is not None) == pytest.approx(250, abs=0.05)     # 칸의 마지막 값만으로는 안 보인다
+    assert tile(L.state(t), "motor.vdc_fast_v")["value"] == pytest.approx(250, abs=0.05)
+
+
 # ---------------------------------------------------------------- 게시판 펌웨어 (LEF-27-MONOLITH rt-board)
 
 BOARD_REGS = (ec.REG_SPEED, ec.REG_STATUS, ec.REG_T_MOTOR, ec.REG_T_IGBT, ec.REG_ERROR, ec.REG_VDC)

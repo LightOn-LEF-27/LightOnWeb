@@ -60,7 +60,8 @@ from .monolith import ADC_FSR_V, T_ANALOG, T_CAN, T_GPS, T_SYS, checksum_ok, nme
 CONTRACT = "0.16"
 REC = 24
 LOGBUF_SIZE = 104
-GRID_S = 0.5                    # 그래프 격자 (서버 시계)
+GRID_S = 0.5                    # 그래프 격자 (서버 시계) — 보내기 주기를 따라 GRID_MIN_S ~ GRID_S (intv 를 내리면 촘촘해진다)
+GRID_MIN_S = 0.1
 CHART_KEEP_S = 600.0
 CHART_DEFAULT_S = 300.0
 EVENTS_KEEP = 50
@@ -71,6 +72,7 @@ SOURCE_STALE_S = 2.0
 APPS_ADC_V = 3.3 / 4095         # APPS 보드 ADC 원시값 → 보드 핀 전압 (12비트 · 기준 3.3 V, 25Evo APPS 펌웨어). 분압이 있으면 센서 출력 전압과 다르다
 LV_V_PER_RAW = 12.1 / 2690      # Monolith 공급 전압 raw → V [추정 환산 — 25Evo 테스트위크에서 12.1 V 고정 공급일 때 2,690]
 OFFLINE = b"OFFLINE"
+REG_VDC_FAST = 0x66             # BAMOCAR DC 버스 전압 — 필터 없는 값 (0xEB 는 저역 필터를 거친 값). 배율은 0xEB 와 같다
 # 0x6D0 슬롯 — 슬롯 124개가 돌아가는데 0.5 s 에 아무 슬롯 하나만 온다. 같은 슬롯이 다시 오기까지 보통 수십 초, 길면 몇 분
 SLOT_STALE_S = 300.0
 # 원천별 수신률 (계약 §12-4 sources[].rate_10s)
@@ -141,6 +143,8 @@ CHANNELS = {c.id: c for c in (
     Ch("motor.t_motor_c", "모터 온도", "°C", "", 0, 40.0, "inverter", gauge=(0.0, 140.0)),
     Ch("motor.t_igbt_c", "인버터(IGBT) 온도", "°C", "", 0, 20.0, "inverter", gauge=(0.0, 100.0)),   # 문턱은 W-IGBT
     Ch("motor.vdc_v", "DC 버스 전압", "V", "", 0, 40.0, "inverter"),
+    # 0x66 — 누가 요청할 때만 온다 (25Evo 는 킬스위치 시험용 APPS 설정). 빨리 튀는 전압을 보려고 그래프에 칸마다 최고값도 준다 (CHART_PEAK)
+    Ch("motor.vdc_fast_v", "DC 버스 전압 (필터 없음)", "V", "", 0, 5.0, "inverter"),
     Ch("motor.rpm", "회전수 (로거 환산)", "rpm", "전진 +", 0, 5.0, "inverter"),     # 기록은 전진할 때 − — 엔진 세션 값처럼 뒤집는다
     Ch("motor.enabled", "구동 허용 (Ena)", "", "", 0, 180.0, "inverter"),
     Ch("motor.ready", "운전 준비 (Rdy)", "", "", 0, 180.0, "inverter"),
@@ -162,14 +166,21 @@ TILES = ("gps.speed_kmh", "battery.power_kw", "battery.voltage_v", "battery.curr
          "bms.pack_resistance_ohm", "bms.pack_ah", "bms.dod_pct",
          "motor.vdc_v", "motor.rpm", "motor.enabled", "motor.ready", "motor.error_raw",
          "pedal.torque_cmd_pct", "pedal.apps1_pct", "pedal.apps2_pct", "pedal.fault_raw",
-         "brake.ain1_v", "pedal.apps1_v", "pedal.apps2_v")     # 11-13 추가 (브레이크 압력 센서 AIN1 · 가속페달 센서 전압)
+         "brake.ain1_v", "pedal.apps1_v", "pedal.apps2_v",     # 11-13 추가 (브레이크 압력 센서 AIN1 · 가속페달 센서 전압)
+         "motor.vdc_fast_v")                                   # 11-18 추가 (킬스위치 시험 — 총괄 #2d5a · 모노리스 #5dfe)
 CHART = ("gps.speed_kmh", "battery.power_kw", "battery.current_a", "bms.temp_max_c", "motor.t_motor_c", "motor.t_igbt_c",
          "bms.soc_pct", "gps.x_m", "gps.y_m",
          # v0.16 추가 (사이트 #38fa — 뷰마다 최근 5분)
          "bms.cell_min_v", "bms.temp_min_c", "motor.rpm", "pedal.apps_pct", "pedal.torque_cmd_pct",
-         "brake.ain1_v")
+         "brake.ain1_v",
+         # 11-18 추가 (킬스위치 시험)
+         "battery.voltage_v", "motor.vdc_v", "motor.vdc_fast_v", "motor.enabled", "motor.ready")
+# 격자 칸마다 그 칸 앞에 받은 표본 중 최고 (묶음 안 표본을 솎지 않고 튄 값을 남긴다) — 시리즈 이름 → 채널
+CHART_PEAK = (("motor.vdc_fast_max_v", "motor.vdc_fast_v"),)
+PEAK_CH = frozenset(ch for _, ch in CHART_PEAK)
 # 수신률 기록 (0 ~ 1) — 격자마다 그 순간의 link.rate_10s · sources[].rate_10s · fix_10s
 RATE_SERIES = ("rate.link", "rate.bms", "rate.inverter", "rate.pedal", "rate.gps_fix")
+SERIES = CHART + tuple(s for s, _ in CHART_PEAK) + RATE_SERIES   # chart.series 의 순서
 # Monolith 상태 비트 (/d 의 u32, 펌웨어 main.h) — 비트 n = 오류, n + 12 = 치명
 DEVICE_COMPONENTS = ("CORE", "NVS", "RTC", "SD", "WIFI", "MQTT", "CAN", "GPS", "ANALOG", "DIGITAL", "GYRO")
 DEVICE_FATAL_SHIFT = 12
@@ -314,6 +325,8 @@ def decode_frame(can_id: int, dlc: int, d: bytes) -> list[tuple[str, float]]:
             out.append(("motor.rpm", 0.0 - raw / RPM_FULL_SCALE * ec.LOGGER_N100_RPM))     # 부호를 뒤집어 전진 +
         elif reg == ec.REG_VDC:
             out.append(("motor.vdc_v", raw * BAMOCAR_VDC_V_PER_NUM))
+        elif reg == REG_VDC_FAST:
+            out.append(("motor.vdc_fast_v", raw * BAMOCAR_VDC_V_PER_NUM))
         elif reg == ec.REG_T_IGBT:
             out.append(("motor.t_igbt_c", float(igbt_temp_c(raw))))
         elif reg == ec.REG_T_MOTOR:
@@ -435,8 +448,9 @@ class Live:
         self.pending: dict[str, tuple[str, float]] = {}
         self.active: dict[str, dict] = {}
         self.events: deque[dict] = deque(maxlen=EVENTS_KEEP)
-        self.chart: deque[tuple[float, tuple]] = deque(maxlen=int(CHART_KEEP_S / GRID_S))
+        self.chart: deque[tuple[float, tuple]] = deque(maxlen=int(CHART_KEEP_S / GRID_MIN_S))   # CHART_KEEP_S 보다 옛 줄은 시각으로도 버린다
         self.grid_t: float | None = None
+        self.peak: dict[str, float] = {}                         # CHART_PEAK 채널 → 이번 칸에 받은 표본 중 최고
 
     # ------------------------------------------------------------ 받기
 
@@ -690,6 +704,8 @@ class Live:
             if can_id == ec.BAMOCAR:
                 self._seen("inverter", ts)
             for ch, v in decode_frame(can_id, int(r[14]), r[16:24].tobytes()):
+                if ch in PEAK_CH:
+                    self.peak[ch] = max(self.peak.get(ch, v), v)  # 묶음 안 순서 · 시각과 상관없이 — 받은 표본은 다 본다
                 self._put(ch, ts, v)
 
     # ------------------------------------------------------------ 값 · 경고
@@ -856,18 +872,27 @@ class Live:
             i -= 1
         self.events.insert(i, e)
 
+    def grid_s(self) -> float:
+        """그래프 격자 — 보내기 주기를 따라 (intv 0.5 s → 0.5 s, 0.1 s → 0.1 s). 주기보다 촘촘하면 칸이 비어 선이 끊긴다."""
+        return min(GRID_S, max(GRID_MIN_S, self.period_s()))
+
     def _grid(self, t: float) -> None:
-        g = math.floor(t / GRID_S) * GRID_S
+        step = self.grid_s()
+        g = round(math.floor(round(t / step, 4)) * step, 3)
         if self.grid_t is None:
-            self.grid_t = g - GRID_S
-        if g <= self.grid_t:
+            self.grid_t = g - step
+        if g <= self.grid_t + 1e-6:
             return
-        steps = int(round((g - self.grid_t) / GRID_S))
-        n = len(CHART) + len(RATE_SERIES)
-        for k in range(1, min(steps, self.chart.maxlen)):        # 끊긴 동안의 칸은 비워 둔다 (선을 끊는다)
-            self.chart.append((round(self.grid_t + k * GRID_S, 3), (None,) * n))
-        self.chart.append((round(g, 3), tuple(_r(self._fresh(ch, g)) for ch in CHART) + self._rates_at(g)))
+        steps = int(round((g - self.grid_t) / step))
+        n = len(SERIES)
+        for k in range(1, min(steps, int(CHART_KEEP_S / step))):  # 끊긴 동안의 칸은 비워 둔다 (선을 끊는다)
+            self.chart.append((round(self.grid_t + k * step, 3), (None,) * n))
+        peaks = tuple(_r(self.peak.get(ch)) for _, ch in CHART_PEAK)
+        self.peak.clear()
+        self.chart.append((g, tuple(_r(self._fresh(ch, g)) for ch in CHART) + peaks + self._rates_at(g)))
         self.grid_t = g
+        while self.chart and self.chart[0][0] <= g - CHART_KEEP_S:
+            self.chart.popleft()
 
     # ------------------------------------------------------------ 내보내기
 
@@ -1017,7 +1042,8 @@ class Live:
 
         lo = since if since is not None else now - CHART_DEFAULT_S
         rows = [r for r in self.chart if r[0] > lo]
-        chart = {"t": [r[0] for r in rows], "series": {ch: [r[1][i] for r in rows] for i, ch in enumerate(CHART + RATE_SERIES)}}
+        chart = {"t": [r[0] for r in rows], "step_s": self.grid_s(),
+                 "series": {ch: [r[1][i] for r in rows] for i, ch in enumerate(SERIES)}}
 
         return {"contract": CONTRACT, "now": _r(now, 3), "car": self.car,
                 "source": {"replay": self.replay, "bad_rows": self.bad_rows, "unknown_topics": self.unknown, "bad_records": self.bad_records},
