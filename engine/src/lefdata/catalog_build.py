@@ -1213,18 +1213,21 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
     src, every = r.rec, "모터 컨트롤러가 CAN 으로 보낸 값 (레지스터마다 10 Hz)"
     on_off = [{"value": 0, "label": "꺼짐"}, {"value": 1, "label": "켜짐"}]
     sig = {**sig, "rpm": (sig["rpm"][0], 0.0 - sig["rpm"][1])} if "rpm" in sig else sig
-    series = [Channel(k, label, unit, *sig[k], sign=sign, derived=bool(how), derivation=how, cautions=[every] + extra, source=src, digits=dg, levels=levels)
+    series = [Channel(k, label, unit, *sig[k], sign=sign, derived=bool(how), derivation=how, cautions=([] if k == "vdc_fast_v" else [every]) + extra,
+                      source=src, digits=dg, levels=levels)
               for k, label, unit, sign, how, extra, dg, levels in (
                   ("t_igbt_c", "인버터(IGBT) 온도", "°C", "", "", ["NTC 값을 컨트롤러 제조사 표로 바꾼 값"], 1, []),
                   ("t_motor_c", "모터 온도", "°C", "", "", ["KTY81 값을 컨트롤러 제조사 표로 바꾼 값"], 1, []),
                   ("vdc_v", "DC 버스 전압", "V", "", "", ["컨트롤러 안쪽(DC 링크) 값 — 전원 차단 때는 배터리와 다를 수 있음. 짧은 순간의 최고값은 표본 사이에 있을 수 있음"], 1, []),
+                  ("vdc_fast_v", "DC 버스 전압 (필터 없음)", "V", "", "", ["DC 버스 전압과 같은 배율의 필터 없는 값 — 필터를 거친 쪽보다 튀는 전압이 빠르고 높게 보임",
+                                                                      "누가 요청할 때만 오는 레지스터 — 주기는 요청한 대로"], 1, []),
                   ("rpm", "회전수 (로거 환산)", "rpm", ROT_SIGN, f"−컨트롤러 값 ÷ {evo_can.RPM_FULL_SCALE} × {evo_can.LOGGER_N100_RPM:.0f} (STM32 백업 로거와 같은 기준)",
                    ["로거와 같은 상수로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음", ROT_FLIP], 0, []),
                   ("enabled", "구동 허용 (Ena)", "", "", "", ["상태 레지스터의 Ena 비트"], 0, on_off),
                   ("ready", "운전 준비 (Rdy)", "", "", "", ["상태 레지스터의 Rdy 비트 — 오류가 나면 꺼짐"], 0, on_off))
               if k in sig]
     keys = {c.key for c in series}
-    if not keys & {"t_igbt_c", "t_motor_c", "vdc_v", "rpm"}:
+    if not keys & {"t_igbt_c", "t_motor_c", "vdc_v", "vdc_fast_v", "rpm"}:
         return None
     cols = []
     if "t_igbt_c" in keys:
@@ -1237,7 +1240,7 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
     bad = evo_can.bamocar_error_bits(raw)
     errors = evo_can.bamocar_error_names(int(np.bitwise_or.reduce(bad))) if len(bad) else []
     warnings = evo_can.bamocar_warning_names(int(np.bitwise_or.reduce(raw))) if len(raw) else []
-    facts = [f"{c.label} {np.nanmin(c.v):.0f} ~ {np.nanmax(c.v):.0f} {c.unit}" for c in series if c.key in ("t_igbt_c", "t_motor_c", "vdc_v")]
+    facts = [f"{c.label} {np.nanmin(c.v):.0f} ~ {np.nanmax(c.v):.0f} {c.unit}" for c in series if c.key in ("t_igbt_c", "t_motor_c", "vdc_v", "vdc_fast_v")]
     facts.append(f"컨트롤러 오류: {', '.join(errors) if errors else '없음'} · 경고: {', '.join(warnings) if warnings else '없음'}")
     checks = []
     if "rpm" in keys and getattr(r, "gps", None) is not None:                 # 시각 구간(_Window)에는 GPS 가 없다

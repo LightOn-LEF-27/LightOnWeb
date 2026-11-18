@@ -239,3 +239,23 @@ def test_race_overvoltage_only_in_the_two_kill_switch_recordings():
             assert s["errors_any"] == ["Mains Voltage Max. Limit"] and s["overvoltage_frames"] > 0, m.parent.name
             got[m.parent.name] = s["vdc_max_v"]
     assert got == E["bamocar.overvoltage_vdc_max_v"]
+
+
+def test_unfiltered_dc_bus_0x66_is_its_own_channel_with_the_same_scale(tmp_path):
+    """0x66 (필터 없는 DC 버스) 는 0xEB 와 같은 배율로 풀고, 이름을 나눠 둔다 (25Evo 는 0xEB 가 vdc_v)."""
+    rows = [_bam_row(0, ec.REG_VDC, 15000, 2), _bam_row(5, ec.REG_VDC_FAST, 15500, 2), _bam_row(10, ec.REG_VDC_FAST, 16000, 2)]
+    pd.DataFrame(rows).to_parquet(tmp_path / "frames.parquet", index=False)
+    tables = ec.decode_recording(tmp_path)
+    sig = ec.bamocar_signals(tables["bamocar"], "t_rel_ms")
+    assert sig["vdc_v"][1].tolist() == pytest.approx([15000 * lef26.BAMOCAR_VDC_V_PER_NUM])
+    assert sig["vdc_fast_v"][1].tolist() == pytest.approx([15500 * lef26.BAMOCAR_VDC_V_PER_NUM, 16000 * lef26.BAMOCAR_VDC_V_PER_NUM])
+    s = ec.summarize(tables)["bamocar"]
+    assert s["regs"] == {"0x66": 2, "0xEB": 1} and s["vdc_fast_max_v"] == pytest.approx(16000 * lef26.BAMOCAR_VDC_V_PER_NUM, abs=0.05)
+
+
+def test_motor_block_carries_the_unfiltered_dc_bus_when_it_is_requested():
+    fast = pd.DataFrame({"t_s": np.arange(0.0, 60.0, 0.005), "reg": ec.REG_VDC_FAST, "raw": pd.array(np.full(12000, 15200), dtype="Int64")})
+    blk = cb._can_motor_block(_motor_run(), pd.concat([_motor_table(), fast], ignore_index=True), None)
+    ch = {c.key: c for c in blk.channels}
+    assert "vdc_fast_v" in ch and len(ch["vdc_fast_v"].t_s) == 12000 and not any("10 Hz" in c for c in ch["vdc_fast_v"].cautions)
+    assert "vdc_fast_v" not in {c.key for c in cb._can_motor_block(_motor_run(), _motor_table(), None).channels}

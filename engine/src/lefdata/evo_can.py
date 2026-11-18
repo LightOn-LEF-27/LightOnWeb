@@ -13,7 +13,7 @@
     0x6D0           Orion 의 Connect 모듈용 스트림 — 공식 정의가 없어 Orion 로그와 맞대 푼 것. [0] 슬롯 번호 · [1..2] 팩 전류
                     (방전 −) · [3..4] 팩 전압 · [5..6] 슬롯 값. 슬롯 표는 STREAM_SLOTS (맞댄 확신이 높은 것만)
     0x181           BAMOCAR 주기 응답 (Unitek CAN 매뉴얼). [0] 레지스터 번호 · 리틀 엔디언 값 — DLC 4 = 부호 있는 16비트, DLC 6 = 부호 없는 32비트.
-                    상태 · 오류 비트는 Unitek N-Drive 매뉴얼. 환산은 LEF-26 과 같은 제조사 표 (lef26) · 모터 온도는 evo_stm32 의 KTY81 표
+                    0x66 (필터 없는 DC 버스) 는 요청할 때만 온다 — 0xEB 와 같은 배율. 상태 · 오류 비트는 Unitek N-Drive 매뉴얼. 환산은 LEF-26 과 같은 제조사 표 (lef26) · 모터 온도는 evo_stm32 의 KTY81 표
 
 체크섬: 0x446 · 0x447 = 바이트 0 ~ 6 의 합, 0x6D0 = (ID + 8 + 바이트 0 ~ 6 의 합) 의 하위 8비트. 틀린 프레임은 버리지 않고 checksum_ok 에 표시한다.
 시각은 Monolith 시계 그대로 (같은 레코딩의 GPS 와 같은 축) — 다른 장비에 맞추는 것은 세션을 만드는 쪽이 한다.
@@ -47,6 +47,7 @@ STREAM_SLOTS = {10: ("ccl_a", 1.0, False), 15: ("soc_pct", 0.5, False), 16: ("pa
                 56: ("cell_r_min_mohm", 0.01, False), 57: ("cell_r_max_mohm", 0.01, False), 58: ("cell_r_avg_mohm", 0.01, False)}
 BAMOCAR = 0x181
 REG_SPEED, REG_STATUS, REG_ERROR, REG_VDC, REG_T_IGBT, REG_T_MOTOR = 0x30, 0x40, 0x8F, 0xEB, 0x4A, 0x49
+REG_VDC_FAST = 0x66          # DC 버스 전압 — 필터 없는 값 (0xEB 는 저역 필터를 거친 값). 배율은 0xEB 와 같다. 누가 요청할 때만 온다
 LOGGER_N100_RPM = 6500.0     # STM32 백업 로거가 회전수를 바꿀 때 쓰는 상수 — 같은 차의 다른 세션과 겹쳐 보려고 같은 기준으로 바꾼다. 컨트롤러의 실제 N-100 % 설정값은 아니다
 STATUS_ENABLED, STATUS_READY = 0, 14                    # 0x40 비트: Ena (구동 허용) · Rdy (BTB 닫힘 — 오류가 나면 꺼진다)
 ERROR_VOLTAGE_MIN, ERROR_VOLTAGE_MAX = 5, 8             # 0x8F 비트. 5 = 전원 전압 없음 — HV 를 꺼 두면 늘 켜져 있어 고장으로 세지 않는다
@@ -160,6 +161,7 @@ def bamocar_signals(table: pd.DataFrame, t_col: str = "t_s") -> dict[str, tuple[
         return s[t_col].to_numpy(float), s["raw"].to_numpy(np.int64)
     out = {}
     for name, r, conv in (("rpm", REG_SPEED, lambda v: v / RPM_FULL_SCALE * LOGGER_N100_RPM), ("vdc_v", REG_VDC, lambda v: v * BAMOCAR_VDC_V_PER_NUM),
+                          ("vdc_fast_v", REG_VDC_FAST, lambda v: v * BAMOCAR_VDC_V_PER_NUM),
                           ("t_igbt_c", REG_T_IGBT, igbt_temp_c), ("t_motor_c", REG_T_MOTOR, motor_temp_c),
                           ("enabled", REG_STATUS, lambda v: (v >> STATUS_ENABLED & 1).astype(float)),
                           ("ready", REG_STATUS, lambda v: (v >> STATUS_READY & 1).astype(float)), ("error_raw", REG_ERROR, lambda v: v)):
@@ -236,6 +238,7 @@ def summarize(tables: dict[str, pd.DataFrame]) -> dict:
         any_err = int(np.bitwise_or.reduce(err)) if len(err) else 0
         s["bamocar"] = {"rows": int(len(b)), "regs": {f"0x{int(r):02X}": int(n) for r, n in b["reg"].value_counts().sort_index().items()},
                         "vdc_max_v": round(float(sig["vdc_v"][1].max()), 1) if "vdc_v" in sig else None,
+                        "vdc_fast_max_v": round(float(sig["vdc_fast_v"][1].max()), 1) if "vdc_fast_v" in sig else None,
                         "overvoltage_frames": int((err >> ERROR_VOLTAGE_MAX & 1).sum()),
                         "errors_any": bamocar_error_names(int(bamocar_error_bits(np.array([any_err]))[0])), "warnings_any": bamocar_warning_names(any_err)}
     return s
