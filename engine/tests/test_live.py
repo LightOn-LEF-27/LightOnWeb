@@ -657,6 +657,120 @@ def test_lap_rows_energy_soc_cell_and_temp():
     json.dumps(st, allow_nan=False)
 
 
+def three_laps_with_temps(L):
+    car = Car(L)
+    t = None
+    for lap in range(3):
+        for k in range(60):
+            frames = [(ec.ORION_SUMMARY, summary(power_kw=20, tmax=40 + lap, tmin=30 - lap), 8)]
+            if k % 4 == 0:                                        # 모터 · IGBT 온도는 2 s 에 한 번
+                frames += [(ec.BAMOCAR, bamo(ec.REG_T_MOTOR, MOTOR_RAW[lap], 4), 4), (ec.BAMOCAR, bamo(ec.REG_T_IGBT, IGBT_RAW[lap], 4), 4)]
+            t = car.tick(frames=frames, gps=gps_rec(car.dev + 450, -60 + k * 2, 1.0, 40.0, 90))
+    return t
+
+
+MOTOR_RAW = (10795, 11500, 12200)                                 # KTY 원시값 — 기대 온도는 엔진 변환으로 낸다
+IGBT_RAW = (20250, 22515, 24232)                                  # BAMOCAR 표의 40 · 60 · 75 °C
+
+
+def test_lap_rows_have_cell_min_motor_and_inverter_temps():
+    from lefdata.evo_stm32 import motor_temp_c
+    L = live.Live(venue=VENUE)
+    rows = L.state(three_laps_with_temps(L))["laps"]["rows"]
+    assert [r["lap"] for r in rows] == [1, 2]
+    for r, lap in zip(rows, (1, 2)):                              # 첫 통과가 첫 바퀴 가운데라 랩 1 = 바퀴 1 뒤 · 2 앞, 랩 2 = 바퀴 2 뒤 · 3 앞
+        assert r["cell_t_min_c"] == 30 - lap and r["cell_t_max_c"] == 40 + lap
+        assert r["motor_t_max_c"] == round(float(motor_temp_c(MOTOR_RAW[lap])))
+        assert r["inverter_t_max_c"] == pytest.approx((60.0, 75.0)[lap - 1], abs=0.6)
+
+
+def test_lap_rows_only_after_what_the_screen_has():
+    L = live.Live(venue=VENUE)
+    t = three_laps_with_temps(L)
+    full = L.state(t)["laps"]
+    assert full["rows_after"] is None and len(full["rows"]) == 2 and full["key"] == full["rows"][0]["t_start"]
+    part = L.state(t, laps_after=1, laps_key=full["key"])["laps"]
+    assert part["rows_after"] == 1 and [r["lap"] for r in part["rows"]] == [2]
+    assert L.state(t, laps_after=2, laps_key=full["key"])["laps"]["rows"] == []       # 새 랩 없음
+    assert part["count"] == full["count"] and part["current"] == full["current"]       # 줄 밖의 칸은 그대로
+    for bad in (dict(laps_after=1, laps_key=full["key"] + 60), dict(laps_after=5, laps_key=full["key"]), dict(laps_after=1)):
+        got = L.state(t, **bad)["laps"]                           # 다른 날 · 화면이 더 많이 가짐 · 열쇠 없음 → 전부
+        assert got["rows_after"] is None and len(got["rows"]) == 2
+
+
+def test_igbt_over_temperature_warns_at_the_bamocar_thresholds():
+    L = live.Live()
+    car = Car(L)
+    t = car.run(6, frames=[(ec.BAMOCAR, bamo(ec.REG_T_IGBT, 24232, 4), 4)])      # 75 °C — 경고 72.9 와 오류 82.2 사이
+    st = L.state(t)
+    assert tile(st, "motor.t_igbt_c")["status"] == "warn" and tile(st, "motor.t_igbt_c")["alert"] == "W-IGBT"
+    t = car.run(6, frames=[(ec.BAMOCAR, bamo(ec.REG_T_IGBT, 25296, 4), 4)])      # 85 °C
+    assert tile(L.state(t), "motor.t_igbt_c")["status"] == "danger"
+
+
+# ---------------------------------------------------------------- 게시판 펌웨어 (LEF-27-MONOLITH rt-board)
+
+BOARD_REGS = (ec.REG_SPEED, ec.REG_STATUS, ec.REG_T_MOTOR, ec.REG_T_IGBT, ec.REG_ERROR, ec.REG_VDC)
+
+
+def board_tick(car, regs=BOARD_REGS, skip=()):
+    """게시판 묶음 하나 — 0x181 이 레지스터마다 하나씩, 칸 순서대로라 시각은 뒤섞여 있다."""
+    car.dev += 500
+    t = car.dev / 1000 + car.clock + car.delay
+    car.L.feed(row(t, "d", logbuf(car.dev)))
+    raw = {ec.REG_T_MOTOR: 10795, ec.REG_T_IGBT: 20250}           # 온도는 표 안의 값이어야 풀린다
+    recs = [can_rec(car.dev - 50 - 37 * ((i * 5) % len(regs)), ec.BAMOCAR, bamo(r, raw.get(r, 100), 4), 4)
+            for i, r in enumerate(regs) if r not in skip]
+    car.L.feed(row(t, "d/can", b"".join(recs)))
+    return t
+
+
+def sys_rec(ts: int, msg: str) -> bytes:
+    return rec(7, ts, msg.encode().ljust(16, b"\0"))
+
+
+def test_board_firmware_counts_inverter_rate_per_register():
+    old, new = live.Live(), live.Live()
+    new.feed(row(0.0, "d/ver", b"v2.3.0-5 (1a9c14bd) lef27"))
+    assert new.board and not old.board
+    a, b = Car(old), Car(new)
+    for _ in range(40):
+        ta, tb = board_tick(a), board_tick(b)
+    assert src(old.state(ta), "inverter")["rate_10s"] == 1.0 and src(new.state(tb), "inverter")["rate_10s"] == 1.0
+    for _ in range(40):                                           # 모터 온도 칸이 끊김 — ID 하나로 세면 그대로 1
+        ta, tb = board_tick(a, skip=(ec.REG_T_MOTOR,)), board_tick(b, skip=(ec.REG_T_MOTOR,))
+    assert src(old.state(ta), "inverter")["rate_10s"] == 1.0
+    assert src(new.state(tb), "inverter")["rate_10s"] == pytest.approx(5 / 6, abs=0.02)
+    # 게시판이면 칸마다 0.5 s 마다 오므로 낡음 기준이 짧다 (v2.3.0 은 모터 온도 40 s)
+    assert tile(new.state(tb), "motor.t_motor_c")["status"] == "stale" and tile(old.state(ta), "motor.t_motor_c")["status"] == "ok"
+
+
+def test_firmware_change_drops_old_rate_keys():
+    L = live.Live()
+    car = Car(L)
+    for _ in range(40):
+        board_tick(car)
+    L.feed(row(car.dev / 1000 + car.clock, "d/ver", b"v2.3.0-5 (1a9c14bd) lef27"))   # 같은 날 게시판 펌웨어로 바뀜
+    for _ in range(40):
+        t = board_tick(car)
+    assert src(L.state(t), "inverter")["rate_10s"] == 1.0         # ID 하나짜리 옛 열쇠가 '와야 할 수' 에 남지 않는다
+
+
+def test_board_firmware_lost_counts_from_system_messages():
+    L = live.Live()
+    car = Car(L)
+    t = car.run(4)
+    assert L.state(t)["device"]["rt_lost"] is None and L.state(t)["device"]["board"] is False
+    L.feed(row(t, "d/ver", b"v2.3.0-5 (1a9c14bd) lef27 "))
+    assert L.state(t)["device"]["rt_lost"] == {"queue": 0, "board": 0} and L.state(t)["device"]["board"] is True
+    L.feed(row(t, "d/sl", sys_rec(car.dev, "MQTT_CONN") + sys_rec(car.dev, "CANRTQ:12")))
+    L.feed(row(t, "d/sl", sys_rec(car.dev, "CANRTF:3") + sys_rec(car.dev, "CANRTQ:7")))     # 늦게 온 옛 누적은 무시
+    assert L.state(t)["device"]["rt_lost"] == {"queue": 12, "board": 3}
+    car.dev = 1000                                                # 다시 부팅 — 펌웨어가 처음부터 센다
+    t = car.run(2)
+    assert L.state(t)["device"]["rt_lost"] == {"queue": 0, "board": 0}
+
+
 def test_lap_energy_skips_gaps_and_says_so():
     L = live.Live(venue=VENUE)
     car = Car(L)
@@ -729,7 +843,10 @@ def test_tile_scale_follows_rules(tmp_path):
     assert sc["bms.temp_max_c"] == {"min": 0.0, "max": 70.0, "warn": 55.0, "danger": 60.0, "dir": ">="}
     assert sc["battery.power_kw"]["danger"] == 80.0 and sc["battery.power_kw"]["warn"] is None
     assert sc["bms.cell_min_v"] == {"min": 2.5, "max": 4.2, "warn": None, "danger": None, "dir": None}   # 차별 문턱이 없으면 게이지 끝만
-    assert sc["motor.t_motor_c"] is None and sc["gps.speed_kmh"] is None
+    assert sc["gps.speed_kmh"] == {"min": 0.0, "max": 120.0, "warn": None, "danger": None, "dir": None}
+    assert sc["motor.t_motor_c"] == {"min": 0.0, "max": 140.0, "warn": None, "danger": None, "dir": None}
+    assert sc["motor.t_igbt_c"] == {"min": 0.0, "max": 100.0, "warn": 72.9, "danger": 82.2, "dir": ">="}   # BAMOCAR 매뉴얼의 과열 경고 · 오류
+    assert sc["battery.voltage_v"] is None
     p = tmp_path / "car.toml"
     p.write_text('[[rule]]\nid = "W-CELL"\nchannel = "bms.cell_min_v"\nop = "<="\nwarn = 3.3\ndanger = 3.1\ntext = "셀"\n', encoding="utf-8")
     sc = {x["id"]: x["scale"] for x in live.Live(rules=p).state(0.0)["tiles"]}

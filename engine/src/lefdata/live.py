@@ -18,6 +18,11 @@ Orion 스트림(0x6D0)은 값마다 몇 초 ~ 몇 분씩 빈다 — 그래서 �
 와야 할 수는 그 ID 가 실제로 오는 간격(최근 간격의 아래쪽 4분위 — 끊겨 벌어진 간격에 끌려가지 않게)으로 잡는다.
 펌웨어 거르기는 "마지막으로 보낸 지 intv 가 지난 뒤 처음 들어온 프레임" 이라, 원래 주기가 intv 를 나누지 않는 ID 는 intv 보다 길게 온다.
 
+게시판 펌웨어 (`/d/ver` 에 ` lef27`): 칸(ID, 몇 ID 는 ID + data[0])마다 최신 프레임을 들고 있다가 intv 마다 바뀐 칸을 전부 보낸다.
+그래서 나누는 ID 는 한 묶음에 같은 ID 가 칸 수만큼 오고, 묶음 안의 순서는 시각 순이 아니다 → 0x181 은 수신률을 레지스터마다 센다
+(ID 하나로 세면 레지스터 하나가 끊겨도 1 로 보인다, BOARD_SPLIT_IDS). 칸마다 자주 새 값이 오므로 0x181 · 0x6D0 값의 낡음 기준도 짧게 잡는다 (BOARD_STALE_S).
+끊겼다 붙으면 칸마다 마지막 값이 그 값을 받은 시각 그대로 온다 — 시각으로 낡음을 재므로 옛 값이 살아 있는 것처럼 보이지 않는다.
+
 랩 값: 계측선을 지난 뒤 LAP_SETTLE_S 가 지나면 그 랩의 에너지 · SOC · 셀 최저 전압 · 셀 최고 온도를 굳힌다 (CAN 묶음이 GPS 보다 늦게 올 수 있어서).
 에너지는 Orion 요약(0x446)의 전력을 장치 시각으로 이어 적분한다 — 거른 뒤 약 2 Hz 순간값이라 랩마다 몇 % 오차가 있다.
 
@@ -36,6 +41,7 @@ from __future__ import annotations
 
 import base64
 import math
+import re
 import struct
 import tomllib
 from collections import defaultdict, deque
@@ -49,7 +55,7 @@ from . import venue as venue_mod
 from .evo_stm32 import RPM_FULL_SCALE, motor_temp_c
 from .laps import COURSE_SHARE, COURSE_TOL_M, MIN_LAP_S, MOVING_KMH, Gate, distance_to_line, gate_crossings, to_local_m
 from .lef26 import BAMOCAR_VDC_V_PER_NUM, igbt_temp_c
-from .monolith import ADC_FSR_V, T_ANALOG, T_CAN, T_GPS, checksum_ok, nmea_to_deg
+from .monolith import ADC_FSR_V, T_ANALOG, T_CAN, T_GPS, T_SYS, checksum_ok, nmea_to_deg
 
 CONTRACT = "0.16"
 REC = 24
@@ -74,8 +80,16 @@ SPACING_KEEP = 120              # ID 마다 최근 간격 몇 개로 "실제로 
 SPACING_MIN_N = 5
 SPACING_MAX_MS = 5000           # 이보다 긴 간격은 끊김이나 장치가 멈춘 것 — 간격 추정에 넣지 않는다
 SPACING_Q = 25                  # 아래쪽 4분위
+# 게시판 펌웨어 (LEF-27-MONOLITH rt-board — /d/ver 끝에 " lef27" · " lef27+vdc")
+BOARD_FW = re.compile(r"\blef27\b")
+# 수신률을 칸(data[0] = 레지스터)마다 세는 ID. 게시판은 0x6D0 (슬롯) · 0x201 도 나누지만 같은 슬롯이 오는 간격이 들쭉날쭉해서
+# 칸마다 '와야 할 수' 를 못 정한다 → 0x6D0 은 ID 하나로 센다 (묶음마다 오는가). 0x201 은 원천이 아니다
+BOARD_SPLIT_IDS = frozenset({ec.BAMOCAR})
+BOARD_STALE_S = 5.0             # 게시판일 때 0x181 · 0x6D0 값의 낡음 기준 (칸마다 intv 마다 오므로) — 보내기 주기 × 4 보다 짧게는 안 잡는다
+RT_LOST = {"CANRTQ": "queue", "CANRTF": "board"}            # /d/sl 시스템 메시지 → device.rt_lost (부팅 뒤 실시간으로 못 보낸 누적 수)
 # 랩 값 (계약 §12-4 laps.rows)
-LAP_CH = ("battery.power_kw", "bms.soc_pct", "bms.cell_min_v", "bms.temp_max_c", "gps.speed_kmh")
+LAP_CH = ("battery.power_kw", "bms.soc_pct", "bms.cell_min_v", "bms.temp_max_c", "gps.speed_kmh",
+          "bms.temp_min_c", "motor.t_motor_c", "motor.t_igbt_c")
 LAP_KEEP = 4000                 # 채널마다 표본 수 (약 2 Hz 로 30분 넘게) — 랩이 이보다 길면 앞쪽이 빠진다 (cover 로 보인다)
 LAP_SETTLE_S = 3.0
 ENERGY_GAP_S = 2.0              # 전력 표본 사이가 이보다 벌어지면 그 사이는 적분하지 않는다
@@ -101,7 +115,7 @@ class Ch:
 
 
 CHANNELS = {c.id: c for c in (
-    Ch("gps.speed_kmh", "속도", "km/h", digits=0, source="gps"),
+    Ch("gps.speed_kmh", "속도", "km/h", digits=0, source="gps", gauge=(0.0, 120.0)),        # 눈금만 (문턱 없음)
     Ch("gps.x_m", "위치 (동쪽)", "m", "동쪽 +", 1, source="gps"),
     Ch("gps.y_m", "위치 (북쪽)", "m", "북쪽 +", 1, source="gps"),
     Ch("battery.power_kw", "전력", "kW", "방전 +", 1, source="bms", gauge=(-20.0, 90.0)),      # 회생 쪽 조금 · 규정 80 kW 위 조금
@@ -123,8 +137,9 @@ CHANNELS = {c.id: c for c in (
     Ch("bms.dod_pct", "방전 깊이 (DoD)", "%", "", 1, SLOT_STALE_S, "bms"),
     # 0x181 — 레지스터가 한 ID 에 돌아가며 실려 0.5 s 에 하나만 온다. 레지스터마다 원래 주기가 달라 낡음 기준도 다르다
     # (거른 뒤 그 레지스터가 다시 오는 간격의 거의 최대 — 25Evo 대회 SD 에 펌웨어 거르기를 돌려 잼)
-    Ch("motor.t_motor_c", "모터 온도", "°C", "", 0, 40.0, "inverter"),
-    Ch("motor.t_igbt_c", "인버터(IGBT) 온도", "°C", "", 0, 20.0, "inverter"),
+    # 모터 온도 게이지 끝은 KTY 표(−35 ~ 155 °C) 안에서 정한 값 — 차가 쓰는 모터 온도 한계(BAMOCAR 설정)는 몰라서 문턱 없음 [정한 값]
+    Ch("motor.t_motor_c", "모터 온도", "°C", "", 0, 40.0, "inverter", gauge=(0.0, 140.0)),
+    Ch("motor.t_igbt_c", "인버터(IGBT) 온도", "°C", "", 0, 20.0, "inverter", gauge=(0.0, 100.0)),   # 문턱은 W-IGBT
     Ch("motor.vdc_v", "DC 버스 전압", "V", "", 0, 40.0, "inverter"),
     Ch("motor.rpm", "회전수 (로거 환산)", "rpm", "전진 +", 0, 5.0, "inverter"),     # 기록은 전진할 때 − — 엔진 세션 값처럼 뒤집는다
     Ch("motor.enabled", "구동 허용 (Ena)", "", "", 0, 180.0, "inverter"),
@@ -208,6 +223,8 @@ DEFAULT_RULES = (
     # 150 V = 사후 분석이 "고전압 켜짐" 을 가르는 선과 같은 값 (lef26_laps.HV_ON_V · motor_runs — 인버터가 본 DC 전압 기준).
     # 5 km/h 는 HV 를 끈 채 차를 미는 것을 빼려고 정한 값. 둘 다 [정한 값 — 팩 구성이 바뀌면 다시]
     Rule("W-HV-OFF", "motor.vdc_v", "<=", None, 150.0, "주행 중 DC 버스 전압", when_speed_kmh=5.0),
+    # BAMOCAR 하드웨어 매뉴얼 (PG-D3, 2022/V3) 출력단 온도 표: 과열 경고 72.9 °C (Num 24000) · 과열 오류 82.2 °C (Num 25000) — 장치가 스스로 경고 · 오류를 내는 값
+    Rule("W-IGBT", "motor.t_igbt_c", ">=", 72.9, 82.2, "인버터(IGBT) 온도"),
 )
 
 
@@ -378,6 +395,8 @@ class Live:
         # 수신기 · 장치
         self.receiver = ("unknown", None)
         self.firmware: str | None = None
+        self.board = False                                        # 게시판 펌웨어인가 (/d/ver)
+        self.rt_lost: dict[str, int] | None = None                # 게시판 펌웨어가 실시간으로 못 보낸 누적 수 (부팅 뒤)
         self.offline_at: float | None = None
         self.boots = 0
         self.boot_at: float | None = None
@@ -396,7 +415,7 @@ class Live:
         self.link_since: float | None = None                     # 지금 이어진 수신이 시작된 시각 (원천별 사건은 이어진 동안만)
         self.lost_logged: float | None = None                    # "no data" 를 남긴 끊김 (그 끊김 직전 last_rx)
         self.src_down: dict[str, float] = {}                     # "no data" 를 남긴 원천 → 그때의 마지막 값 시각
-        self.ids: dict[tuple[int, int], _IdRate] = {}            # (CAN ID, 버스) → 원천별 수신률
+        self.ids: dict[tuple[int, int, int], _IdRate] = {}       # (CAN ID, 버스, 칸) → 원천별 수신률. 칸 = 게시판이 나누는 ID 의 data[0], 그 밖은 −1
         self.fix_win: deque[tuple[float, bool]] = deque()        # (받은 시각, 이 /d 에 새 GPS 위치가 있었나)
         # GPS · 랩
         self.gps_ts: int | None = None
@@ -448,9 +467,9 @@ class Live:
         elif sub == "d/boot":
             self._boot(t, payload, bool(row.get("retain")))
         elif sub == "d/ver":
-            self.firmware = payload.decode("utf-8", "replace")
+            self._firmware(payload.decode("utf-8", "replace"))
         elif sub == "d/sl":
-            pass                                                  # 시스템 메시지 — v1 에서는 쓰지 않는다
+            self._syslog(payload)
         else:
             self.unknown += 1
 
@@ -473,6 +492,26 @@ class Live:
                     self._event(t, "offline", f"{self.dev_name} offline — power off or link lost")
         elif len(p) == 8 and not retain:
             self.offline_at = None                                # 장치가 다시 붙었다
+
+    def _firmware(self, fw: str) -> None:
+        board = bool(BOARD_FW.search(fw))
+        if board != self.board:
+            # 세는 방식이 바뀐다 — 나누는 ID 의 옛 열쇠를 버린다 (남겨 두면 더 오지 않는 열쇠가 '와야 할 수' 에 남아 수신률이 떨어진다)
+            self.ids = {k: v for k, v in self.ids.items() if k[0] not in BOARD_SPLIT_IDS}
+            self.rt_lost = {v: 0 for v in RT_LOST.values()} if board else None
+        self.board = board
+        self.firmware = fw
+
+    def _syslog(self, p: bytes) -> None:
+        """시스템 메시지 — 게시판 펌웨어의 CANRTQ:n · CANRTF:n (부팅 뒤 실시간으로 못 보낸 누적 수) 만 쓴다."""
+        for r in _records(p):
+            if r[1] != T_SYS:
+                continue
+            name, _, n = r[8:24].tobytes().split(b"\0", 1)[0].decode("ascii", "replace").partition(":")
+            if name in RT_LOST and n.isdigit():
+                if self.rt_lost is None:
+                    self.rt_lost = {v: 0 for v in RT_LOST.values()}
+                self.rt_lost[RT_LOST[name]] = max(self.rt_lost[RT_LOST[name]], int(n))     # 누적이라 줄지 않는다 (늦게 온 옛 줄에 끌려가지 않게)
 
     def _clock(self, t: float, dev_ms: int) -> None:
         if self.dev_last is None or dev_ms + 1000 < self.dev_last:
@@ -499,6 +538,8 @@ class Live:
         self.prev_pt = None
         for k in self.ids.values():
             k.last_ts = None                                      # 장치 시각이 처음부터 다시 — 간격 추정은 이어 간다
+        if self.rt_lost is not None:
+            self.rt_lost = {v: 0 for v in RT_LOST.values()}       # 펌웨어가 부팅 때부터 다시 센다
         self.boots += 1
         if not first:
             self._restarted = True
@@ -641,7 +682,7 @@ class Live:
             ts = self._srv(dev, t)
             can_id = int.from_bytes(r[8:12].tobytes(), "little")
             if can_id in SOURCE_IDS:
-                key = (can_id, int(r[12]))
+                key = (can_id, int(r[12]), int(r[16]) if self.board and can_id in BOARD_SPLIT_IDS else -1)
                 k = self.ids.get(key)
                 if k is None:
                     k = self.ids[key] = _IdRate(t)
@@ -677,9 +718,16 @@ class Live:
         for rule in self.by_channel.get(ch, ()):
             self._rule(rule, ts, float(v))
 
+    def _stale_s(self, ch: str) -> float:
+        """낡음 기준 — 채널 표의 값. 게시판 펌웨어면 0x181 · 0x6D0 값은 칸마다 intv 마다 오므로 짧게 (BOARD_STALE_S · 주기 × 4 중 긴 것)."""
+        c = CHANNELS[ch]
+        if self.board and c.source in ("inverter", "bms") and c.stale_s > BOARD_STALE_S:
+            return max(BOARD_STALE_S, 4 * self.period_s())
+        return c.stale_s
+
     def _fresh(self, ch: str, at: float) -> float | None:
         x = self.vals.get(ch)
-        if x is None or at - x[0] > CHANNELS[ch].stale_s:
+        if x is None or at - x[0] > self._stale_s(ch):
             return None
         return x[1]
 
@@ -765,14 +813,17 @@ class Live:
             kws += 0.5 * (at(lo) + at(hi)) * (hi - lo)
             covered += hi - lo
         soc0, soc1 = self._near("bms.soc_pct", a), self._near("bms.soc_pct", b)
-        cell = [v for t, v in self.lap_samples["bms.cell_min_v"] if a <= t <= b]
-        temp = [v for t, v in self.lap_samples["bms.temp_max_c"] if a <= t <= b]
-        speed = [v for t, v in self.lap_samples["gps.speed_kmh"] if a <= t <= b]
+        got = (lambda ch: [v for t, v in self.lap_samples[ch] if a <= t <= b])
+        cell, temp, speed = got("bms.cell_min_v"), got("bms.temp_max_c"), got("gps.speed_kmh")
+        tmin, tmot, tigbt = got("bms.temp_min_c"), got("motor.t_motor_c"), got("motor.t_igbt_c")
         return {"t_start": _r(a, 3), "t_end": _r(b, 3), "lap_time_s": _r(b - a, 1),
                 "net_wh": _r(kws / 3.6, 0) if covered > 0 else None, "cover": _r(covered / (b - a), 2) if b > a else None,
                 "soc_start_pct": soc0, "soc_end_pct": soc1, "soc_delta_pct": _r(soc1 - soc0, 1) if soc0 is not None and soc1 is not None else None,
                 "cell_v_min": _r(min(cell), 3) if cell else None, "cell_t_max_c": _r(max(temp), 0) if temp else None,
-                "speed_max_kmh": _r(max(speed), 1) if speed else None}
+                "speed_max_kmh": _r(max(speed), 1) if speed else None,
+                # 받은 값 중 최저 · 최고 — 모터 · IGBT 온도는 v2.3.0 이면 몇 초 ~ 수십 초에 하나라 랩에 하나도 없을 수 있다 (null)
+                "cell_t_min_c": _r(min(tmin), 0) if tmin else None, "motor_t_max_c": _r(max(tmot), 0) if tmot else None,
+                "inverter_t_max_c": _r(max(tigbt), 0) if tigbt else None}
 
     def _near(self, ch: str, at: float) -> float | None:
         """at 에 가장 가까운 표본 (앞쪽 먼저) — SOC_NEAR_S 안에 없으면 None."""
@@ -825,7 +876,7 @@ class Live:
         if x is None:
             return "none", None, None, None
         age = max(0.0, now - x[0])
-        if age > CHANNELS[ch].stale_s:
+        if age > self._stale_s(ch):
             return "stale", x[1], age, None
         hits = [a for a in self.active.values() if a["channel"] == ch and a["level"] in ("danger", "warn")]
         if hits:
@@ -867,7 +918,7 @@ class Live:
         want: dict[str, float] = defaultdict(float)
         p = self.period_s()
         loop = float(np.median(self.periods)) / 1000.0 if self.periods else p
-        for (cid, _), k in self.ids.items():
+        for (cid, _, _), k in self.ids.items():
             n, w = k.counts(now, p, loop)
             got[SOURCE_IDS[cid]] += n
             want[SOURCE_IDS[cid]] += w
@@ -884,9 +935,18 @@ class Live:
         bit = (lambda i, sh: st is not None and st >> (i + sh) & 1)
         return {"status": status, "boot_at": _r(self.boot_at, 1), "firmware": self.firmware, "boots": self.boots,
                 "errors": [n for i, n in enumerate(DEVICE_COMPONENTS) if bit(i, 0)] if st is not None else None,
-                "fatal": [n for i, n in enumerate(DEVICE_COMPONENTS) if bit(i, DEVICE_FATAL_SHIFT)] if st is not None else None}
+                "fatal": [n for i, n in enumerate(DEVICE_COMPONENTS) if bit(i, DEVICE_FATAL_SHIFT)] if st is not None else None,
+                "board": self.board, "rt_lost": dict(self.rt_lost) if self.rt_lost is not None else None}
 
-    def state(self, now: float, since: float | None = None) -> dict:
+    def _lap_rows(self, after: int | None, key: float | None) -> tuple[list[dict], int | None]:
+        """laps.rows — 화면이 이미 가진 랩(after = 마지막 랩 번호, key = 그 줄들의 첫 계측선 통과 시각)이 이 기록의 것이면 그 뒤 줄만."""
+        k = _r(self.crossings[0], 3)
+        if after is None or key is None or abs(float(key) - k) > 1e-3 or not 0 <= int(after) <= len(self.lap_rows):
+            return list(self.lap_rows), None                      # 처음 · 다른 날 (첫 통과가 다름) · 화면이 가진 것보다 랩이 적음 — 전부 (화면은 갈아 끼운다)
+        return self.lap_rows[int(after):], int(after)
+
+    def state(self, now: float, since: float | None = None, laps_after: int | None = None, laps_key: float | None = None) -> dict:
+        """since = 화면이 가진 그래프의 마지막 t (그 뒤 줄만). laps_after · laps_key = 화면이 가진 마지막 랩 번호 · laps.key (그 뒤 랩 줄만)."""
         link = self._link(now)
         if link["status"] == "lost":
             self._log_lost(self._limits()[1])                     # 끊긴 동안 화면이 물으면 그때 "<송신 장치> no data" (다시 받으면 _periodic 이 같은 것을)
@@ -946,10 +1006,11 @@ class Live:
         if self.venue is not None and self.crossings:
             done = np.diff(self.crossings)
             a = self.crossings[-1]
+            rows, after = self._lap_rows(laps_after, laps_key)
             laps = {"count": int(len(done)), "current_s": _r(max(0.0, now - a), 1),
                     "last_s": _r(done[-1], 1) if len(done) else None, "best_s": _r(done.min(), 1) if len(done) else None,
                     "basis": "GPS 계측선 통과 — GPS 주기만큼 오차",
-                    "rows": list(self.lap_rows),
+                    "rows": rows, "rows_after": after, "key": _r(self.crossings[0], 3),
                     "current": {"lap": len(self.crossings), **self._lap_stats(a, max(a, now)), "lap_delta_s": None},
                     "energy_basis": "배터리 전력(Orion 요약, 약 2 Hz 순간값)을 이어 적분 — 랩마다 몇 % 오차. "
                                     "cover = 전력 값이 이어진 시간의 비율 (1 보다 작으면 빈 곳이 있어 에너지가 작게 나옴)"}

@@ -80,6 +80,19 @@ def test_state_follows_the_file_and_keeps_engine_shape(live_client):
     assert c.get("/api/live/state", params={"since": last}).json()["chart"]["t"] == []
 
 
+def test_lap_params_reach_the_engine(live_client):
+    c, feed = live_client()
+    write(feed, lines(4, NOW))
+    feed.poll()
+    seen = []
+    real = feed.live.state
+    feed.live.state = lambda now, since=None, **kw: seen.append((since, kw)) or real(now, since, **kw)
+    assert c.get("/api/live/state", params={"since": 5.0}).status_code == 200
+    assert c.get("/api/live/state", params={"laps_after": 3, "laps_key": 1794000000.25}).status_code == 200
+    assert seen == [(5.0, {}), (None, {"laps_after": 3, "laps_key": 1794000000.25})]
+    assert c.get("/api/live/state", params={"laps_after": "x"}).status_code == 422      # 숫자가 아니면 FastAPI 가 막는다
+
+
 def test_partial_last_line_waits_for_the_rest(live_client):
     c, feed = live_client()
     one = lines(1, NOW)[0]
