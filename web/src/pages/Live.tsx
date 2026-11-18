@@ -10,7 +10,7 @@ import { foldEvents, offState, SPARK, sparkPoints, tileOr, trail } from '../live
 import { AlertBand, StatusStrip } from '../live/parts'
 import { useLive } from '../live/useLive'
 import { useLiveTrack } from '../live/useLiveTrack'
-import { BatteryView, GraphView, LinkView, MainView, PowertrainView, type ViewCtx } from '../live/views'
+import { BatteryView, GraphView, LinkView, MainView, PowertrainView, TestView, type ViewCtx } from '../live/views'
 import { ThemeContext } from '../themeContext'
 
 const VIEWS: Record<ViewKey, (p: { c: ViewCtx }) => JSX.Element> = {
@@ -19,6 +19,7 @@ const VIEWS: Record<ViewKey, (p: { c: ViewCtx }) => JSX.Element> = {
   battery: BatteryView,
   powertrain: PowertrainView,
   link: LinkView,
+  test: TestView,
 }
 
 function useNarrow(): boolean {

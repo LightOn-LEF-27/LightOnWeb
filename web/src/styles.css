@@ -28,6 +28,7 @@
   --trace-0: #f08a3c; /* 기준 랩 */
   --trace-1: #e8e8e8; /* 비교 1 */
   --trace-2: #5b9bf0; /* 비교 2 */
+  --trace-3: #4cc38a; /* 실시간 시험 뷰의 넷째 선 */
   --ok: #18b04f; /* 실시간 — 정상 */
   --danger: #e2261c; /* 실시간 — 위험 */
   --gauge-fill: #c9cfd6; /* 원형 게이지 — 정상은 색 없이 */
@@ -63,6 +64,7 @@
   --trace-0: #e06a12;
   --trace-1: #3a4048; /* 라이트에서는 흰색이 안 보여 진한 회색 */
   --trace-2: #2463c4;
+  --trace-3: #16865a;
   --ok: #138a3d;
   --danger: #c4231a;
   --gauge-fill: #6b737d;
@@ -1749,6 +1751,9 @@ body.graph-window .statusbar {
 }
 .lv-two {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.lv-two.lv-test {
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); /* 시험 뷰 — 그래프가 넓게 */
 }
 .lv-col {
   display: flex;

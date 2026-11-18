@@ -5,13 +5,15 @@ import { type ReactNode, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import type { LiveSource, LiveState, LiveTile, LiveTrack } from '../types'
+import { formatValue } from '../overview/model'
 import { type LiveCar } from './cars'
 import { GaugeTile, LapMini, PedalTile, TimeMini } from './gauge'
 import LiveChart, { type Limit } from './LiveChart'
 import LiveMap from './LiveMap'
 import {
   ageText, type ChartBuf, clock, deviceView, eventText, type EventRow, gapBands, GRAPH_GROUPS, GRAPH_PANELS, GRAPH_RANGES, type GraphGroup,
-  hasLapValues, lampOf, lapPoints, worstLamp, miniRange, pctText, RATE_PANELS, scaleOf, shownStatus, sourceWord, tileValue,
+  hasLapValues, lampOf, lapPoints, worstLamp, miniRange, pctText, RATE_PANELS, scaleOf, shownStatus, sourceWord, spikeList, TEST_PANELS,
+  TEST_RANGES, tileValue,
 } from './model'
 import {
   AppsDetail, BatteryLaps, EventList, Facts, InverterLine, InverterPanel, LapEnergy, LapStrip, RateBar, RecentLaps, Tile, TileAge,
@@ -573,6 +575,125 @@ function RateCharts({ c }: { c: ViewCtx }) {
         )
       })}
       <p className="live-note muted">다섯 줄이 같이 떨어지면 무선 끊김 · 한 줄만 낮으면 그 장치 쪽. % 색: 80 % 이상 정상 · 50 % 미만 위험</p>
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------- ⑥ 시험 (11-18 — 25Evo 거치대 킬스위치 시험, 텔레메트리 #89b4)
+// DC 링크 전압 튐을 본다: 전압 4선(튄 값 · 필터 없음 · 필터 · 팩) · ENA · RDY 계단 · 팩 전류 · 회전수 / 튐 표 · 인버터 상태(오류 비트 이름)
+
+export function TestView({ c }: { c: ViewCtx }) {
+  const [range, setRange] = useState(60)
+  const [cursor, setCursor] = useState<number | null>(null)
+  const now = c.s.now
+  const bands = useMemo(() => gapBands(c.buf, now - range), [c.buf, now, range])
+  const step = c.s.chart.step_s
+  const height = (key: string) => (key === 'vdc' ? (c.narrow ? 200 : 260) : key === 'ena' ? 70 : c.narrow ? 110 : 120)
+  return (
+    <div className="lv lv-two lv-test">
+      <div className="lv-col">
+        <div className="live-graphbar">
+          <div className="live-seg" role="group" aria-label="구간">
+            <span className="muted">구간</span>
+            {TEST_RANGES.map(([s, name]) => (
+              <button key={s} type="button" className={range === s ? 'on' : ''} aria-pressed={range === s} onClick={() => setRange(s)}>
+                {name}
+              </button>
+            ))}
+          </div>
+          {step != null && (
+            <span className="muted" title="엔진 그래프 격자 — 장치 보내기 주기를 따름">
+              격자 {step} s
+            </span>
+          )}
+          <span className="live-graphbar-cursor muted">{cursor !== null ? `커서 ${clock(cursor)}` : '지금 값'}</span>
+        </div>
+        <section className="panel live-charts live-graphs">
+          {TEST_PANELS.map((p, i) => (
+            <LiveChart
+              key={p.key}
+              title={p.title}
+              series={p.series}
+              buf={c.buf}
+              now={now}
+              tiles={c.tiles}
+              theme={c.theme}
+              height={height(p.key)}
+              windowS={range}
+              sync="live-test"
+              bands={bands}
+              onOff={p.key === 'ena'}
+              xAxis={i === TEST_PANELS.length - 1}
+              side
+              cursor={cursor}
+              onCursor={setCursor}
+            />
+          ))}
+        </section>
+      </div>
+      <div className="lv-col">
+        <SpikePanel c={c} />
+        <InverterPanel inv={c.s.inverter} frozen={c.frozen} regs={invRegs(c)} />
+        <div className="lv-tiles c2">
+          <Tile t={c.tile('motor.vdc_fast_v')} kind="mid" frozen={c.frozen} spark={c.spark('motor.vdc_fast_v')} />
+          <Tile t={c.tile('battery.voltage_v')} kind="mid" frozen={c.frozen} spark={c.spark('battery.voltage_v')} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// 튐 표 — 엔진 state.spikes (닫힌 튐 최근 20개 · 지금 열린 튐). 엔진이 아직 안 주면 준비 중
+function SpikePanel({ c }: { c: ViewCtx }) {
+  const sp = c.s.spikes
+  const rows = spikeList(sp)
+  const v = (x: number | null, d = 1) => (x == null ? '—' : formatValue(x, d))
+  return (
+    <section className="panel live-spikes">
+      <h2>DC 링크 전압 튐</h2>
+      {sp == null ? (
+        <p className="muted">엔진 값 준비 중</p>
+      ) : (
+        <>
+          {sp.open && (
+            <p>
+              <span className={`live-flag ${c.frozen ? 'stale' : 'danger'}`}>
+                <span className="live-dot" aria-hidden="true" />
+                지금 튀는 중 · 최고 {v(sp.open.peak_v)} V · {clock(sp.open.t)}부터
+              </span>
+            </p>
+          )}
+          {rows.length ? (
+            <table className="live-table">
+              <thead>
+                <tr>
+                  <th>시각</th>
+                  <th>최고 V</th>
+                  <th>팩 V</th>
+                  <th>팩보다 V</th>
+                  <th>길이 s</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.t}>
+                    <td>{clock(r.t)}</td>
+                    <td>{v(r.peak_v)}</td>
+                    <td>{v(r.pack_v)}</td>
+                    <td>+{v(r.over_v)}</td>
+                    <td>{v(r.dur_s, 2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="muted">아직 없음</p>
+          )}
+          <p className="live-note muted">
+            필터 없는 값(0x66)이 팩 전압보다 {v(sp.over_v, 0)} V 넘게 높았던 구간 · 최근 20개, 최근 것이 위 · 정확한 최고값은 SD 로그로
+          </p>
+        </>
+      )}
     </section>
   )
 }

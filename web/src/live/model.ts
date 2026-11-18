@@ -2,7 +2,7 @@
 // 화면이 스스로 정하는 것은 둘뿐이다: 그래프 창(최근 5분)과, 서버 응답이 끊겼을 때 화면 전체를 낡음으로 돌리는 것.
 
 import { formatValue } from '../overview/model'
-import type { LiveEvent, LiveLap, LiveScale, LiveSource, LiveState, LiveStatus, LiveTile, LiveTrack } from '../types'
+import type { LiveEvent, LiveLap, LiveScale, LiveSource, LiveSpike, LiveState, LiveStatus, LiveTile, LiveTrack } from '../types'
 
 export const POLL_MS = 500
 export const WINDOW_S = 300 // 그래프에 보이는 최근 5분
@@ -245,7 +245,10 @@ export interface PanelSeries {
   id: string
   label?: string // 이름 (없으면 엔진 타일 이름)
   right?: boolean // 오른쪽 세로축
-  color: 0 | 1 | 2 // --trace-<n>
+  color: 0 | 1 | 2 | 3 // --trace-<n>
+  dash?: boolean // 점선 (오른쪽 축이 아니어도)
+  step?: boolean // 계단 — 켜짐 · 꺼짐처럼 값이 띄엄띄엄인 것
+  unit?: string // 단위 (없으면 엔진 타일 것 — 칸이 없는 그래프 전용 시리즈에)
 }
 
 export interface Panel {
@@ -260,6 +263,21 @@ export interface Panel {
 export type GraphGroup = 'all' | 'drive' | 'battery' | 'powertrain'
 export const GRAPH_GROUPS: [GraphGroup, string][] = [['all', '전체'], ['drive', '주행'], ['battery', '배터리'], ['powertrain', '인버터 · 모터']]
 export const GRAPH_RANGES: [number, string][] = [[60, '1분'], [300, '5분'], [600, '10분']]
+
+// 시험 뷰 (11-18, 25Evo 거치대 킬스위치 시험 — 텔레메트리 #89b4) — DC 링크 전압 튐을 본다. 기본 최근 1분
+// 튄 값 = 칸 앞에 받은 0x66 표본 중 최고 (스파이크는 이 선으로 보임) · 필터 없는 값 = 칸의 마지막 0x66 · 0xEB = 인버터 필터를 거친 값 · 팩 = BMS
+export const TEST_PANELS: Panel[] = [
+  { key: 'vdc', title: 'DC 링크 전압', series: [
+    { id: 'motor.vdc_fast_max_v', label: '튄 값 (칸 최고 · 0x66)', unit: 'V', color: 0 }, { id: 'motor.vdc_fast_v', label: '필터 없음 (0x66)', color: 2 },
+    { id: 'motor.vdc_v', label: '필터 (0xEB)', color: 1, dash: true }, { id: 'battery.voltage_v', label: '팩 (BMS)', color: 3 },
+  ] },
+  { key: 'ena', title: 'ENA · RDY', series: [{ id: 'motor.enabled', label: 'ENA', color: 0, step: true }, { id: 'motor.ready', label: 'RDY', color: 2, step: true }] },
+  { key: 'amp', title: '팩 전류 · 회전수', series: [{ id: 'battery.current_a', color: 0 }, { id: 'motor.rpm', right: true, color: 2 }] },
+]
+export const TEST_RANGES: [number, string][] = [[20, '20초'], [60, '1분'], [300, '5분']]
+
+// 튐 표 — 최근 것이 위 (엔진은 앞 것부터 준다)
+export const spikeList = (s: LiveState['spikes']): LiveSpike[] => (s?.rows ?? []).slice().reverse()
 
 export interface GraphPanel extends Panel {
   groups: GraphGroup[]
@@ -307,6 +325,7 @@ const OFF_TILES: [string, string, string, number][] = [
   ['bms.dod_pct', '방전 깊이 (DoD)', '%', 1], ['motor.vdc_v', 'DC 버스 전압', 'V', 0], ['motor.rpm', '회전수 (로거 환산)', 'rpm', 0],
   ['pedal.torque_cmd_pct', '토크 명령', '%', 0], ['pedal.apps1_pct', '가속페달 센서 1', '%', 1], ['pedal.apps2_pct', '가속페달 센서 2', '%', 1],
   ['pedal.apps1_v', '가속페달 센서 1 전압 (보드 ADC)', 'V', 2], ['pedal.apps2_v', '가속페달 센서 2 전압 (보드 ADC)', 'V', 2],
+  ['motor.vdc_fast_v', 'DC 버스 전압 (필터 없음)', 'V', 0],
 ]
 const offTile = ([id, label, unit, digits]: [string, string, string, number]): LiveTile =>
   ({ id, label, unit, sign: '', digits, value: null, age_s: null, status: 'none', alert: null })

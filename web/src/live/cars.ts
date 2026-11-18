@@ -1,7 +1,7 @@
 // 실시간 화면의 차량 · 뷰 (실시간화면_v1.md §5 · §6, 2026-11-12 개편 — 계기판 · 그래프를 나눔).
 // 차마다 받을 수 있는 값이 달라 뷰도 차마다 다르다 (있는 것 위주). 어느 칸을 어느 뷰에 둘지만 화면이 정한다 — 값 · 상태 · 문구는 엔진 것
 
-export type ViewKey = 'main' | 'graph' | 'battery' | 'powertrain' | 'link'
+export type ViewKey = 'main' | 'graph' | 'battery' | 'powertrain' | 'link' | 'test'
 
 export const VIEW_NAMES: Record<ViewKey, string> = {
   main: '계기판',
@@ -9,6 +9,7 @@ export const VIEW_NAMES: Record<ViewKey, string> = {
   battery: '배터리',
   powertrain: '인버터 · 모터',
   link: '수신 · DAQ',
+  test: '시험', // 11-18 — 25Evo 거치대 킬스위치 시험 (DC 링크 전압 튐)
 }
 
 export interface LiveCar {
@@ -20,7 +21,7 @@ export interface LiveCar {
 }
 
 export const CARS: LiveCar[] = [
-  { id: 'LEF-25evo', live: 'on', device: 'Monolith', views: ['main', 'graph', 'battery', 'powertrain', 'link'] },
+  { id: 'LEF-25evo', live: 'on', device: 'Monolith', views: ['main', 'graph', 'battery', 'powertrain', 'link', 'test'] },
   { id: 'LEF-26', live: 'none' }, // 로거가 송출하지 않는다
   { id: 'LEF-27', live: 'building', plan: '메인 · 배터리 · 인버터 · 모터 · 섀시 · 타이어 · 수신 · DAQ' },
 ]
@@ -46,6 +47,7 @@ export const VIEW_TILES: Record<ViewKey, string[]> = {
     'pedal.torque_cmd_pct', 'motor.error_raw', 'pedal.fault_raw', // 오류 · 고장 비트는 인버터 상태 · APPS 칸에 이름으로
   ],
   link: ['lv.voltage_v'],
+  test: ['motor.vdc_fast_v', 'battery.voltage_v'], // 경고의 집은 뷰 순서상 앞 뷰 (배터리 등) — 시험 뷰는 맨 뒤
 }
 
 // 칸이 없는 경고 (id 로) — 수신 늦음 · 끊김, 원천 낡음, 장치 오류는 수신 · DAQ 뷰

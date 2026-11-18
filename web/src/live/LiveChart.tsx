@@ -8,7 +8,7 @@ import uPlot from 'uplot'
 
 import { formatValue } from '../overview/model'
 import type { LiveTile } from '../types'
-import { bridgeShort, type ChartBuf, clock, type LapPoints, type PanelSeries, valueAt, WINDOW_S } from './model'
+import { bridgeShort, type ChartBuf, clock, GAP_S, type LapPoints, type PanelSeries, valueAt, WINDOW_S } from './model'
 
 export interface Limit {
   v: number
@@ -24,6 +24,7 @@ interface Props {
   theme: string
   height: number
   pct?: boolean // 0 ~ 1 값을 0 ~ 100 % 고정 눈금으로 (수신률)
+  onOff?: boolean // 0 · 1 값을 꺼짐 · 켜짐 고정 눈금으로 (ENA · RDY)
   keys?: boolean // 머리줄에 계열 이름을 보일지 (기본 보임)
   extra?: ReactNode // 머리줄 오른쪽
   windowS?: number // 보이는 창 (기본 5분)
@@ -41,7 +42,7 @@ const cssVar = (name: string) => getComputedStyle(document.documentElement).getP
 const FONT = '10px Pretendard Variable, sans-serif'
 
 export default function LiveChart(p: Props) {
-  const { title, series, buf, now, tiles, theme, height, pct = false, keys = true, extra, windowS = WINDOW_S, sync, xAxis = true, side = false } = p
+  const { title, series, buf, now, tiles, theme, height, pct = false, onOff = false, keys = true, extra, windowS = WINDOW_S, sync, xAxis = true, side = false } = p
   const box = useRef<HTMLDivElement>(null)
   const plot = useRef<uPlot | null>(null)
   const [width, setWidth] = useState(0)
@@ -77,7 +78,10 @@ export default function LiveChart(p: Props) {
         draws.push({ scale, stroke, width: 1.6, spanGaps: true, points: { show: true, size: 6, fill: stroke, stroke } })
         draws.push({ scale, stroke, width: 1.4, dash: [3, 4], spanGaps: false, points: { show: true, size: 6, fill: cssVar('--panel'), stroke } })
       } else {
-        draws.push({ scale, stroke, width: 1.4, dash: s.right ? [5, 4] : undefined, spanGaps: false, points: { show: false } })
+        draws.push({
+          scale, stroke, width: s.step ? 1.8 : 1.4, dash: s.right || s.dash ? [5, 4] : undefined, spanGaps: false, points: { show: false },
+          ...(s.step ? { paths: uPlot.paths.stepped!({ align: 1 }) } : {}),
+        })
       }
     }
     // 세로 범위에 한도 · 주의 선을 넣는다
@@ -99,7 +103,11 @@ export default function LiveChart(p: Props) {
           ...(sync ? { sync: { key: sync } } : {}),
         },
         tzDate: (ts) => uPlot.tzDate(new Date(ts * 1e3), 'Asia/Seoul'),
-        scales: { x: { time: true }, y: pct ? { auto: false, range: [0, 1.05] } : { auto: true, range: yRange }, y2: { auto: true } },
+        scales: {
+          x: { time: true },
+          y: pct ? { auto: false, range: [0, 1.05] } : onOff ? { auto: false, range: [-0.15, 1.15] } : { auto: true, range: yRange },
+          y2: { auto: true },
+        },
         series: [{}, ...draws],
         axes: [
           {
@@ -109,6 +117,7 @@ export default function LiveChart(p: Props) {
           {
             scale: 'y', stroke: text, size: 44, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid }, font: FONT,
             ...(pct ? { splits: () => [0, 0.5, 1], values: (_u: uPlot, vs: number[]) => vs.map((v) => `${Math.round(v * 100)} %`) } : {}),
+            ...(onOff ? { splits: () => [0, 1], values: (_u: uPlot, vs: number[]) => vs.map((v) => (v === 1 ? '켜짐' : '꺼짐')) } : {}),
           },
           { scale: 'y2', side: 1, show: right, stroke: text, size: right ? 44 : 0, grid: { show: false }, ticks: { stroke: grid }, font: FONT },
         ],
@@ -182,7 +191,7 @@ export default function LiveChart(p: Props) {
       u.destroy()
       plot.current = null
     }
-  }, [width, height, theme, series, pct, lapMode, sync, xAxis, windowS])
+  }, [width, height, theme, series, pct, onOff, lapMode, sync, xAxis, windowS])
 
   // 0.5 s 마다 값만 — 오른쪽 끝은 늘 서버의 지금
   useEffect(() => {
@@ -201,8 +210,8 @@ export default function LiveChart(p: Props) {
           const t = tiles.get(s.id)
           return (
             <span key={s.id} className="live-chart-key">
-              <i className={s.right ? 'dashed' : ''} style={{ borderColor: `var(--trace-${s.color})` }} aria-hidden="true" />
-              {s.label ?? t?.label ?? s.id} <span className="muted">{t?.unit}</span>
+              <i className={s.right || s.dash ? 'dashed' : ''} style={{ borderColor: `var(--trace-${s.color})` }} aria-hidden="true" />
+              {s.label ?? t?.label ?? s.id} <span className="muted">{s.unit ?? t?.unit}</span>
             </span>
           )
         })}
@@ -230,13 +239,14 @@ export default function LiveChart(p: Props) {
         <div className="live-chart-title">{title}</div>
         {series.map((s) => {
           const t = tiles.get(s.id)
-          const v = p.cursor != null ? cursorValue(p, s.id, p.cursor) : t?.value ?? null
+          // 칸이 없는 그래프 전용 시리즈(예: 칸 최고)는 받은 그래프의 마지막 값
+          const v = p.cursor != null ? cursorValue(p, s.id, p.cursor) : t ? t.value : lastValue(buf, s.id)
           return (
             <div key={s.id} className="live-chart-val">
-              <i className={s.right && !lapMode ? 'dashed' : ''} style={{ borderColor: `var(--trace-${s.color})` }} aria-hidden="true" />
+              <i className={(s.right || s.dash) && !lapMode ? 'dashed' : ''} style={{ borderColor: `var(--trace-${s.color})` }} aria-hidden="true" />
               <span className="name">{s.label ?? t?.label ?? s.id}</span>
-              <strong>{v == null ? '—' : formatValue(v, t?.digits ?? 1)}</strong>
-              <span className="unit">{t?.unit}</span>
+              <strong>{v == null ? '—' : onOff ? (v >= 0.5 ? '켜짐' : '꺼짐') : formatValue(v, t?.digits ?? 1)}</strong>
+              <span className="unit">{s.unit ?? t?.unit}</span>
             </div>
           )
         })}
@@ -245,6 +255,15 @@ export default function LiveChart(p: Props) {
       {plotBox}
     </div>
   )
+}
+
+// 받은 그래프에서 그 시리즈의 마지막 값 — 끝에서 GAP_S 안에 값이 없으면 null (낡은 값을 지금 값처럼 보이지 않게)
+function lastValue(buf: ChartBuf, id: string): number | null {
+  const vs = buf.series[id]
+  if (!vs || !buf.t.length) return null
+  const end = buf.t[buf.t.length - 1]
+  for (let i = vs.length - 1; i >= 0 && buf.t[i] >= end - GAP_S; i--) if (vs[i] != null) return vs[i]
+  return null
 }
 
 // 커서 시각의 값 — 시간축이면 가장 가까운 줄, 랩 꼭짓점이면 그 시각 뒤에 처음 끝난 랩 (없으면 이번 랩)

@@ -5,7 +5,7 @@ import { alertView, carOf, CARS, VIEW_TILES } from './cars'
 import {
   ageText, bridgeShort, clock, deviceView, emptyBuf, eventText, foldEvents, gapBands, gaugePos, hasLapValues, lampOf, lapPoints, lapText, linkView, mapBounds,
   mergeChart, miniRange, niceAxis, offState, outageText, pathRuns, pctText, rateText, regNote, scaleOf, shownStatus, signedText, sinceOf, sourceWord,
-  sparkPoints, tileOr, tileSource, TRACK_MIN_MS, trackWait, trail, valueAt, worstLamp,
+  spikeList, sparkPoints, TEST_PANELS, tileOr, tileSource, TRACK_MIN_MS, trackWait, trail, valueAt, worstLamp,
 } from './model'
 
 const chart = (t: number[], speed: (number | null)[], extra: Record<string, (number | null)[]> = {}): LiveState['chart'] => ({
@@ -93,7 +93,7 @@ describe('수신이 꺼졌을 때의 틀', () => {
 
 describe('차량 · 뷰', () => {
   it('25Evo 만 실시간 뷰 다섯 (계기판 · 그래프 · 배터리 · 인버터 · 모터 · 수신 · DAQ) — LEF-26 송출 불가 · LEF-27 구현 중', () => {
-    expect(carOf('LEF-25evo')?.views).toEqual(['main', 'graph', 'battery', 'powertrain', 'link'])
+    expect(carOf('LEF-25evo')?.views).toEqual(['main', 'graph', 'battery', 'powertrain', 'link', 'test'])
     expect(carOf('LEF-26')?.live).toBe('none')
     expect(carOf('LEF-27')?.live).toBe('building')
     expect(carOf('LEF-99')).toBeNull()
@@ -109,6 +109,17 @@ describe('차량 · 뷰', () => {
     expect(alertView('W-DEV', null, 'main', v)).toBe('link') // Monolith 부품 치명 — 수신 · DAQ 뷰의 부품 상태
     expect(alertView('W-P80', null, 'main', v)).toBeNull() // 칸을 모르면 링크 없음
     expect(alertView('W-TB-NOW', 'bms.temp_max_c', 'graph', v)).toBe('main') // 그래프 뷰엔 칸이 없어 계기판으로
+    expect(alertView('W-HV-OFF', 'battery.voltage_v', 'main', v)).toBe('battery') // 시험 뷰에도 있지만 집은 앞 뷰
+  })
+  it('시험 뷰 — 튐 표는 최근 것이 위, 엔진이 안 주면 빈 표 · 그래프는 전압 4선 · ENA · RDY 계단', () => {
+    const row = (t: number) => ({ t, peak_v: 300 + t, pack_v: 250, over_v: 50 + t, dur_s: 0.2 })
+    const sp = { over_v: 30, rows: [row(1), row(2), row(3)], open: null }
+    expect(spikeList(sp).map((r) => r.t)).toEqual([3, 2, 1])
+    expect(sp.rows.map((r) => r.t)).toEqual([1, 2, 3]) // 엔진 값은 그대로
+    expect(spikeList(undefined)).toEqual([])
+    expect(spikeList(null)).toEqual([])
+    expect(TEST_PANELS[0].series.map((s) => s.id)).toEqual(['motor.vdc_fast_max_v', 'motor.vdc_fast_v', 'motor.vdc_v', 'battery.voltage_v'])
+    expect(TEST_PANELS.find((p) => p.key === 'ena')!.series.every((s) => s.step)).toBe(true)
   })
 })
 
