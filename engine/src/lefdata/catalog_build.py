@@ -1207,13 +1207,19 @@ def _orion_can_block(r: _Run, oc: pd.DataFrame, stream: pd.DataFrame | None) -> 
                      cautions=list(r.extra("bms").get("cautions", [])), series=series)
 
 
+REQUESTED = {"vdc_fast_v", "iq_a", "id_a", "i_phase_a"}     # 누가 요청할 때만 오는 BAMOCAR 레지스터에서 온 채널 — 주기가 '레지스터마다 10 Hz' 가 아님
+
+
 def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> DataBlock | None:
     """BAMOCAR 가 차량 CAN 에 낸 응답(0x181, 레지스터마다 10 Hz) → motor 블록. 온도 · DC 버스 · 회전수가 하나도 없으면 None."""
     sig = evo_can.bamocar_signals(bam)
     src, every = r.rec, "모터 컨트롤러가 CAN 으로 보낸 값 (레지스터마다 10 Hz)"
     on_off = [{"value": 0, "label": "꺼짐"}, {"value": 1, "label": "켜짐"}]
-    sig = {**sig, "rpm": (sig["rpm"][0], 0.0 - sig["rpm"][1])} if "rpm" in sig else sig
-    series = [Channel(k, label, unit, *sig[k], sign=sign, derived=bool(how), derivation=how, cautions=([] if k == "vdc_fast_v" else [every]) + extra,
+    sig = {**sig, **{k: (sig[k][0], 0.0 - sig[k][1]) for k in ("rpm", "iq_a", "id_a") if k in sig}}     # 기록은 전진 · 구동할 때 − → + 로
+    if "iq_a" in sig and "id_a" in sig and (ph := _phase_current(sig["iq_a"], sig["id_a"])) is not None:
+        sig["i_phase_a"] = ph
+    flip_i = "토크 전류와 같이 뒤집음 — 첫 기록에서 부호 확인 전"
+    series = [Channel(k, label, unit, *sig[k], sign=sign, derived=bool(how), derivation=how, cautions=([] if k in REQUESTED else [every]) + extra,
                       source=src, digits=dg, levels=levels)
               for k, label, unit, sign, how, extra, dg, levels in (
                   ("t_igbt_c", "인버터(IGBT) 온도", "°C", "", "", ["NTC 값을 컨트롤러 제조사 표로 바꾼 값"], 1, []),
@@ -1223,11 +1229,17 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
                                                                       "누가 요청할 때만 오는 레지스터 — 주기는 요청한 대로"], 1, []),
                   ("rpm", "회전수 (로거 환산)", "rpm", ROT_SIGN, f"−컨트롤러 값 ÷ {evo_can.RPM_FULL_SCALE} × {evo_can.LOGGER_N100_RPM:.0f} (STM32 백업 로거와 같은 기준)",
                    ["로거와 같은 상수로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음", ROT_FLIP], 0, []),
+                  ("iq_a", "토크 전류", "A", TORQUE_SIGN, "−(기록값) × BAMOCAR 전류 환산", ["모터 상전류(교류)의 토크 성분 — 배터리 전류 아님",
+                                                                                     TORQUE_FLIP + " — 25Evo 는 첫 기록에서 부호 확인 전", "요청할 때만 오는 레지스터"], 1, []),
+                  ("id_a", "자속 전류 (Id)", "A", "토크 전류와 같은 부호 규칙", "−(기록값) × BAMOCAR 전류 환산",
+                   ["모터 상전류(교류)의 자속 성분 — 고속에서 자속을 줄일 때(약계자) 크게 나옴", flip_i, "요청할 때만 오는 레지스터"], 1, []),
+                  ("i_phase_a", "상전류 (크기)", "A", "", f"√(Iq² + Id²) — 같은 순간({PHASE_PAIR_S * 1000:.0f} ms 안)의 토크 전류 · 자속 전류",
+                   ["BAMOCAR 전류 환산(Arms / Num, 매뉴얼)을 따른 상전류 실효값 — 배터리 전류 아님"], 1, []),
                   ("enabled", "구동 허용 (Ena)", "", "", "", ["상태 레지스터의 Ena 비트"], 0, on_off),
                   ("ready", "운전 준비 (Rdy)", "", "", "", ["상태 레지스터의 Rdy 비트 — 오류가 나면 꺼짐"], 0, on_off))
               if k in sig]
     keys = {c.key for c in series}
-    if not keys & {"t_igbt_c", "t_motor_c", "vdc_v", "vdc_fast_v", "rpm"}:
+    if not keys & {"t_igbt_c", "t_motor_c", "vdc_v", "vdc_fast_v", "rpm", "iq_a"}:
         return None
     cols = []
     if "t_igbt_c" in keys:
@@ -1236,6 +1248,9 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
     if "t_motor_c" in keys:
         _lap_stat(r, "motor_t_max_c", *sig["t_motor_c"], np.nanmax)
         cols.append(LapColumn("motor_t_max_c", "모터 최고 온도", "°C", 1))
+    if "i_phase_a" in keys:
+        _lap_stat(r, "i_phase_peak_a", *sig["i_phase_a"], np.max)
+        cols.append(LapColumn("i_phase_peak_a", "상전류 최대", "A", 0))
     te, raw = sig.get("error_raw", (np.zeros(0), np.zeros(0, np.int64)))
     bad = evo_can.bamocar_error_bits(raw)
     errors = evo_can.bamocar_error_names(int(np.bitwise_or.reduce(bad))) if len(bad) else []

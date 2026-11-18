@@ -259,3 +259,16 @@ def test_motor_block_carries_the_unfiltered_dc_bus_when_it_is_requested():
     ch = {c.key: c for c in blk.channels}
     assert "vdc_fast_v" in ch and len(ch["vdc_fast_v"].t_s) == 12000 and not any("10 Hz" in c for c in ch["vdc_fast_v"].cautions)
     assert "vdc_fast_v" not in {c.key for c in cb._can_motor_block(_motor_run(), _motor_table(), None).channels}
+
+
+def test_torque_and_flux_current_flip_to_drive_plus_and_give_phase_current():
+    """0x27 · 0x28 (Iq · Id, 요청할 때만) → motor.iq_a · id_a 는 구동 + (기록은 구동할 때 −), 둘이 있으면 상전류 크기."""
+    t = np.arange(0.0, 60.0, 0.01)
+    cur = pd.concat([pd.DataFrame({"t_s": t, "reg": r, "raw": pd.array(np.full(len(t), v), dtype="Int64")})
+                     for r, v in ((ec.REG_IQ, -300), (ec.REG_ID, -400))], ignore_index=True)
+    sig = ec.bamocar_signals(cur)
+    assert sig["iq_a"][1][0] == pytest.approx(-300 * lef26.BAMOCAR_I_A_PER_NUM)
+    ch = {c.key: c for c in cb._can_motor_block(_motor_run(), pd.concat([_motor_table(), cur], ignore_index=True), None).channels}
+    assert ch["iq_a"].v[0] == pytest.approx(300 * lef26.BAMOCAR_I_A_PER_NUM) and ch["id_a"].v[0] == pytest.approx(400 * lef26.BAMOCAR_I_A_PER_NUM)
+    assert np.nanmax(ch["i_phase_a"].v) == pytest.approx(500 * lef26.BAMOCAR_I_A_PER_NUM)
+    assert not any("10 Hz" in c for c in ch["iq_a"].cautions)
