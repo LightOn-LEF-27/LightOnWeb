@@ -73,6 +73,11 @@ APPS_ADC_V = 3.3 / 4095         # APPS 보드 ADC 원시값 → 보드 핀 전�
 LV_V_PER_RAW = 12.1 / 2690      # Monolith 공급 전압 raw → V [추정 환산 — 25Evo 테스트위크에서 12.1 V 고정 공급일 때 2,690]
 OFFLINE = b"OFFLINE"
 REG_VDC_FAST = 0x66             # BAMOCAR DC 버스 전압 — 필터 없는 값 (0xEB 는 저역 필터를 거친 값). 배율은 0xEB 와 같다
+# DC 링크 전압 튐 (계약 §12-4 spikes) — 필터 없는 0x66 이 팩 전압보다 이만큼 넘게 높으면 한 번으로 센다.
+# 평소에도 팩보다 몇 V 위로 흔들리고, 회생 없이 HV 를 끊으면 조금 오른다 — 그보다 크게 잡은 [정한 값]
+SPIKE_OVER_V = 30.0
+SPIKE_END_S = 0.5               # 문턱 아래로 이만큼 머물거나 0x66 이 끊기면 그 튐을 닫는다
+SPIKES_KEEP = 20
 # 0x6D0 슬롯 — 슬롯 124개가 돌아가는데 0.5 s 에 아무 슬롯 하나만 온다. 같은 슬롯이 다시 오기까지 보통 수십 초, 길면 몇 분
 SLOT_STALE_S = 300.0
 # 원천별 수신률 (계약 §12-4 sources[].rate_10s)
@@ -448,6 +453,8 @@ class Live:
         self.pending: dict[str, tuple[str, float]] = {}
         self.active: dict[str, dict] = {}
         self.events: deque[dict] = deque(maxlen=EVENTS_KEEP)
+        self.spikes: deque[dict] = deque(maxlen=SPIKES_KEEP)    # 닫힌 DC 링크 전압 튐
+        self.spike_cur: dict | None = None                        # 지금 열린 튐
         self.chart: deque[tuple[float, tuple]] = deque(maxlen=int(CHART_KEEP_S / GRID_MIN_S))   # CHART_KEEP_S 보다 옛 줄은 시각으로도 버린다
         self.grid_t: float | None = None
         self.peak: dict[str, float] = {}                         # CHART_PEAK 채널 → 이번 칸에 받은 표본 중 최고
@@ -619,6 +626,8 @@ class Live:
         while self.fix_win and self.fix_win[0][0] <= t - RATE_WINDOW_S:
             self.fix_win.popleft()
         self._source_events(t, self._srv(dev_ms, t))
+        if self.spike_cur is not None and self._srv(dev_ms, t) - self.spike_cur["end"] > SPIKE_END_S + 1.0:
+            self._spike_close()                                   # 튄 뒤 0x66 이 더 오지 않음 (컨트롤러가 꺼짐 등)
         self._grid(t)
         self._close_laps(t)
 
@@ -706,6 +715,8 @@ class Live:
             for ch, v in decode_frame(can_id, int(r[14]), r[16:24].tobytes()):
                 if ch in PEAK_CH:
                     self.peak[ch] = max(self.peak.get(ch, v), v)  # 묶음 안 순서 · 시각과 상관없이 — 받은 표본은 다 본다
+                if ch == "motor.vdc_fast_v":
+                    self._spike(ts, v)
                 self._put(ch, ts, v)
 
     # ------------------------------------------------------------ 값 · 경고
@@ -772,6 +783,30 @@ class Live:
             self._event(ts, "alert", f"{text} ({_fmt(_r(v, CHANNELS[rule.channel].digits))} {CHANNELS[rule.channel].unit})".replace(" )", ")"))
         else:
             cur["value"] = _r(v)
+
+    def _spike(self, ts: float, v: float) -> None:
+        """DC 링크 전압 튐 — 0x66 표본마다 (묶음 안 표본을 다 본다). 기준은 그때의 팩 전압 (Orion, 2 s 안의 값)."""
+        cur = self.spike_cur
+        if cur is not None and ts - cur["last_over"] > SPIKE_END_S:
+            self._spike_close()
+            cur = None
+        pack = self._fresh("battery.voltage_v", ts)
+        if pack is None or v - pack <= SPIKE_OVER_V:
+            return
+        if cur is None:
+            cur = self.spike_cur = {"t": ts, "peak_v": v, "pack_v": pack, "last_over": ts, "end": ts}
+        elif v > cur["peak_v"]:
+            cur.update(peak_v=v, pack_v=pack)
+        cur["last_over"] = cur["end"] = max(cur["last_over"], ts)
+
+    def _spike_close(self) -> None:
+        c, self.spike_cur = self.spike_cur, None
+        if c is None:
+            return
+        s = {"t": _r(c["t"], 3), "peak_v": _r(c["peak_v"], 1), "pack_v": _r(c["pack_v"], 1), "over_v": _r(c["peak_v"] - c["pack_v"], 1),
+             "dur_s": _r(c["last_over"] - c["t"], 3)}
+        self.spikes.append(s)
+        self._event(c["t"], "spike", f"DC 링크 전압 튐 — 최고 {s['peak_v']:.0f} V (팩 +{s['over_v']:.0f} V)", peak_v=s["peak_v"], over_v=s["over_v"])
 
     def _inverter_errors(self, ts: float, raw: int) -> None:
         bits = int(ec.bamocar_error_bits(np.array([raw]))[0])
@@ -1050,7 +1085,9 @@ class Live:
                 "receiver": {"status": self.receiver[0], "since": _r(self.receiver[1], 3)},
                 "device": device, "link": link, "sources": sources, "tiles": tiles, "inverter": inverter, "pedal": pedal,
                 "position": position, "track_rev": self.path_rev if self.venue is not None else None, "laps": laps, "alerts": [{k: v for k, v in a.items() if k != "channel"} for a in alerts],
-                "events": list(reversed(self.events)), "chart": chart}
+                "events": list(reversed(self.events)), "chart": chart,
+                "spikes": {"over_v": SPIKE_OVER_V, "rows": list(self.spikes),     # 닫힌 튐, 앞 것부터 (최근 20개)
+                           "open": None if self.spike_cur is None else {"t": _r(self.spike_cur["t"], 3), "peak_v": _r(self.spike_cur["peak_v"], 1)}}}
 
     def _path(self, ts: float, x: float, y: float, kmh: float) -> None:
         """주행 중인 GPS 점을 PATH_STEP_M 마다 하나씩 모은다. 오래 비었거나 위치가 튀면 선을 끊는다."""

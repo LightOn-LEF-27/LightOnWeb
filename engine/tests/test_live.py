@@ -749,6 +749,35 @@ def test_chart_peak_keeps_every_sample_in_the_bundle():
     assert tile(L.state(t), "motor.vdc_fast_v")["value"] == pytest.approx(250, abs=0.05)
 
 
+def test_dc_link_spike_counted_against_pack_voltage():
+    volts = lambda v: round(v / live.BAMOCAR_VDC_V_PER_NUM)
+    def bundle(k, dev):                                           # 팩 248 V · 0x66 은 평소 +5 V, 30번째 묶음에 377 V 까지 튐 (약 40 ms), 50번째는 +20 V (문턱 아래)
+        out = [can_rec(dev - 90, ec.ORION_VI, vi(v=248.0, a=0.0))]
+        for i in range(20):
+            v = 253.0
+            if k == 30 and 4 <= i < 12:
+                v = 300.0 + i * 9
+            if k == 50:
+                v = 268.0
+            out.append(can_rec(dev - 100 + 5 * i, ec.BAMOCAR, bamo(0x66, volts(v), 4), 4))
+        return out
+    L = live.Live()
+    t = fast_car(L, 100, 70, bundle)
+    sp = L.state(t)["spikes"]
+    assert sp["over_v"] == 30.0 and sp["open"] is None and len(sp["rows"]) == 1
+    s = sp["rows"][0]
+    assert s["peak_v"] == pytest.approx(399, abs=0.1) and s["pack_v"] == 248.0 and s["over_v"] == pytest.approx(151, abs=0.1)
+    assert s["dur_s"] == pytest.approx(0.03, abs=0.006)
+    ev = [e for e in L.state(t)["events"] if e["kind"] == "spike"]
+    assert len(ev) == 1 and ev[0]["peak_v"] == s["peak_v"] and "399 V" in ev[0]["text"]
+
+
+def test_spike_without_pack_voltage_is_not_counted():
+    L = live.Live()
+    t = fast_car(L, 100, 20, lambda k, dev: [can_rec(dev - 50, ec.BAMOCAR, bamo(0x66, 20000, 4), 4)])
+    assert L.state(t)["spikes"]["rows"] == []
+
+
 # ---------------------------------------------------------------- 게시판 펌웨어 (LEF-27-MONOLITH rt-board)
 
 BOARD_REGS = (ec.REG_SPEED, ec.REG_STATUS, ec.REG_T_MOTOR, ec.REG_T_IGBT, ec.REG_ERROR, ec.REG_VDC)
