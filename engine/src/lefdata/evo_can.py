@@ -5,6 +5,7 @@
                               orion_can.parquet     Orion 요약 · 팩 V/I (0x446 · 0x447, 96 ms)
                               orion_stream.parquet  Orion Connect 스트림 (0x6D0, 평균 80 Hz 대 — 팩 V/I + 슬롯 하나씩)
                               bamocar.parquet       모터 컨트롤러 응답 (0x181, 레지스터마다 10 Hz) — 시각 · 레지스터 · 원시값, 한 줄에 하나
+                              thermistor.parquet    Orion 써미스터 확장 모듈 (0x1838F380 써미스터 하나씩 10 Hz · 0x1839F380 모듈 요약) — LEF-26 의 같은 표와 같은 열
 
 정의의 출처 (팀 문서):
     0x7A0 ~ 0x7A2   25Evo APPS 보드 저장소의 진단 DBC (리틀 엔디언, 세 프레임이 같은 순번)
@@ -14,8 +15,13 @@
                     (방전 −) · [3..4] 팩 전압 · [5..6] 슬롯 값. 슬롯 표는 STREAM_SLOTS (맞댄 확신이 높은 것만)
     0x181           BAMOCAR 주기 응답 (Unitek CAN 매뉴얼). [0] 레지스터 번호 · 리틀 엔디언 값 — DLC 4 = 부호 있는 16비트, DLC 6 = 부호 없는 32비트.
                     0x66 (필터 없는 DC 버스) · 0x27 · 0x28 (Iq · Id) 는 요청할 때만 온다 — 0x66 은 0xEB 와 같은 배율. 상태 · 오류 비트는 Unitek N-Drive 매뉴얼. 환산은 LEF-26 과 같은 제조사 표 (lef26) · 모터 온도는 evo_stm32 의 KTY81 표
+    0x1838F380 · 0x1839F380   Orion 써미스터 확장 모듈의 CAN 문서 (lef26 과 같은 출처) — 써미스터 하나씩 내는 방송 · 모듈 → BMS 요약. 확장 ID
 
-체크섬: 0x446 · 0x447 = 바이트 0 ~ 6 의 합, 0x6D0 = (ID + 8 + 바이트 0 ~ 6 의 합) 의 하위 8비트. 틀린 프레임은 버리지 않고 checksum_ok 에 표시한다.
+Orion 이 켜진 직후 약 1 초 (0x446 열 프레임) 는 써미스터를 아직 읽지 않아 최고 · 최저 온도가 25 / 25 ℃ 로 나온다 (0x6D0 의 온도 슬롯도 25, 최고 · 최저 번호는 0).
+첫 프레임의 최저 셀이 다른 값으로 튀기도 한다. 그 구간은 orion_boot 로 표시하고 그 온도 · 튄 셀 전압은 빈 값으로 둔다 (팩 전압 · 전류는 그대로).
+
+체크섬: 0x446 · 0x447 = 바이트 0 ~ 6 의 합, 0x6D0 = (ID + 8 + 바이트 0 ~ 6 의 합) 의 하위 8비트, 0x1839F380 = 바이트 0 ~ 6 의 합 + 0x39 + 8
+(0x1838F380 은 체크섬이 없다). 틀린 프레임은 버리지 않고 checksum_ok 에 표시한다.
 시각은 Monolith 시계 그대로 (같은 레코딩의 GPS 와 같은 축) — 다른 장비에 맞추는 것은 세션을 만드는 쪽이 한다.
 """
 
@@ -34,6 +40,12 @@ from .writer import write_json
 
 APPS_RAW, APPS_SCALED, APPS_STATUS = 0x7A0, 0x7A1, 0x7A2
 ORION_SUMMARY, ORION_VI, ORION_STREAM = 0x446, 0x447, 0x6D0
+ORION_BOOT_TEMP_C = 25        # Orion 이 켜진 직후 써미스터를 읽기 전에 내는 최고 · 최저 온도
+ORION_BOOT_MAX = 15           # 그 기본값이 이어지는 길이의 상한 (켜진 뒤 약 1 s = 열 프레임 남짓). 이보다 오래 25 / 25 면 실제 온도로 본다
+ORION_BOOT_GAP_MS = 1500      # 0x446 (96 ms) 이 이만큼 끊겼다 다시 오면 Orion 이 다시 켜진 것으로 본다
+ORION_BOOT_CELL_V = 0.05      # 켠 직후 구간에서 최저 셀이 그 구간의 중앙값과 이만큼 넘게 다르면 튄 값으로 본다
+THERM_SINGLE, THERM_MODULE = 0x1838F380, 0x1839F380   # 써미스터 확장 모듈 (모듈 0) — 하나씩 방송 · 모듈 → BMS 요약
+THERM_MODULE_CHECK = 0x39 + 8                          # 모듈 → BMS 체크섬 = 바이트 합 + 0x39 + 길이 (lef26.THERMISTOR_CHECK 와 같다)
 TORQUE_FULL = 32767          # BAMOCAR 토크 명령의 100 %
 TORQUE_SIGN = -1             # 25Evo 는 전진 토크 명령이 음수다 (APPS 보드 설정) — 가속 + 로 바꿀 때 곱한다
 JOIN_MS = 40                 # 같은 순번의 0x7A1 · 0x7A2 를 0x7A0 에 붙일 때 이 안에서 찾는다 (20 Hz = 50 ms 간격)
@@ -60,7 +72,7 @@ BAMOCAR_WARNINGS = {16: "Parameter conflict detected", 17: "Special CPU Fault", 
                     20: "Feedback Signal problem", 22: "Motor-Temperature (>87%)", 23: "IGBT Temperature (>87%)", 24: "Vout Saturation Max. Limit",
                     26: "SpeedActual resolution Limit", 27: "Check ECode ID: 0x94", 28: "Tripzone Glitch detected", 29: "ADC Sequencer problem",
                     30: "ADC Measurement problem", 31: "Bleeder resistor load (>87%)"}
-TABLES = ("apps", "orion_can", "orion_stream", "bamocar")
+TABLES = ("apps", "orion_can", "orion_stream", "bamocar", "thermistor")
 
 
 # ---------------------------------------------------------------- 프레임 → 값 (데이터 8 바이트 배열 [n × 8])
@@ -118,9 +130,68 @@ def decode_orion_stream(d: np.ndarray) -> pd.DataFrame:
                          "slot_raw": _u16be(d, 5), "checksum_ok": checksum_ok(d, ORION_STREAM)})
 
 
+def orion_boot(t_ms: np.ndarray, temp_max: np.ndarray, temp_min: np.ndarray) -> np.ndarray:
+    """0x446 프레임 (시각순) → Orion 이 켜진 직후의 기본값 프레임인가.
+
+    Orion 이 켜질 때(레코딩 첫 프레임 · ORION_BOOT_GAP_MS 넘게 끊긴 뒤 첫 프레임)부터 최고 · 최저가 둘 다 25 ℃ 로 이어지는 앞부분 —
+    ORION_BOOT_MAX 프레임 안에서 끝날 때만. 기록 중간의 25 / 25 나 오래 이어지는 25 / 25 는 실제 온도로 둔다.
+    """
+    t = np.asarray(t_ms, float)
+    hit = (np.asarray(temp_max) == ORION_BOOT_TEMP_C) & (np.asarray(temp_min) == ORION_BOOT_TEMP_C)
+    boot = np.zeros(len(t), bool)
+    for s in np.r_[0, np.flatnonzero(np.diff(t) > ORION_BOOT_GAP_MS) + 1]:
+        k = 0
+        while s + k < len(t) and hit[s + k] and k <= ORION_BOOT_MAX:
+            k += 1
+        if 0 < k <= ORION_BOOT_MAX:
+            boot[s:s + k] = True
+    return boot
+
+
+def _boot_spans(t_ms: np.ndarray, boot: np.ndarray) -> list[tuple[float, float]]:
+    """켠 직후 구간마다 (직전 프레임 시각, 구간 뒤 첫 프레임 시각) — 그 사이의 다른 Orion 프레임(0x6D0)도 같은 구간으로 본다."""
+    t, out, i = np.asarray(t_ms, float), [], 0
+    while i < len(t):
+        if not boot[i]:
+            i += 1
+            continue
+        j = i
+        while j < len(t) and boot[j]:
+            j += 1
+        out.append((t[i - 1] if i else -np.inf, t[j] if j < len(t) else np.inf))
+        i = j
+    return out
+
+
+def mark_orion_boot(summary: pd.DataFrame, t_col: str = "t_rel_ms") -> pd.DataFrame:
+    """0x446 표 (decode_orion_summary + 시각) → orion_boot 열을 붙이고 그 구간의 온도 · 튄 최저 셀을 빈 값으로."""
+    s = summary.sort_values(t_col, kind="stable").reset_index(drop=True)
+    boot = orion_boot(s[t_col].to_numpy(float), s["temp_max_c"].to_numpy(), s["temp_min_c"].to_numpy())
+    cell = s["cell_min_v"].to_numpy(float).copy()
+    for lo, hi in _boot_spans(s[t_col].to_numpy(float), boot):
+        m = boot & (s[t_col].to_numpy(float) > lo) & (s[t_col].to_numpy(float) < hi)
+        cell[m & (np.abs(cell - np.median(cell[m])) > ORION_BOOT_CELL_V)] = np.nan
+    return s.assign(cell_min_v=cell, temp_max_c=s["temp_max_c"].mask(boot), temp_min_c=s["temp_min_c"].mask(boot), orion_boot=boot)
+
+
+def decode_thermistor_single(d: np.ndarray) -> pd.DataFrame:
+    """0x1838F380 — 써미스터 하나: [번호 (2 바이트, 빅 엔디언), 온도 ℃, 모듈 안 번호 (최상위 비트 = 고장), 그 순간 최저 · 최고 ℃, 가장 뜨거운 · 차가운 번호]."""
+    return pd.DataFrame({"thermistor_id": _u16be(d, 0), "temp_c": d[:, 2].astype(np.int8).astype(np.int64),
+                         "lowest_c": d[:, 4].astype(np.int8).astype(np.int64), "highest_c": d[:, 5].astype(np.int8).astype(np.int64),
+                         "hottest_id": d[:, 6].astype(np.int64), "coldest_id": d[:, 7].astype(np.int64), "fault": (d[:, 3] & 0x80) > 0})
+
+
+def decode_thermistor_module(d: np.ndarray) -> pd.DataFrame:
+    """0x1839F380 — 모듈 → BMS: [모듈 번호, 최저, 최고, 평균 ℃, 켜진 수 (최상위 비트 = 고장), 가장 뜨거운 · 차가운 번호, 체크섬]."""
+    return pd.DataFrame({"lowest_c": d[:, 1].astype(np.int8).astype(np.int64), "highest_c": d[:, 2].astype(np.int8).astype(np.int64),
+                         "average_c": d[:, 3].astype(np.int8).astype(np.int64), "enabled": (d[:, 4] & 0x7F).astype(np.int64),
+                         "hottest_id": d[:, 5].astype(np.int64), "coldest_id": d[:, 6].astype(np.int64), "fault": (d[:, 4] & 0x80) > 0,
+                         "checksum_ok": ((d[:, :7].astype(np.int64).sum(axis=1) + THERM_MODULE_CHECK) & 0xFF) == d[:, 7]})
+
+
 def stream_signals(stream: pd.DataFrame, t_col: str = "t_s") -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """0x6D0 표 → 슬롯 값마다 (시각, 값). 체크섬이 맞는 프레임만."""
-    ok = stream[stream["checksum_ok"]]
+    """0x6D0 표 → 슬롯 값마다 (시각, 값). 체크섬이 맞는 프레임만, Orion 이 켜진 직후(orion_boot) 는 뺀다."""
+    ok = stream[stream["checksum_ok"] & ~(stream["orion_boot"] if "orion_boot" in stream else False)]
     out = {}
     for slot, (name, scale, signed) in STREAM_SLOTS.items():
         s = ok[ok["slot"] == slot]
@@ -189,7 +260,7 @@ def _data(f: pd.DataFrame, can_id: int) -> tuple[pd.DataFrame, np.ndarray]:
 
 
 def decode_recording(rec_dir: Path) -> dict[str, pd.DataFrame]:
-    """frames.parquet → {apps, orion_can, orion_stream, bamocar} (있는 것만)."""
+    """frames.parquet → {apps, orion_can, orion_stream, bamocar, thermistor} (있는 것만)."""
     f = _frames(rec_dir)
     out = {}
     t, d = _data(f, APPS_RAW)
@@ -202,17 +273,35 @@ def decode_recording(rec_dir: Path) -> dict[str, pd.DataFrame]:
                 apps = pd.merge_asof(apps.sort_values("t_rel_ms"), other, left_on="t_rel_ms", right_on="_t", by="counter",
                                      direction="nearest", tolerance=JOIN_MS).drop(columns="_t")
         out["apps"] = apps
+    t2, d2 = _data(f, ORION_SUMMARY)
+    sm = mark_orion_boot(pd.concat([t2[["t_rel_ms"]], decode_orion_summary(d2)], axis=1)) if len(d2) else None
+    spans = _boot_spans(sm["t_rel_ms"].to_numpy(float), sm["orion_boot"].to_numpy()) if sm is not None else []
     t, d = _data(f, ORION_VI)
     if len(d):
         vi = pd.concat([t, decode_orion_vi(d)], axis=1).sort_values("t_rel_ms")
-        t2, d2 = _data(f, ORION_SUMMARY)
-        if len(d2):
-            sm = pd.concat([t2[["t_rel_ms"]], decode_orion_summary(d2)], axis=1).rename(columns={"t_rel_ms": "_t", "checksum_ok": "summary_ok"})
-            vi = pd.merge_asof(vi, sm.sort_values("_t"), left_on="t_rel_ms", right_on="_t", direction="nearest", tolerance=JOIN_MS).drop(columns="_t")
+        if sm is not None:
+            vi = pd.merge_asof(vi, sm.rename(columns={"t_rel_ms": "_t", "checksum_ok": "summary_ok"}), left_on="t_rel_ms", right_on="_t",
+                               direction="nearest", tolerance=JOIN_MS).drop(columns="_t")
+            vi["orion_boot"] = vi["orion_boot"].eq(True)
         out["orion_can"] = vi
     t, d = _data(f, ORION_STREAM)
     if len(d):
-        out["orion_stream"] = pd.concat([t, decode_orion_stream(d)], axis=1)
+        ts = t["t_rel_ms"].to_numpy(float)
+        boot = np.zeros(len(ts), bool)
+        for lo, hi in spans:
+            boot |= (ts > lo) & (ts < hi)
+        out["orion_stream"] = pd.concat([t, decode_orion_stream(d)], axis=1).assign(orion_boot=boot)
+    therm = []
+    for cid, dec, source in ((THERM_SINGLE, decode_thermistor_single, "single"), (THERM_MODULE, decode_thermistor_module, "module_to_bms")):
+        t, d = _data(f, cid)
+        if len(d):
+            therm.append(pd.concat([t, dec(d)], axis=1).assign(source=source))
+    if therm:
+        th = pd.concat(therm, ignore_index=True).sort_values("t_rel_ms", kind="stable").reset_index(drop=True)
+        for c in ("thermistor_id", "temp_c", "average_c", "enabled"):              # 한쪽 프레임만 있는 레코딩도 같은 열
+            th[c] = th[c].astype("Int64") if c in th else pd.array([pd.NA] * len(th), dtype="Int64")
+        th["checksum_ok"] = th["checksum_ok"].astype("boolean") if "checksum_ok" in th else pd.array([pd.NA] * len(th), dtype="boolean")
+        out["thermistor"] = th
     s = f[f["can_id"] == BAMOCAR]
     if len(s):
         p = np.frombuffer(b"".join(s["payload"]), dtype=np.uint8).reshape(-1, 16)      # 이 ID 는 길이가 섞여 있다 — 오프셋 6 = 길이, 8 ~ = 데이터
@@ -232,7 +321,13 @@ def summarize(tables: dict[str, pd.DataFrame]) -> dict:
     for name in ("orion_can", "orion_stream"):
         if name in tables:
             t = tables[name]
-            s[name] = {"rows": int(len(t)), "checksum_fail": int((~t["checksum_ok"]).sum())}
+            s[name] = {"rows": int(len(t)), "checksum_fail": int((~t["checksum_ok"]).sum()),
+                       "boot_rows": int(t["orion_boot"].sum()) if "orion_boot" in t else 0}
+    if "thermistor" in tables:
+        th = tables["thermistor"]
+        one = th[th["source"] == "single"]
+        s["thermistor"] = {"rows": int(len(th)), "single_rows": int(len(one)), "thermistors": int(one["thermistor_id"].nunique()),
+                           "module_checksum_fail": int((th["checksum_ok"] == False).sum()), "fault_rows": int(th["fault"].sum())}  # noqa: E712
     if "bamocar" in tables:
         b = tables["bamocar"]
         sig = bamocar_signals(b, "t_rel_ms")

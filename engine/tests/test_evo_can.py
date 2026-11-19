@@ -187,6 +187,20 @@ def test_race_can_golden():
     assert meta["apps"]["counter_missed"] == E["race.apps_counter_missed"] and meta["apps"]["fault_latched_any"] == E["race.apps_faults"]
     oc = pd.read_parquet(REC / "orion_can.parquet")
     assert [float(oc["soc_pct"].max()), float(oc["soc_pct"].min())] == E["race.soc_range"]
+    assert meta["thermistor"]["thermistors"] == E["race.thermistors"] and meta["orion_can"]["boot_rows"] == E["race.orion_boot_rows"]
+
+
+@need
+def test_race_thermistor_values_lie_between_the_pack_low_and_high():
+    """써미스터 하나씩 방송의 값은 같은 프레임의 최저 ~ 최고 안 (해독이 맞다), 모듈 요약은 체크섬이 맞는다.
+    Orion 의 0x446 최고 온도(켠 직후 뺀 것)와 모듈 최고는 1 ℃ 안 (같은 써미스터를 본다)."""
+    th = pd.read_parquet(REC / "thermistor.parquet")
+    one = th[th["source"] == "single"]
+    assert ((one["lowest_c"] <= one["temp_c"]) & (one["temp_c"] <= one["highest_c"])).all() and not one["fault"].any()
+    assert th.loc[th["source"] == "module_to_bms", "checksum_ok"].all()
+    oc = pd.read_parquet(REC / "orion_can.parquet").dropna(subset=["temp_max_c"]).sort_values("t_rel_ms")
+    near = pd.merge_asof(oc[["t_rel_ms", "temp_max_c"]], one[["t_rel_ms", "highest_c"]].sort_values("t_rel_ms"), on="t_rel_ms", direction="nearest", tolerance=200)
+    assert (near["temp_max_c"] - near["highest_c"]).abs().max() <= 1
 
 
 need_bam = pytest.mark.skipif(not (REC / "bamocar.parquet").exists(), reason="25Evo 대회 lefdata evo-can 결과 없음 (bamocar)")
@@ -272,3 +286,90 @@ def test_torque_and_flux_current_flip_to_drive_plus_and_give_phase_current():
     assert ch["iq_a"].v[0] == pytest.approx(300 * lef26.BAMOCAR_I_A_PER_NUM) and ch["id_a"].v[0] == pytest.approx(400 * lef26.BAMOCAR_I_A_PER_NUM)
     assert np.nanmax(ch["i_phase_a"].v) == pytest.approx(500 * lef26.BAMOCAR_I_A_PER_NUM)
     assert not any("10 Hz" in c for c in ch["iq_a"].cautions)
+
+
+# ---------------------------------------------------------------- Orion 이 켜진 직후 · 써미스터 확장 모듈
+
+def _can_row(t_ms: int, cid: int, data: bytes) -> dict:
+    """Monolith CAN 레코드 한 줄 (id u32 · 확장 · 원격 · 길이 · 예약 · 데이터 8)."""
+    return {"t_rel_ms": t_ms, "t_abs": pd.Timestamp("2027-06-05 10:00", tz="Asia/Seoul") + pd.Timedelta(milliseconds=t_ms), "kind": "CAN",
+            "can_id": float(cid), "payload": _le(cid, 4) + bytes([int(cid > 0x7FF), 0, 8, 0]) + data, "valid": True, "dup": False}
+
+
+def _summary(cell: float, hi: int, lo: int) -> bytes:
+    return bytes(_frame(_be(0) + _be(round(cell * 1e4)) + bytes([hi & 0xFF, lo & 0xFF, 190])))
+
+
+def test_orion_boot_defaults_are_blanked_at_power_on_and_after_a_restart():
+    """켠 직후 (레코딩 처음 · 오래 끊긴 뒤) 최고 · 최저 25 / 25 가 짧게 이어지면 기본값. 기록 중간의 25 / 25 · 오래 이어지는 25 / 25 는 실제 값."""
+    t = np.arange(40) * 96.0
+    t[20:] += 18_000                                                        # 18 s 끊겼다 다시 옴 = Orion 이 다시 켜짐
+    hi = np.array([25] * 10 + [14] * 5 + [25] * 2 + [14] * 3 + [25] * 9 + [14] * 11)
+    lo = np.array([25] * 10 + [11] * 5 + [25] * 2 + [11] * 3 + [25] * 9 + [11] * 11)
+    boot = ec.orion_boot(t, hi, lo)
+    assert boot.tolist() == [True] * 10 + [False] * 10 + [True] * 9 + [False] * 11
+    assert not ec.orion_boot(np.arange(30) * 96.0, np.full(30, 25), np.full(30, 25)).any()          # 25 ℃ 로 오래 = 실제 온도
+    cell = np.r_[3.7, np.full(39, 4.0)]
+    s = ec.mark_orion_boot(pd.DataFrame({"t_rel_ms": t, "temp_max_c": hi.astype(float), "temp_min_c": lo.astype(float), "cell_min_v": cell}))
+    assert s["temp_max_c"].isna().sum() == 19 and s["temp_max_c"].iloc[15] == 25 and s["orion_boot"].sum() == 19
+    assert np.isnan(s["cell_min_v"].iloc[0]) and s["cell_min_v"].iloc[1:].notna().all()             # 첫 프레임의 튄 최저 셀만 뺀다
+
+
+def test_recording_keeps_pack_values_but_not_boot_temperatures(tmp_path):
+    """켠 직후 구간: orion_can 의 팩 전압 · 전류는 그대로, 온도는 빈 값. 같은 구간의 0x6D0 슬롯도 세션 값에서 뺀다."""
+    rows = []
+    for k in range(15):
+        ms = 96 * k
+        hot = 25 if k < 10 else 31
+        rows.append(_can_row(ms, ec.ORION_SUMMARY, _summary(4.1, hot, 25 if k < 10 else 29)))
+        rows.append(_can_row(ms + 2, ec.ORION_VI, bytes(_frame(_be(2870) + _be(0) + bytes(3)))))
+        rows.append(_can_row(ms + 4, ec.ORION_STREAM, bytes(_frame(bytes([40]) + _be(0) + _be(2870) + _be(hot), ec.ORION_STREAM + 8))))
+    pd.DataFrame(rows).to_parquet(tmp_path / "frames.parquet", index=False)
+    t = ec.decode_recording(tmp_path)
+    oc, st = t["orion_can"], t["orion_stream"]
+    assert oc["orion_boot"].tolist() == [True] * 10 + [False] * 5 and oc["pack_v"].tolist() == pytest.approx([287.0] * 15)
+    assert oc["temp_max_c"].isna().sum() == 10 and oc["temp_max_c"].dropna().tolist() == [31.0] * 5
+    assert st["orion_boot"].sum() == 10 and ec.stream_signals(st, "t_rel_ms")["temp_max_c"][1].tolist() == [31.0] * 5
+    assert ec.summarize(t)["orion_can"]["boot_rows"] == 10
+
+
+def test_thermistor_module_frames_decode_like_the_lef26_table(tmp_path):
+    """0x1838F380 = 써미스터 하나 (번호 2 바이트 · 값 · 모듈 안 번호 · 최저 · 최고 · 가장 뜨거운 · 차가운 번호, 체크섬 없음),
+    0x1839F380 = 모듈 → BMS 요약 (체크섬 = 합 + 0x39 + 8). 온도는 부호 있는 8비트."""
+    one = [bytes([0, 12, 17, 12, 14, 17, 22, 10]), bytes([0, 10, (-3) & 0xFF, 10 | 0x80, (-3) & 0xFF, 17, 22, 10])]
+    body = bytes([0, 14, 17, 15, 40, 22, 10])
+    rows = [_can_row(0, ec.THERM_SINGLE, one[0]), _can_row(100, ec.THERM_SINGLE, one[1]),
+            _can_row(150, ec.THERM_MODULE, body + bytes([(sum(body) + ec.THERM_MODULE_CHECK) & 0xFF])),
+            _can_row(250, ec.THERM_MODULE, body + bytes([0]))]
+    pd.DataFrame(rows).to_parquet(tmp_path / "frames.parquet", index=False)
+    tables = ec.decode_recording(tmp_path)
+    th = tables["thermistor"]
+    assert th["source"].tolist() == ["single", "single", "module_to_bms", "module_to_bms"]
+    assert th["thermistor_id"].iloc[:2].tolist() == [12, 10] and th["temp_c"].iloc[:2].tolist() == [17, -3] and th["lowest_c"].iloc[1] == -3
+    assert th["fault"].tolist() == [False, True, False, False] and th["hottest_id"].iloc[0] == 22 and th["coldest_id"].iloc[0] == 10
+    assert th["average_c"].iloc[2] == 15 and th["enabled"].iloc[2] == 40 and th["checksum_ok"].iloc[2:].tolist() == [True, False]
+    assert set(lef26.THERMISTOR_INT) - {"thermistor_id"} <= set(th.columns)              # LEF-26 thermistor 표와 같은 열 이름
+    s = ec.summarize(tables)["thermistor"]
+    assert s == {"rows": 4, "single_rows": 2, "thermistors": 2, "module_checksum_fail": 1, "fault_rows": 1}
+    pd.DataFrame(rows[:2]).to_parquet(tmp_path / "frames.parquet", index=False)           # 하나씩 방송만 있는 레코딩도 같은 열
+    only = ec.decode_recording(tmp_path)["thermistor"]
+    assert {"average_c", "enabled", "checksum_ok"} <= set(only.columns) and only["average_c"].isna().all()
+
+
+def test_thermistor_block_gives_the_spread_and_each_thermistor_rise():
+    """써미스터 하나씩 → 팩 최고 · 최저 · 차 채널, 랩마다 차 최대, 써미스터마다 처음 → 끝 (내보낼 표)."""
+    t = np.arange(0.0, 60.0, 0.1)
+    tid = np.arange(len(t)) % 3
+    temp = 15 + tid + (t > 30)                                               # 30 s 뒤 모두 1 ℃ 오름
+    hi, lo = 17 + (t > 30), 15 + (t > 30)
+    th = pd.DataFrame({"t_s": t, "source": "single", "thermistor_id": pd.array(tid, dtype="Int64"), "temp_c": pd.array(temp, dtype="Int64"),
+                       "lowest_c": lo, "highest_c": hi, "hottest_id": 2, "coldest_id": 0, "fault": False})
+    r = _motor_run()
+    b = cb._can_thermistor_block(r, th)
+    ch = {c.key: c for c in b.channels}
+    assert b.key == "thermistor" and set(ch) == {"highest_c", "lowest_c", "spread_c"} and np.allclose(ch["spread_c"].v, 2) and ch["spread_c"].derived
+    assert r.laps["cell_t_spread_c"].iloc[0] == 2 and b.checks == ["써미스터 값이 같은 프레임의 팩 최저 ~ 최고 안 100.0%"]
+    per = b.exports[0].table
+    assert per["thermistor_id"].tolist() == [0, 1, 2] and per["rise_c"].tolist() == [1, 1, 1] and per["below_hot_c"].tolist() == [2, 1, 0]
+    assert any("써미스터 3개" in f and "0.3 s" in f for f in b.facts)
+    assert cb._can_thermistor_block(r, th.assign(fault=True)) is None                    # 고장 표시만 있으면 블록 없음

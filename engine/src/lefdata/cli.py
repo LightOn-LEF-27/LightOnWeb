@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--event", type=Path, default=paths.LEF25EVO_FSK)
     p = sub.add_parser("orion", help="Orion BMS Connect CSV → normalized/")
     p.add_argument("--event", type=Path, default=paths.LEF25EVO_FSK)
-    p.add_argument("--src", type=Path, default=paths.LEF25EVO_ORION_CSV, help="Utility 로 변환한 CSV 폴더")
+    p.add_argument("--src", type=Path, default=paths.LEF25EVO_ORION_CSV, help="Utility 변환 부품으로 바꾼 CSV 폴더 (기본: csv_orion_headless)")
     p.add_argument("--from", dest="first", default=paths.LEF25EVO_FSK_DAYS[0], help="시작일 (KST)")
     p.add_argument("--to", dest="last", default=paths.LEF25EVO_FSK_DAYS[1], help="마지막 날 (KST)")
 

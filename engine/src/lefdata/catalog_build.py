@@ -1193,8 +1193,10 @@ def _orion_can_block(r: _Run, oc: pd.DataFrame, stream: pd.DataFrame | None) -> 
             series.append(Channel(k, label, unit, *slots[k], source=src, digits=dg, cautions=[slow]))
     _lap_stat(r, "cell_t_max_c", t, s["temp_max_c"].to_numpy(float), np.nanmax)
     _lap_stat(r, "cell_v_min", t, s["cell_min_v"].to_numpy(float), np.nanmin)
-    facts = [f"SOC {s['soc_pct'].iloc[0]:.1f} → {s['soc_pct'].iloc[-1]:.1f} %", f"셀 최저 전압 {s['cell_min_v'].min():.3f} V",
-             f"셀 최고 온도 {s['temp_max_c'].iloc[0]:.0f} → {s['temp_max_c'].iloc[-1]:.0f} °C (가장 높을 때 {s['temp_max_c'].max():.0f} °C)"]
+    hot = s["temp_max_c"].dropna()                     # Orion 이 켜진 직후의 기본값은 evo-can 이 빈 값으로 둔다
+    facts = [f"SOC {s['soc_pct'].iloc[0]:.1f} → {s['soc_pct'].iloc[-1]:.1f} %", f"셀 최저 전압 {s['cell_min_v'].min():.3f} V"]
+    if len(hot):
+        facts.append(f"셀 최고 온도 {hot.iloc[0]:.0f} → {hot.iloc[-1]:.0f} °C (가장 높을 때 {hot.max():.0f} °C)")
     if "dcl_kw" in slots:
         facts.append(f"방전 출력 한계(DCL) {np.nanmin(slots['dcl_kw'][1]):.1f} ~ {np.nanmax(slots['dcl_kw'][1]):.1f} kW")
     keys = {c.key for c in series}
@@ -1204,7 +1206,59 @@ def _orion_can_block(r: _Run, oc: pd.DataFrame, stream: pd.DataFrame | None) -> 
                      channels=series, time_keys=[k for k in ("soc_pct", "temp_max_c", "dcl_kw") if k in keys],
                      lap_columns=[LapColumn("cell_t_max_c", "셀 최고 온도", "°C", 0, chart=True), LapColumn("cell_v_min", "셀 최저 전압", "V", 3)],
                      checks=["체크섬이 맞는 프레임만 (0x446 · 0x447 = 바이트 합, 0x6D0 = ID + 8 + 바이트 합)"],
-                     cautions=list(r.extra("bms").get("cautions", [])), series=series)
+                     cautions=["Orion 이 켜진 직후 약 1 s 는 온도를 아직 읽지 않아 (25 / 25 °C) 빈 값으로 둠"] + list(r.extra("bms").get("cautions", [])),
+                     series=series)
+
+
+def _span(a: float, b: float, fmt: str = ".0f") -> str:
+    """'a ~ b' — 둘이 같게 찍히면 하나만."""
+    x, y = format(a, fmt), format(b, fmt)
+    return x if x == y else f"{x} ~ {y}"
+
+
+def _can_thermistor_block(r: _Run, th: pd.DataFrame) -> DataBlock | None:
+    """Orion 써미스터 확장 모듈이 차량 CAN 에 낸 써미스터 하나씩 (0x1838F380, 100 ms) → thermistor 블록 — 팩 안 온도 분포 · 차."""
+    one = th[(th["source"] == "single") & ~th["fault"].astype(bool)]
+    if len(one) < 2:
+        return None
+    t, src = one["t_s"].to_numpy(float), r.rec
+    hi, lo, v = (one[k].to_numpy(float) for k in ("highest_c", "lowest_c", "temp_c"))
+    n = one["thermistor_id"].nunique()
+    every = "써미스터 하나를 낼 때마다 (0x1838F380, 100 ms) 같이 보낸 그 순간의 팩 최고 · 최저"
+    series = [Channel("highest_c", "셀 최고 온도", "°C", t, hi, source=src, digits=0, cautions=[every]),
+              Channel("lowest_c", "셀 최저 온도", "°C", t, lo, source=src, digits=0, cautions=[every]),
+              Channel("spread_c", "셀 온도 차", "°C", t, hi - lo, derived=True, derivation="그 순간 팩 최고 − 최저", source=src, digits=0, cautions=[every])]
+    _lap_stat(r, "cell_t_spread_c", t, hi - lo, np.nanmax)
+    per = one.assign(below_hot_c=hi - v).groupby("thermistor_id").agg(
+        n=("temp_c", "size"), first_c=("temp_c", "first"), last_c=("temp_c", "last"), min_c=("temp_c", "min"), max_c=("temp_c", "max"),
+        median_c=("temp_c", "median"), below_hot_c=("below_hot_c", "median")).reset_index()
+    per["rise_c"] = (per["last_c"] - per["first_c"]).where(per["n"] > 1)
+    gaps = [np.diff(g.to_numpy(float)) for _, g in one.groupby("thermistor_id")["t_s"] if len(g) > 1]
+    period = float(np.median(np.concatenate(gaps))) if gaps else np.nan
+    ids = one["thermistor_id"].astype(int)
+    gone = sorted(set(range(int(ids.min()), int(ids.max()) + 1)) - set(ids))
+    facts = [f"써미스터 {n}개 (번호 {ids.min()} ~ {ids.max()}" + (f", {' · '.join(map(str, gone))} 없음)" if gone else ")")
+             + (f" — 하나씩 약 {period:.1f} s 마다" if np.isfinite(period) else ""),
+             f"셀 온도 {_span(np.nanmin(lo), np.nanmax(hi))} °C · 팩 안 온도 차 {_span(np.nanmin(hi - lo), np.nanmax(hi - lo))} °C",
+             f"가장 자주 가장 뜨거운 곳 #{one['hottest_id'].mode().iloc[0]} · 가장 차가운 곳 #{one['coldest_id'].mode().iloc[0]}"]
+    rise = per["rise_c"].dropna()
+    if len(rise):
+        facts.append(f"세션 동안 오른 양 (써미스터마다 끝 − 처음) {_span(rise.min(), rise.max(), '+.0f')} °C · 중앙 {rise.median():+.0f} °C")
+    bad = int(th["fault"].astype(bool).sum())
+    if bad:
+        facts.append(f"고장 표시가 붙은 프레임 {bad:,}개 (뺌)")
+    inside = float(((lo <= v) & (v <= hi)).mean())
+    return DataBlock("thermistor", "배터리 셀 온도", HAVE, "Orion 써미스터 확장 모듈 — 차량 CAN 0x1838F380 (써미스터 하나씩 100 ms, Monolith 가 받은 것)", facts,
+                     code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "CAN 프레임 → 써미스터 온도, 세션 구간만")],
+                     outputs=[FileRef("변환된 표 (레코딩 전체)", "thermistor.parquet",
+                                      note="source(single · module_to_bms) · thermistor_id · temp_c · lowest_c · highest_c · hottest_id · coldest_id",
+                                      where=r.where(f"normalized/{r.rec}/"))],
+                     exports=[Export("thermistors.csv", "써미스터마다 세션 구간의 온도 (처음 · 끝 · 오른 양 · 최저 · 최고 · 중앙 · 같은 순간 최고보다 낮은 양)",
+                                     per.round(2), f"써미스터 {n}개")],
+                     channels=series, time_keys=["spread_c", "highest_c", "lowest_c"],
+                     lap_columns=[LapColumn("cell_t_spread_c", "셀 온도 차 최대", "°C", 0, chart=True)],
+                     checks=[f"써미스터 값이 같은 프레임의 팩 최저 ~ 최고 안 {inside:.1%}"],
+                     cautions=["1 °C 단위"] + list(r.extra("thermistor").get("cautions", [])), series=series)
 
 
 REQUESTED = {"vdc_fast_v", "iq_a", "id_a", "i_phase_a"}     # 누가 요청할 때만 오는 BAMOCAR 레지스터에서 온 채널 — 주기가 '레지스터마다 10 Hz' 가 아님
@@ -1771,7 +1825,7 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
             blocks.append(em)
             stats.update(st)
     orion, orion_ref = _orion_block(w, of("orion"), f"Connect 시각을 기준 시계로 옮김 — {said(of('orion'))}") if of("orion") else (None, None)
-    can_motor = can_pedal = can_brake = can_bat = can_bms = None
+    can_motor = can_pedal = can_brake = can_bat = can_bms = can_th = None
     mono = [(x, clocks.offset(x)) for x in recs if x.device in CAN_DEVICES and clocks.known(x)
             and x.t0 + clocks.offset(x) < w.t1_abs and x.t1 + clocks.offset(x) > w.t0_abs]
     if mono:                                                           # Monolith 가 받은 차량 CAN (모터 컨트롤러 · 가속페달 · Orion BMS)
@@ -1786,7 +1840,9 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
             if can_bat is not None:
                 stats.update(can_st)
         can_bms = _orion_can_block(wm, oc, ost) if oc is not None and orion is None else None
-        for b in (can_motor, can_pedal, can_brake, can_bat, can_bms):
+        th = _window_can(w, mono, "thermistor")
+        can_th = _can_thermistor_block(wm, th) if th is not None else None
+        for b in (can_motor, can_pedal, can_brake, can_bat, can_bms, can_th):
             if b is not None:
                 b.checks.insert(0, f"Monolith 가 받은 차량 CAN — Monolith 시각을 기준 시계로 옮김 ({said(mono)})")
     part = of("stm32")
@@ -1814,6 +1870,8 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
         blocks.append(can_bat)
     if can_bms is not None:
         blocks.append(can_bms)
+    if can_th is not None:
+        blocks.append(can_th)
     if can_pedal is not None:
         blocks.append(can_pedal)
     if can_brake is not None:
@@ -2316,6 +2374,7 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
     can_bat, can_st, can_ref = _can_battery_block(r, can["orion_stream"], can["orion_can"]) if al is None and can["orion_stream"] is not None else (None, {}, None)
     can_bms = _orion_can_block(r, can["orion_can"], can["orion_stream"]) if can["orion_can"] is not None else None
     can_motor = _can_motor_block(r, can["bamocar"], can["orion_can"]) if can["bamocar"] is not None else None
+    can_th = _can_thermistor_block(r, can["thermistor"]) if can["thermistor"] is not None else None
     ref = _em_ref(r, al, e) if al else can_ref
     blocks = [_gps_block(r), _imu_block(r)] + _logger_blocks(r, ctx.loggers.for_video(r.rec)) + _stm32_blocks(
         r, ctx.stm, ref, al, skip=tuple(k for k, b in (("bms", can_bms), ("motor", can_motor)) if b is not None), ref_name="에너지미터" if al else "Orion CAN")
@@ -2342,6 +2401,8 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
         blocks.append(can_motor)
     if can_bms is not None:
         blocks.append(can_bms)
+    if can_th is not None:
+        blocks.append(can_th)
     if can["apps"] is not None:
         blocks.append(_pedal_block(r, can["apps"], ref))
     if (r.rec_dir / "analog.parquet").exists():                 # 25Evo 브레이크 압력 (판이 AIN1 을 그렇게 말할 때만)

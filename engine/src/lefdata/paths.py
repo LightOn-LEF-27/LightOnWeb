@@ -15,6 +15,6 @@ DATA_ROOT = Path(os.environ.get("LEF_DATA_ROOT", _DEFAULT))
 LEF25EVO_EVENT = DATA_ROOT / "LEF-25evo" / "2026-08-13_yeonggwang"
 LEF25EVO_FSK = DATA_ROOT / "LEF-25evo" / "2026-08-28_yeonggwang"      # FSK 2026 대회
 LEF25EVO_FSK_DAYS = ("2026-08-28", "2026-08-30")
-LEF25EVO_ORION_CSV = DATA_ROOT / "LEF-25evo" / "raw_orion_connect" / "csv_orion_utility"
+LEF25EVO_ORION_CSV = DATA_ROOT / "LEF-25evo" / "raw_orion_connect" / "csv_orion_headless"   # Utility 변환 부품을 화면 없이 (csv_orion_utility 는 앞 행이 오염돼 쓰지 않는다)
 LEF26_EVENT = DATA_ROOT / "LEF-26" / "2026-08-13_yeonggwang"         # 테스트위크 (로거 + 온보드 영상)
 LEF26_FSK = DATA_ROOT / "LEF-26" / "2026-08-30_yeonggwang"           # FSK 2026 대회 (온보드 영상 + 내구 에너지미터)
