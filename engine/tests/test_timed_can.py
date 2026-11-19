@@ -54,7 +54,7 @@ def test_a_time_window_on_a_monolith_recording_gets_its_motor_and_pedal(tmp_path
     rpm = next(c for c in mot.series if c.key == "rpm")
     spin = rpm.t_s[rpm.v > 0]
     assert spin.min() == pytest.approx(20.0, abs=0.11) and spin.max() == pytest.approx(39.9, abs=0.11)     # 세션 시간 = Monolith 시각 그대로 (구간이 그 레코딩)
-    assert rpm.v.max() == pytest.approx(8000 / evo_can.RPM_FULL_SCALE * evo_can.LOGGER_N100_RPM)          # 전진 + 로 뒤집어 낸다
+    assert rpm.v.max() == pytest.approx(8000 / evo_can.RPM_FULL_SCALE * evo_can.N100_RPM)          # 전진 + 로 뒤집어 낸다
     assert all("Monolith 시계 +11.0 s" in b.checks[0] for b in (mot, ped))
     assert not any("GPS 속도" in c for c in mot.checks)                                                  # 시각 구간에는 GPS 가 없다
     apps = next(c for c in ped.series if c.key == "apps_pct")

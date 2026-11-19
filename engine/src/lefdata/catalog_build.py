@@ -1061,7 +1061,7 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
                           sign=ROT_SIGN if k == "rpm" else "", cautions=extra + [slow], source=src, digits=d)
                   for k, label, unit, d, extra in (("t_igbt_c", "인버터(IGBT) 온도", "°C", 1, ["NTC 값을 컨트롤러 제조사 표로 바꾼 값 (새 형식 로그에만 있음)"]),
                                                    ("t_motor_c", "모터 온도", "°C", 1, []), ("vdc_v", "DC 버스 전압", "V", 1, []),
-                                                   ("rpm", "회전수 (로거 환산)", "rpm", 0, ["로거가 상수 기준으로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음", ROT_FLIP]))
+                                                   ("rpm", "모터 회전수", "rpm", 0, [f"컨트롤러 설정값 N-100 % = {evo_can.N100_RPM:.0f} rpm 기준으로 바꾼 값", ROT_FLIP]))
                   if k in mot and mot[k].notna().any()]
         if series:
             cols = []
@@ -1281,8 +1281,8 @@ def _can_motor_block(r: _Run, bam: pd.DataFrame, oc: pd.DataFrame | None) -> Dat
                   ("vdc_v", "DC 버스 전압", "V", "", "", ["컨트롤러 안쪽(DC 링크) 값 — 전원 차단 때는 배터리와 다를 수 있음. 짧은 순간의 최고값은 표본 사이에 있을 수 있음"], 1, []),
                   ("vdc_fast_v", "DC 버스 전압 (필터 없음)", "V", "", "", ["DC 버스 전압과 같은 배율의 필터 없는 값 — 필터를 거친 쪽보다 튀는 전압이 빠르고 높게 보임",
                                                                       "누가 요청할 때만 오는 레지스터 — 주기는 요청한 대로"], 1, []),
-                  ("rpm", "회전수 (로거 환산)", "rpm", ROT_SIGN, f"−컨트롤러 값 ÷ {evo_can.RPM_FULL_SCALE} × {evo_can.LOGGER_N100_RPM:.0f} (STM32 백업 로거와 같은 기준)",
-                   ["로거와 같은 상수로 환산한 값 — 실제 모터 rpm · 감속비는 알 수 없음", ROT_FLIP], 0, []),
+                  ("rpm", "모터 회전수", "rpm", ROT_SIGN, f"−컨트롤러 값 ÷ {evo_can.RPM_FULL_SCALE} × {evo_can.N100_RPM:.0f} (컨트롤러 설정 N-100 %)",
+                   [f"컨트롤러 설정값 N-100 % = {evo_can.N100_RPM:.0f} rpm 기준으로 바꾼 값", ROT_FLIP], 0, []),
                   ("iq_a", "토크 전류", "A", TORQUE_SIGN, "−(기록값) × BAMOCAR 전류 환산", ["모터 상전류(교류)의 토크 성분 — 배터리 전류 아님",
                                                                                      TORQUE_FLIP + " — 25Evo 는 첫 기록에서 부호 확인 전", "요청할 때만 오는 레지스터"], 1, []),
                   ("id_a", "자속 전류 (Id)", "A", "토크 전류와 같은 부호 규칙", "−(기록값) × BAMOCAR 전류 환산",

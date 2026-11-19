@@ -92,7 +92,7 @@ def test_bamocar_values_have_two_lengths_and_keep_the_sign(tmp_path):
     b = ec.decode_recording(tmp_path)["bamocar"]
     assert b["raw"].tolist() == [-16384, (1 << 31) | (1 << 14) | 1, 15000, 1 << ec.ERROR_VOLTAGE_MAX, 19000, 11080]
     sig = ec.bamocar_signals(b, "t_rel_ms")
-    assert sig["rpm"][1][0] == pytest.approx(-16384 / 32767 * ec.LOGGER_N100_RPM)
+    assert sig["rpm"][1][0] == pytest.approx(-16384 / 32767 * ec.N100_RPM) and ec.N100_RPM == 6000      # 25Evo 컨트롤러 설정 N-100 %
     assert sig["vdc_v"][1][0] == pytest.approx(15000 * lef26.BAMOCAR_VDC_V_PER_NUM)
     assert sig["enabled"][1].tolist() == [1.0] and sig["ready"][1].tolist() == [1.0]
     assert sig["t_motor_c"][1][0] == pytest.approx(30.0)                                        # 표의 한 점 (11080 Num = 30 ℃)
@@ -140,7 +140,7 @@ def test_motor_block_uses_the_same_channel_names_as_the_backup_logger():
     b = cb._can_motor_block(r, _motor_table(), oc)
     assert b.key == "motor" and not b.findings and {c.key for c in b.channels} == {"t_igbt_c", "t_motor_c", "vdc_v", "rpm", "enabled", "ready"}
     rpm = next(c for c in b.channels if c.key == "rpm")
-    assert rpm.v.max() > 0 and rpm.sign == "전진 +" and "로거" in rpm.derivation          # 기록 부호를 뒤집어 전진 + · 실제 rpm 이라고 하지 않는다
+    assert rpm.v.max() > 0 and rpm.sign == "전진 +" and "N-100" in rpm.derivation        # 기록 부호를 뒤집어 전진 + · 컨트롤러 설정 N-100 % 로 환산
     assert next(c for c in b.channels if c.key == "ready").levels == [{"value": 0, "label": "꺼짐"}, {"value": 1, "label": "켜짐"}]
     assert r.laps["motor_t_max_c"].iloc[0] == pytest.approx(30.0) and "inverter_t_max_c" in r.laps
     assert "오류: 없음" in b.facts[-1] and "GPS 를 +0.0 s" in b.checks[0]

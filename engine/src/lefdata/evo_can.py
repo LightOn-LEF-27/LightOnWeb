@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from .evo_stm32 import RPM_FULL_SCALE, motor_temp_c
+from .evo_stm32 import N100_RPM, RPM_FULL_SCALE, motor_temp_c
 from .lef26 import BAMOCAR_I_A_PER_NUM, BAMOCAR_VDC_V_PER_NUM, igbt_temp_c
 from .writer import write_json
 
@@ -61,7 +61,7 @@ BAMOCAR = 0x181
 REG_SPEED, REG_STATUS, REG_ERROR, REG_VDC, REG_T_IGBT, REG_T_MOTOR = 0x30, 0x40, 0x8F, 0xEB, 0x4A, 0x49
 REG_IQ, REG_ID = 0x27, 0x28  # 토크 · 자속 전류 (Iq · Id actual) — LEF-26 과 같은 배율. 기록은 구동할 때 − (세션이 뒤집는다). 요청할 때만 온다
 REG_VDC_FAST = 0x66          # DC 버스 전압 — 필터 없는 값 (0xEB 는 저역 필터를 거친 값). 배율은 0xEB 와 같다. 누가 요청할 때만 온다
-LOGGER_N100_RPM = 6500.0     # STM32 백업 로거가 회전수를 바꿀 때 쓰는 상수 — 같은 차의 다른 세션과 겹쳐 보려고 같은 기준으로 바꾼다. 컨트롤러의 실제 N-100 % 설정값은 아니다
+LOGGER_N100_RPM = N100_RPM    # 옛 이름 (실시간 live.py 가 씀) — 지금은 컨트롤러 설정 N-100 % 그대로 (evo_stm32.N100_RPM)
 STATUS_ENABLED, STATUS_READY = 0, 14                    # 0x40 비트: Ena (구동 허용) · Rdy (BTB 닫힘 — 오류가 나면 꺼진다)
 ERROR_VOLTAGE_MIN, ERROR_VOLTAGE_MAX = 5, 8             # 0x8F 비트. 5 = 전원 전압 없음 — HV 를 꺼 두면 늘 켜져 있어 고장으로 세지 않는다
 BAMOCAR_ERRORS = {0: "Eprom Read Error", 1: "HW Fault detected", 2: "RFE input not present", 3: "CAN TimeOut Error", 4: "Feedback Signal Error",
@@ -232,7 +232,7 @@ def bamocar_signals(table: pd.DataFrame, t_col: str = "t_s") -> dict[str, tuple[
         s = table[(table["reg"] == r) & table["raw"].notna()]
         return s[t_col].to_numpy(float), s["raw"].to_numpy(np.int64)
     out = {}
-    for name, r, conv in (("rpm", REG_SPEED, lambda v: v / RPM_FULL_SCALE * LOGGER_N100_RPM), ("vdc_v", REG_VDC, lambda v: v * BAMOCAR_VDC_V_PER_NUM),
+    for name, r, conv in (("rpm", REG_SPEED, lambda v: v / RPM_FULL_SCALE * N100_RPM), ("vdc_v", REG_VDC, lambda v: v * BAMOCAR_VDC_V_PER_NUM),
                           ("vdc_fast_v", REG_VDC_FAST, lambda v: v * BAMOCAR_VDC_V_PER_NUM),
                           ("iq_a", REG_IQ, lambda v: v * BAMOCAR_I_A_PER_NUM), ("id_a", REG_ID, lambda v: v * BAMOCAR_I_A_PER_NUM),
                           ("t_igbt_c", REG_T_IGBT, igbt_temp_c), ("t_motor_c", REG_T_MOTOR, motor_temp_c),

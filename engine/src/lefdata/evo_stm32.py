@@ -28,7 +28,7 @@
     - BT_POW 는 부호 있는 16비트, 0.1 kW 단위의 팩 전력이다 (65526 = −1.0 kW). 에너지미터 전력과 같은 모양으로
       오르내린다 → bms 표의 power_kw
     - HV_RPM_MAX 는 로거에 박힌 상수다 (옛 형식 6000, 새 형식 6500). 컨트롤러 설정값(N-100)을 읽은 것이 아니다
-      → `rpm` 의 절댓값은 그 가정만큼 틀릴 수 있다. 차속으로 바꿀 때는 GPS 로 구한 환산값을 쓴다
+      → `rpm` 은 이 열 대신 컨트롤러 설정 N-100 % (N100_RPM) 로 바꾼다 (frames 에는 그대로)
     - 첫 행 다음에 SD 카드에 쌓인 파일 수에 따라 1 ~ 14 초 공백이 있다 (이슈 DAQ-2)
 """
 
@@ -52,7 +52,8 @@ from .writer import TZ, dir_bytes, fresh_dir, t_abs_array, write_index, write_js
 NAME_RE = re.compile(r"DATA_Log(\d+)\.csv$")
 CELL_V_PER_NUM = 1e-4       # BT_LCV 40655 → 4.0655 V
 RPM_FULL_SCALE = 32767      # HV_RPM 는 N-100 % = 32767 (LEF-26 0x30 과 같다)
-KMH_PER_RPM = 0.0197        # 파형을 맞출 때 '달렸나' 를 가리는 용도로만 쓴다 (GPS 로 구한 어림값)
+N100_RPM = 6000.0           # 25Evo 컨트롤러 설정 N-100 % (BAMOCAR 0xC8, NDrive 설정 파일) — 회전수 = 원시값 ÷ 32767 × 이것. Monolith CAN (evo_can) · 실시간도 같은 값
+KMH_PER_RPM = 0.0197 * 6500 / N100_RPM   # 파형을 맞출 때 '달렸나' 를 가리는 용도로만 (GPS 로 구한 어림값 0.0197 은 로거 상수 6500 으로 바꾼 회전수에 맞춘 것)
 POWER_KW_PER_NUM = 0.1      # BT_POW (부호 있는 16비트)
 PACK_V_PER_NUM = 0.1        # BT_VOL (하위 바이트)
 PACK_A_PER_NUM = 0.1        # BT_CRT (하위 바이트)
@@ -229,9 +230,8 @@ def convert_file(src: Path, out_root: Path, group: str = "") -> dict:
                     "power_kw": pa.array(np.where(bms_live, pack_kw, np.nan))})
     write_parquet(bms, out / "bms.parquet")
 
-    n_max = col("HV_RPM_MAX")
     igbt_raw = col("HV_IGBT_TEMP")
-    rpm = col("HV_RPM") / RPM_FULL_SCALE * n_max
+    rpm = col("HV_RPM") / RPM_FULL_SCALE * N100_RPM                 # 로거의 HV_RPM_MAX 열이 아니라 컨트롤러 설정값으로
     motor = pa.table({**base,
                       "rpm": pa.array(rpm),
                       "vdc_v": pa.array(dcbus * BAMOCAR_VDC_V_PER_NUM),
@@ -284,7 +284,7 @@ def convert_file(src: Path, out_root: Path, group: str = "") -> dict:
             "power_kw (BT_POW) 는 BMS 가 낸 값이고 에너지미터보다 조금 크다. 행이 초당 2 ~ 6 개라 급한 변화는 뭉개진다",
             "t_igbt_c 는 BAMOCAR NTC 표 (LEF-26 과 같은 표. 25Evo 계기판 펌웨어의 표와도 같다)",
             "t_motor_c 는 KTY81/210 표로 환산 (EMRAX 228 권선 센서). 표 출처는 25Evo 계기판 펌웨어 — 원 매뉴얼은 직접 못 봤다",
-            "rpm 부호는 회전 방향. 전진이 음수. 크기는 로거 상수 HV_RPM_MAX(옛 형식 6000 · 새 형식 6500)로 환산한 것이다",
+            f"rpm 부호는 회전 방향. 전진이 음수. 크기는 컨트롤러 설정 N-100 % = {N100_RPM:.0f} rpm 으로 환산한 것이다 (로거 열 HV_RPM_MAX 는 쓰지 않음)",
         ] + ([] if is_new else ["옛 형식이라 DC 버스 전압·IGBT 온도 열이 없다 (vdc_v · t_igbt_c 는 전부 null)"]),
         "perf": {"convert_sec": round(time.perf_counter() - t0, 3), "input_bytes": src.stat().st_size,
                  "output_bytes": dir_bytes(out)},

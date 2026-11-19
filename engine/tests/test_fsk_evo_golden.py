@@ -130,11 +130,13 @@ def test_stm32_dc_bus_scale_matches_energy_meter():
 
 @E.need
 def test_stm32_rpm_equals_logger_rpm_column():
-    """rpm = HV_RPM / 32767 × HV_RPM_MAX 가 로거 자체 계산값 HV_RPM_Actual 과 같다 (드물게 몇 rpm 어긋난다)."""
+    """원시값 읽기가 로거 자체 계산값 HV_RPM_Actual (= HV_RPM / 32767 × 로거 상수 HV_RPM_MAX) 과 같다 (드물게 몇 rpm 어긋난다).
+    엔진의 rpm 은 로거 상수 대신 컨트롤러 설정 N-100 % 로 바꾼 값이라 HV_RPM_MAX / N100_RPM 배 하면 같아진다."""
     rec = E["stm32.rpm_recording"]
     f = pq.read_table(NORM / rec / "frames.parquet").to_pandas()
     m = pq.read_table(NORM / rec / "motor.parquet").to_pandas()
-    d = (m["rpm"].round() - f["HV_RPM_Actual"]).abs()
+    assert m["rpm"].to_numpy() == pytest.approx(m["rpm_raw"].to_numpy() / evo_stm32.RPM_FULL_SCALE * evo_stm32.N100_RPM, nan_ok=True)
+    d = (m["rpm"] * f["HV_RPM_MAX"] / evo_stm32.N100_RPM).round().sub(f["HV_RPM_Actual"]).abs()
     assert (d <= 1).mean() >= 0.995 and d.max() <= 10
 
 
