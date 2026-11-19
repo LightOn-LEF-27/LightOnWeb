@@ -333,7 +333,7 @@ def test_chart_has_view_series_and_rate_history():
     assert ser["rate.link"][-1] == 1.0 and ser["rate.pedal"][-1] == 1.0 and ser["rate.bms"][-1] is None
     assert ser["pedal.apps_pct"][-1] == pytest.approx(40.0)
     car.run(10, skip=True)
-    t = car.run(2, frames=[pedal])
+    t = car.run(6, frames=[pedal])                                  # 칸은 잰 시각 기준이라 받은 뒤 보내기 주기 + 1 s 늦게 생긴다
     ser = L.state(t)["chart"]["series"]
     assert None in ser["rate.link"] and ser["rate.link"][-1] < 1.0
 
@@ -913,7 +913,7 @@ def test_chart_grid_since_and_gap():
     ts = st["chart"]["t"]
     assert np.allclose(np.diff(ts), 0.5) and st["chart"]["series"]["battery.power_kw"][-1] == pytest.approx(12)
     car.run(10, skip=True)
-    t2 = car.run(2, frames=[(ec.ORION_SUMMARY, summary(power_kw=14), 8)])
+    t2 = car.run(6, frames=[(ec.ORION_SUMMARY, summary(power_kw=14), 8)])     # 칸은 받은 뒤 보내기 주기 + 1 s 늦게 생긴다
     new = L.state(t2, since=ts[-1])["chart"]
     assert new["t"][0] > ts[-1] and np.allclose(np.diff(new["t"]), 0.5)
     assert None in new["series"]["battery.power_kw"] and new["series"]["battery.power_kw"][-1] == pytest.approx(14)
@@ -973,3 +973,56 @@ def test_feed_is_fast_enough_for_a_day_file():
         car.tick(frames=frames, gps=gps_rec(car.dev, k % 100, 0, 30, 90), analog=analog_rec(car.dev, 2690))
     per_msg = (time.perf_counter() - t0) / 6000
     assert per_msg < 2e-3                                         # 하루(약 6만 메시지)를 2분 안에 다시 읽는다
+
+
+def test_orion_power_on_default_temps_are_held_back():
+    L = live.Live()
+    car = Car(L)
+    car.run(4)
+    boot = (ec.ORION_SUMMARY, summary(cell_v=3.2, tmax=25, tmin=25), 8)
+    t = car.run(2, frames=[boot])                                   # 켜진 직후 1 s — 25 / 25 · 튄 최저 셀
+    st = L.state(t)
+    assert tile(st, "bms.temp_max_c")["value"] is None and tile(st, "bms.cell_min_v")["value"] is None
+    assert tile(st, "battery.power_kw")["value"] == pytest.approx(10.0)          # 전력 · SOC 는 그대로
+    t = car.tick(frames=[(ec.ORION_SUMMARY, summary(cell_v=3.9, tmax=41, tmin=33), 8)])
+    assert tile(L.state(t), "bms.temp_max_c")["value"] == 41.0 and tile(L.state(t), "bms.cell_min_v")["value"] == pytest.approx(3.9)
+    t = car.tick(frames=[(ec.ORION_SUMMARY, summary(tmax=25, tmin=25), 8)])      # 켜진 뒤의 25 / 25 는 실제 온도
+    assert tile(L.state(t), "bms.temp_max_c")["value"] == 25.0
+
+
+def test_orion_default_temps_that_last_are_real():
+    L = live.Live()
+    car = Car(L)
+    car.run(2)
+    warm = (ec.ORION_SUMMARY, summary(tmax=25, tmin=25), 8)
+    t = car.run(3, frames=[warm])
+    assert tile(L.state(t), "bms.temp_max_c")["value"] is None
+    t = car.run(2, frames=[warm])                                   # 켜진 뒤 1.6 s 넘게 25 / 25 — 실제 온도
+    assert tile(L.state(t), "bms.temp_max_c")["value"] == 25.0
+    before = L.vals["bms.temp_max_c"][0]
+    car.run(6)                                                      # Orion 이 꺼졌다 다시 켜짐 (3 s 끊김) — 다시 거른다
+    car.tick(frames=[(ec.ORION_SUMMARY, summary(tmax=25, tmin=25), 8)])
+    assert L.vals["bms.temp_max_c"][0] == before
+
+
+def test_chart_is_on_measured_time_like_fast():
+    volts = lambda v: round(v / live.BAMOCAR_VDC_V_PER_NUM)
+    def bundle(k, dev):                                           # 묶음 하나에 지난 0.5 s 의 0x66 (5 ms 마다) — 20번째 묶음 가운데에 377 V
+        return [can_rec(dev - 500 + 5 * i, ec.BAMOCAR, bamo(0x66, volts(377 if (k, i) == (20, 50) else 250), 4), 4) for i in range(100)]
+    L = live.Live()
+    dev = 10_000
+    for k in range(40):                                           # 전달 시간이 0.2 s 이다가 가끔 0.9 s
+        dev += 500
+        t = 1_000_000.0 + dev / 1000 + (0.9 if k % 7 == 3 else 0.2)
+        L.feed(row(t, "d", logbuf(dev)))
+        L.feed(row(t, "d/can", b"".join(bundle(k, dev))))
+    st = L.state(t, since=0, fast_since=0)
+    f = st["fast"]["series"]["motor.vdc_fast_v"]
+    t_spike = f["t"][int(np.argmax(f["v"]))]
+    ch = st["chart"]
+    peak = ch["series"]["motor.vdc_fast_max_v"]
+    g = ch["t"][int(np.argmax([v if v is not None else -1 for v in peak]))]
+    assert peak[ch["t"].index(g)] == pytest.approx(377, abs=0.05)
+    assert g - ch["step_s"] < t_spike <= g + 1e-6                # 튄 표본이 잰 시각의 칸에 — fast 선과 같은 x
+    assert ch["t"][-1] <= t - L.chart_lag_s() + 1e-6             # 오른쪽 끝은 받은 시각보다 늦다
+    assert None not in ch["series"]["motor.vdc_fast_v"][3:]      # 늦게 온 묶음도 칸을 비우지 않는다 (앞 세 칸 = 첫 표본 전)

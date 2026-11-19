@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import base64
 import math
+from bisect import bisect_right
+from itertools import islice
 import re
 import struct
 import tomllib
@@ -60,8 +62,9 @@ from .monolith import ADC_FSR_V, T_ANALOG, T_CAN, T_GPS, T_SYS, checksum_ok, nme
 CONTRACT = "0.16"
 REC = 24
 LOGBUF_SIZE = 104
-GRID_S = 0.5                    # 그래프 격자 (서버 시계) — 보내기 주기를 따라 GRID_MIN_S ~ GRID_S (intv 를 내리면 촘촘해진다)
+GRID_S = 0.5                    # 그래프 격자 — 보내기 주기를 따라 GRID_MIN_S ~ GRID_S (intv 를 내리면 촘촘해진다)
 GRID_MIN_S = 0.1
+CHART_JITTER_S = 1.0            # 그래프 칸은 잰 시각(장치 시각) 기준 — 그 칸의 표본이 다 올 때까지 보내기 주기 + 이만큼 기다렸다 만든다
 CHART_KEEP_S = 600.0
 CHART_DEFAULT_S = 300.0
 EVENTS_KEEP = 50
@@ -93,6 +96,11 @@ BOARD_FW = re.compile(r"\blef27\b")
 # 수신률을 칸(data[0] = 레지스터)마다 세는 ID. 게시판은 0x6D0 (슬롯) · 0x201 도 나누지만 같은 슬롯이 오는 간격이 들쭉날쭉해서
 # 칸마다 '와야 할 수' 를 못 정한다 → 0x6D0 은 ID 하나로 센다 (묶음마다 오는가). 0x201 은 원천이 아니다
 BOARD_SPLIT_IDS = frozenset({ec.BAMOCAR})
+ORION_IDS = frozenset({ec.ORION_SUMMARY, ec.ORION_VI, ec.ORION_STREAM})
+ORION_BOOT_GAP_S = ec.ORION_BOOT_GAP_MS / 1000.0     # Orion 프레임이 이만큼 끊겼다 다시 오면 Orion 이 켜진 것일 수 있다
+ORION_BOOT_HOLD_S = (ec.ORION_BOOT_MAX + 1) * 0.1   # 켠 직후 기본값(25 / 25 ℃)을 미뤄 두는 길이 — 0x446 (약 0.1 s 마다) 의 그 프레임 수만큼
+ORION_BOOT_TEMP = frozenset({"bms.temp_max_c", "bms.temp_min_c", "bms.temp_avg_c"})
+ORION_BOOT_ID = frozenset({"bms.temp_max_id", "bms.temp_min_id"})
 BOARD_STALE_S = 5.0             # 게시판일 때 0x181 · 0x6D0 값의 낡음 기준 (칸마다 intv 마다 오므로) — 보내기 주기 × 4 보다 짧게는 안 잡는다
 RT_LOST = {"CANRTQ": "queue", "CANRTF": "board"}            # /d/sl 시스템 메시지 → device.rt_lost (부팅 뒤 실시간으로 못 보낸 누적 수)
 # 랩 값 (계약 §12-4 laps.rows)
@@ -153,7 +161,7 @@ CHANNELS = {c.id: c for c in (
     Ch("motor.vdc_fast_v", "DC 버스 전압 (필터 없음)", "V", "", 0, 5.0, "inverter"),
     Ch("motor.iq_a", "토크 전류 (Iq)", "A", "구동 +, 회생 −", 0, 5.0, "inverter"),       # 0x27 · 0x28 도 요청할 때만 온다
     Ch("motor.id_a", "자속 전류 (Id)", "A", "", 0, 5.0, "inverter"),
-    Ch("motor.rpm", "회전수 (로거 환산)", "rpm", "전진 +", 0, 5.0, "inverter"),     # 기록은 전진할 때 − — 엔진 세션 값처럼 뒤집는다
+    Ch("motor.rpm", "모터 회전수", "rpm", "전진 +", 0, 5.0, "inverter"),     # 기록은 전진할 때 − — 엔진 세션 값처럼 뒤집는다
     Ch("motor.enabled", "구동 허용 (Ena)", "", "", 0, 180.0, "inverter"),
     Ch("motor.ready", "운전 준비 (Rdy)", "", "", 0, 180.0, "inverter"),
     Ch("motor.error_raw", "오류 · 경고 비트", "", "", 0, 75.0, "inverter"),
@@ -185,7 +193,6 @@ CHART = ("gps.speed_kmh", "battery.power_kw", "battery.current_a", "bms.temp_max
          "battery.voltage_v", "motor.vdc_v", "motor.vdc_fast_v", "motor.enabled", "motor.ready", "motor.iq_a", "motor.id_a")
 # 격자 칸마다 그 칸 앞에 받은 표본 중 최고 (묶음 안 표본을 솎지 않고 튄 값을 남긴다) — 시리즈 이름 → 채널
 CHART_PEAK = (("motor.vdc_fast_max_v", "motor.vdc_fast_v"),)
-PEAK_CH = frozenset(ch for _, ch in CHART_PEAK)
 # 솎지 않는 표본 (계약 §12-4 fast) — 받은 표본을 장치 시각 그대로 다 준다 (게시판 시험판은 0x66 을 프레임마다 보낸다)
 FAST_CH = ("motor.vdc_fast_v",)
 FAST_KEEP_S = 120.0             # 이만큼만 들고 있다
@@ -193,6 +200,7 @@ FAST_DEFAULT_S = 60.0           # fast_since 가 없으면 최근 이만큼
 # 수신률 기록 (0 ~ 1) — 격자마다 그 순간의 link.rate_10s · sources[].rate_10s · fix_10s
 RATE_SERIES = ("rate.link", "rate.bms", "rate.inverter", "rate.pedal", "rate.gps_fix")
 SERIES = CHART + tuple(s for s, _ in CHART_PEAK) + RATE_SERIES   # chart.series 의 순서
+assert all(src in FAST_CH for _, src in CHART_PEAK)               # 칸 최고는 솎지 않는 표본에서 고른다
 # Monolith 상태 비트 (/d 의 u32, 펌웨어 main.h) — 비트 n = 오류, n + 12 = 치명
 DEVICE_COMPONENTS = ("CORE", "NVS", "RTC", "SD", "WIFI", "MQTT", "CAN", "GPS", "ANALOG", "DIGITAL", "GYRO")
 DEVICE_FATAL_SHIFT = 12
@@ -334,7 +342,7 @@ def decode_frame(can_id: int, dlc: int, d: bytes) -> list[tuple[str, float]]:
         else:
             return out
         if reg == ec.REG_SPEED:
-            out.append(("motor.rpm", 0.0 - raw / RPM_FULL_SCALE * ec.LOGGER_N100_RPM))     # 부호를 뒤집어 전진 +
+            out.append(("motor.rpm", 0.0 - raw / RPM_FULL_SCALE * ec.N100_RPM))     # 부호를 뒤집어 전진 +
         elif reg == ec.REG_VDC:
             out.append(("motor.vdc_v", raw * BAMOCAR_VDC_V_PER_NUM))
         elif reg == REG_VDC_FAST:
@@ -360,6 +368,23 @@ def _records(payload: bytes) -> np.ndarray:
         return np.zeros((0, REC), np.uint8)
     raw = np.frombuffer(payload, np.uint8).reshape(-1, REC)
     return raw[(raw[:, 0] == 0xAE) & checksum_ok(raw)]
+
+
+def _ts_of(x: tuple[float, float]) -> float:
+    return x[0]
+
+
+def _insert(dq: deque, ts: float, v: float) -> None:
+    """(시각, 값) 을 시각 순으로 넣는다 (묶음 안 순서가 뒤섞여도). 같은 시각은 한 번만 (펌웨어가 같은 기록을 다시 보낼 때)."""
+    if not dq or ts > dq[-1][0]:
+        dq.append((ts, v))
+        return
+    i = len(dq)
+    while i > 0 and dq[i - 1][0] > ts:
+        i -= 1
+    if i > 0 and dq[i - 1][0] == ts:
+        return
+    dq.insert(i, (ts, v))
 
 
 class _IdRate:
@@ -436,6 +461,7 @@ class Live:
         self.win: deque[tuple[float, float]] = deque()           # (받은 시각, 받은 시각 − 보낸 순간) — 최솟값이 앞
         self.offset: float | None = None
         self.periods: deque[int] = deque(maxlen=40)
+        self._period: float | None = None                         # period_s 를 기억 (periods 가 바뀔 때 버린다)
         # 링크
         self.last_rx: float | None = None
         self.d_rx: deque[float] = deque()
@@ -468,8 +494,12 @@ class Live:
         self.spike_cur: dict | None = None                        # 지금 열린 튐
         self.chart: deque[tuple[float, tuple]] = deque(maxlen=int(CHART_KEEP_S / GRID_MIN_S))   # CHART_KEEP_S 보다 옛 줄은 시각으로도 버린다
         self.grid_t: float | None = None
-        self.peak: dict[str, float] = {}                         # CHART_PEAK 채널 → 이번 칸에 받은 표본 중 최고
+        self.hist: dict[str, deque[tuple[float, float]]] = {ch: deque() for ch in CHART}   # 그래프 채널의 아직 칸이 안 된 표본 (+ 그 앞 하나), 시각 순
+        self.rate_snap: deque[tuple[float, tuple]] = deque()     # (받은 시각 칸, 그때의 수신률) — 수신률은 받은 시각 기준
+        self.dark: deque[tuple[float, float]] = deque()          # 받기가 끊긴 구간 (마지막으로 받은 시각, 다시 받은 시각) — 그 사이 칸은 비운다
         self.fast: dict[str, deque[tuple[float, float]]] = {ch: deque() for ch in FAST_CH}   # (서버 시계로 옮긴 장치 시각, 값), 시각 순
+        self.orion_last: float | None = None                     # 마지막 Orion 프레임의 시각 (서버 시계로 옮긴 장치 시각)
+        self.orion_boot: float | None = None                     # Orion 이 켜진 것일 수 있는 순간 — 기본값 온도를 거르는 동안만
 
     # ------------------------------------------------------------ 받기
 
@@ -551,6 +581,7 @@ class Live:
             self._new_boot(t, first=self.dev_last is None)
         elif dev_ms > self.dev_last:
             self.periods.append(dev_ms - self.dev_last)
+            self._period = None
         self.dev_last = dev_ms
         transit = t - dev_ms / 1000.0
         while self.win and self.win[-1][1] >= transit:
@@ -565,10 +596,12 @@ class Live:
     def _new_boot(self, t: float, first: bool) -> None:
         self.win.clear()
         self.periods.clear()
+        self._period = None
         self.offset = None
         self.boot_at = None
         self.gps_ts = self.analog_ts = None
         self.prev_pt = None
+        self.orion_last = self.orion_boot = None                  # 시각 축이 바뀐다
         for k in self.ids.values():
             k.last_ts = None                                      # 장치 시각이 처음부터 다시 — 간격 추정은 이어 간다
         if self.rt_lost is not None:
@@ -582,10 +615,13 @@ class Live:
         return dev_ms / 1000.0 + self.offset if self.offset is not None else t
 
     def period_s(self) -> float:
+        if self._period is not None:
+            return self._period
         if not self.periods:
             return 0.5
         loop = float(np.median(self.periods))
-        return max(math.floor(loop / 10.0) * 10.0, 10.0) / 1000.0     # 보내기 주기 = 설정값 + 보내는 데 든 시간
+        self._period = max(math.floor(loop / 10.0) * 10.0, 10.0) / 1000.0     # 보내기 주기 = 설정값 + 보내는 데 든 시간
+        return self._period
 
     def _limits(self) -> tuple[float, float]:
         p = self.period_s()
@@ -599,6 +635,7 @@ class Live:
             gap = t - self.last_rx
             if gap > late:
                 self.link_since = t                               # 늦음 이상으로 끊겼다 — 원천별 사건은 다시 이어진 뒤부터
+                self.dark.append((self.last_rx, t))
             if gap > lost:
                 self._log_lost(lost)                              # 화면이 그동안 묻지 않았어도(파일을 다시 읽을 때) 같은 사건이 남게
                 if not self._restarted:                           # 다시 부팅한 것은 끊김으로 세지 않는다
@@ -724,18 +761,43 @@ class Live:
                 k.add(t, dev)
             if can_id == ec.BAMOCAR:
                 self._seen("inverter", ts)
-            for ch, v in decode_frame(can_id, int(r[14]), r[16:24].tobytes()):
+            for ch, v in self._orion(can_id, ts, decode_frame(can_id, int(r[14]), r[16:24].tobytes())):
                 if ch in self.fast:
                     self._fast(ch, ts, v)
-                if ch in PEAK_CH:
-                    self.peak[ch] = max(self.peak.get(ch, v), v)  # 묶음 안 순서 · 시각과 상관없이 — 받은 표본은 다 본다
                 if ch == "motor.vdc_fast_v":
                     self._spike(ts, v)
                 self._put(ch, ts, v)
 
+    def _orion(self, can_id: int, ts: float, out: list[tuple[str, float]]) -> list[tuple[str, float]]:
+        """Orion 이 켜진 직후의 기본값을 거른다 (evo_can.orion_boot 와 같은 규칙을 받는 대로).
+        Orion 프레임이 ORION_BOOT_GAP_S 넘게 끊겼다 다시 오면, 0x446 이 최고 · 최저 25 / 25 ℃ 인 동안 온도 · 최저 셀을 버린다
+        (0x6D0 은 온도 슬롯이 25 · 최고 · 최저 번호가 0 일 때). 다른 값이 오거나 ORION_BOOT_HOLD_S 가 지나면 끝 — 그보다 오래 25 / 25 면 실제 온도로 본다."""
+        if can_id not in ORION_IDS or not out:
+            return out
+        last = self.orion_last
+        self.orion_last = ts if last is None else max(last, ts)
+        if last is None or ts - last > max(ORION_BOOT_GAP_S, 2.5 * self.period_s()):   # 보내기 주기가 길면 그 사이 끊김은 켜짐이 아니다
+            self.orion_boot = ts
+        b = self.orion_boot
+        if b is None:
+            return out
+        if ts - b > ORION_BOOT_HOLD_S:
+            self.orion_boot = None
+            return out
+        if can_id == ec.ORION_SUMMARY:
+            v = dict(out)
+            if v["bms.temp_max_c"] != ec.ORION_BOOT_TEMP_C or v["bms.temp_min_c"] != ec.ORION_BOOT_TEMP_C:
+                self.orion_boot = None
+                return out
+            return [(ch, x) for ch, x in out if ch not in ORION_BOOT_TEMP and ch != "bms.cell_min_v"]   # 첫 프레임의 최저 셀이 튀기도 한다
+        return [(ch, x) for ch, x in out
+                if not (ch in ORION_BOOT_TEMP and x == ec.ORION_BOOT_TEMP_C or ch in ORION_BOOT_ID and x == 0)]
+
     # ------------------------------------------------------------ 값 · 경고
 
     def _put(self, ch: str, ts: float, v: float) -> None:
+        if ch in self.hist:
+            _insert(self.hist[ch], ts, float(v))                  # 그래프는 늦게 온 옛 표본도 제 시각에 넣는다
         old = self.vals.get(ch)
         if old is not None and ts < old[0]:
             return                                                # 늦게 온 옛 값으로 덮지 않는다
@@ -801,15 +863,7 @@ class Live:
     def _fast(self, ch: str, ts: float, v: float) -> None:
         """솎지 않는 표본 — 시각 순으로 넣는다 (묶음 안 순서가 뒤섞여도). 같은 장치 시각은 한 번만 (펌웨어가 같은 기록을 다시 보낼 때)."""
         dq = self.fast[ch]
-        if not dq or ts > dq[-1][0]:
-            dq.append((ts, v))
-        else:
-            i = len(dq)
-            while i > 0 and dq[i - 1][0] > ts:
-                i -= 1
-            if i > 0 and dq[i - 1][0] == ts:
-                return
-            dq.insert(i, (ts, v))
+        _insert(dq, ts, v)
         while dq and dq[0][0] < dq[-1][0] - FAST_KEEP_S:
             dq.popleft()
 
@@ -940,23 +994,62 @@ class Live:
         """그래프 격자 — 보내기 주기를 따라 (intv 0.5 s → 0.5 s, 0.1 s → 0.1 s). 주기보다 촘촘하면 칸이 비어 선이 끊긴다."""
         return min(GRID_S, max(GRID_MIN_S, self.period_s()))
 
+    def chart_lag_s(self) -> float:
+        """그래프 오른쪽 끝이 받은 시각보다 늦는 만큼 — 한 묶음(보내기 주기)에 전달 시간 흔들림을 더한 것."""
+        return self.period_s() + CHART_JITTER_S
+
+    def _cell(self, t: float, step: float) -> float:
+        return round(math.floor(round(t / step, 4)) * step, 3)
+
     def _grid(self, t: float) -> None:
+        """/d 를 받을 때마다 — 수신률을 받은 시각 칸에 적어 두고, 잰 시각이 t − chart_lag_s 까지인 칸을 만든다."""
+        gr = self._cell(t, self.grid_s())
+        if not self.rate_snap or gr > self.rate_snap[-1][0] + 1e-6:
+            self.rate_snap.append((gr, self._rates_at(gr)))
+        self._emit(t - self.chart_lag_s())
+
+    def _emit(self, upto: float) -> None:
+        """잰 시각 upto 까지의 격자 칸을 만든다. 칸 값 = 그 시각까지 잰 마지막 표본 (낡았으면 null) — 타일 · 경고 · fast 와 같은 시각 축."""
         step = self.grid_s()
-        g = round(math.floor(round(t / step, 4)) * step, 3)
+        end = self._cell(upto, step)
         if self.grid_t is None:
-            self.grid_t = g - step
-        if g <= self.grid_t + 1e-6:
+            self.grid_t = end - step
+        if end <= self.grid_t + 1e-6:
             return
-        steps = int(round((g - self.grid_t) / step))
-        n = len(SERIES)
-        for k in range(1, min(steps, int(CHART_KEEP_S / step))):  # 끊긴 동안의 칸은 비워 둔다 (선을 끊는다)
-            self.chart.append((round(self.grid_t + k * step, 3), (None,) * n))
-        peaks = tuple(_r(self.peak.get(ch)) for _, ch in CHART_PEAK)
-        self.peak.clear()
-        self.chart.append((g, tuple(_r(self._fresh(ch, g)) for ch in CHART) + peaks + self._rates_at(g)))
-        self.grid_t = g
-        while self.chart and self.chart[0][0] <= g - CHART_KEEP_S:
+        steps = int(round((end - self.grid_t) / step))
+        for k in range(max(1, steps - int(CHART_KEEP_S / step) + 1), steps + 1):
+            g = round(self.grid_t + k * step, 3)
+            self.chart.append((g, self._row(g, step)))
+        self.grid_t = end
+        while self.chart and self.chart[0][0] <= end - CHART_KEEP_S:
             self.chart.popleft()
+        for dq in self.hist.values():
+            while len(dq) > 1 and dq[1][0] <= end:
+                dq.popleft()
+        while len(self.rate_snap) > 1 and self.rate_snap[1][0] <= end:
+            self.rate_snap.popleft()
+        while self.dark and self.dark[0][1] <= end - CHART_JITTER_S:
+            self.dark.popleft()
+
+    def _row(self, g: float, step: float) -> tuple:
+        p = self.period_s()
+        if any(a < g <= b - p for a, b in self.dark):             # 받지 못한 동안 잰 칸 — 비워 선을 끊는다 (끊긴 뒤 첫 묶음에 실린 표본은 남긴다)
+            return (None,) * len(SERIES)
+        vals = []
+        for ch in CHART:
+            dq = self.hist[ch]
+            i = bisect_right(dq, g, key=_ts_of) - 1
+            vals.append(_r(dq[i][1]) if i >= 0 and g - dq[i][0] <= self._stale_s(ch) else None)
+        peaks = []
+        for _, src in CHART_PEAK:                                 # 그 칸 안에 잰 표본 중 최고 (솎지 않는 표본에서)
+            dq = self.fast[src]
+            got = [v for _, v in islice(dq, bisect_right(dq, g - step, key=_ts_of), bisect_right(dq, g, key=_ts_of))]
+            peaks.append(_r(max(got)) if got else None)
+        i = len(self.rate_snap) - 1
+        while i >= 0 and self.rate_snap[i][0] > g + 1e-6:
+            i -= 1
+        rates = self.rate_snap[i][1] if i >= 0 and g - self.rate_snap[i][0] < max(step, p) + 1e-6 else (None,) * len(RATE_SERIES)
+        return tuple(vals) + tuple(peaks) + rates
 
     # ------------------------------------------------------------ 내보내기
 
@@ -1106,6 +1199,9 @@ class Live:
                     "energy_basis": "배터리 전력(Orion 요약, 약 2 Hz 순간값)을 이어 적분 — 랩마다 몇 % 오차. "
                                     "cover = 전력 값이 이어진 시간의 비율 (1 보다 작으면 빈 곳이 있어 에너지가 작게 나옴)"}
 
+        late, _ = self._limits()
+        if self.last_rx is not None and now - self.last_rx > late:
+            self._emit(self.last_rx)                              # 받기가 멈췄다 — 기다리던 마지막 칸까지 낸다 (받는 동안은 feed 만 칸을 만든다)
         lo = since if since is not None else now - CHART_DEFAULT_S
         rows = [r for r in self.chart if r[0] > lo]
         chart = {"t": [r[0] for r in rows], "step_s": self.grid_s(),
