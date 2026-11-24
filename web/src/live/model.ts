@@ -249,6 +249,7 @@ export interface PanelSeries {
   dash?: boolean // 점선 (오른쪽 축이 아니어도)
   step?: boolean // 계단 — 켜짐 · 꺼짐처럼 값이 띄엄띄엄인 것
   unit?: string // 단위 (없으면 엔진 타일 것 — 칸이 없는 그래프 전용 시리즈에)
+  fast?: boolean // 격자 값이 아니라 솎지 않는 표본 (state.fast) 으로 그린다
 }
 
 export interface Panel {
@@ -268,7 +269,7 @@ export const GRAPH_RANGES: [number, string][] = [[60, '1분'], [300, '5분'], [6
 // 튄 값 = 칸 앞에 받은 0x66 표본 중 최고 (스파이크는 이 선으로 보임) · 필터 없는 값 = 칸의 마지막 0x66 · 0xEB = 인버터 필터를 거친 값 · 팩 = BMS
 export const TEST_PANELS: Panel[] = [
   { key: 'vdc', title: 'DC 링크 전압', series: [
-    { id: 'motor.vdc_fast_max_v', label: '튄 값 (칸 최고 · 0x66)', unit: 'V', color: 0 }, { id: 'motor.vdc_fast_v', label: '필터 없음 (0x66)', color: 2 },
+    { id: 'motor.vdc_fast_max_v', label: '튄 값 (칸 최고 · 0x66)', unit: 'V', color: 0 }, { id: 'motor.vdc_fast_v', label: '필터 없음 (0x66 표본 전부)', color: 2, fast: true },
     { id: 'motor.vdc_v', label: '필터 (0xEB)', color: 1, dash: true }, { id: 'battery.voltage_v', label: '팩 (BMS)', color: 3 },
   ] },
   { key: 'ena', title: 'ENA · RDY', series: [{ id: 'motor.enabled', label: 'ENA', color: 0, step: true }, { id: 'motor.ready', label: 'RDY', color: 2, step: true }] },
@@ -277,6 +278,84 @@ export const TEST_PANELS: Panel[] = [
   { key: 'iq', title: '토크 전류 Iq · 자속 전류 Id', series: [{ id: 'motor.iq_a', color: 0 }, { id: 'motor.id_a', color: 2, dash: true }] },
 ]
 export const TEST_RANGES: [number, string][] = [[20, '20초'], [60, '1분'], [300, '5분']]
+
+// ---------------------------------------------------------------- 솎지 않는 표본 (§12-4 fast, 11-18)
+// 채널마다 받은 표본 전부 (0x66 시험판이면 약 200 Hz). 화면은 FAST_KEEP_S 만 들고, 그 뒤로는 fast_since 로 새 표본만 받는다
+export type FastSeries = { t: number[]; v: (number | null)[] }
+export type FastBuf = Record<string, FastSeries>
+export const FAST_KEEP_S = 120
+
+export function fastSince(f: FastBuf): number | null {
+  let m: number | null = null
+  for (const s of Object.values(f)) if (s.t.length) m = Math.max(m ?? -Infinity, s.t[s.t.length - 1])
+  return m
+}
+
+export function mergeFast(f: FastBuf, add: LiveState['fast'], now: number, keep = FAST_KEEP_S): FastBuf {
+  const last = fastSince(f)
+  if (last !== null && last > now + 5) return mergeFast({}, add, now, keep) // 서버 시계가 뒤로 감 (재생을 다시 틂 등) — 새로 받는다
+  const out: FastBuf = {}
+  for (const k of new Set([...Object.keys(f), ...Object.keys(add?.series ?? {})])) {
+    const t = f[k]?.t.slice() ?? []
+    const v = f[k]?.v.slice() ?? []
+    const end = t.length ? t[t.length - 1] : -Infinity
+    const a = add?.series[k]
+    a?.t.forEach((x, i) => {
+      if (x > end) {
+        t.push(x)
+        v.push(a.v[i] ?? null)
+      }
+    })
+    let cut = 0
+    while (cut < t.length && t[cut] < now - keep) cut++
+    out[k] = { t: t.slice(cut), v: v.slice(cut) }
+  }
+  return out
+}
+
+// 격자 값과 솎지 않는 표본을 한 x 로 — from 이후만. 서로의 자리는 undefined (uPlot 이 건너 잇는다).
+// 표본 사이가 maxGap 넘게 비면 그 사이 자리는 null (선을 끊는다 — 못 받은 동안을 이어 그리지 않게)
+export function withFast(t: number[], grid: (number | null | undefined)[][], fast: FastSeries[], from: number, maxGap = GAP_S) {
+  const xs = [...t.filter((x) => x >= from), ...fast.flatMap((s) => s.t.filter((x) => x >= from))].sort((a, b) => a - b)
+  const x = xs.filter((v, i) => i === 0 || v !== xs[i - 1])
+  const at = new Map(x.map((v, i) => [v, i]))
+  const blank = () => new Array<number | null | undefined>(x.length).fill(undefined)
+  const g = grid.map((col) => {
+    const out = blank()
+    t.forEach((tx, i) => {
+      const j = at.get(tx)
+      if (j !== undefined) out[j] = col[i]
+    })
+    return out
+  })
+  const fcols = fast.map((s) => {
+    const out = blank()
+    let prev = -1
+    s.t.forEach((tx, i) => {
+      const j = at.get(tx)
+      if (j === undefined) return
+      out[j] = s.v[i]
+      if (prev >= 0 && tx - x[prev] > maxGap) for (let k = prev + 1; k < j; k++) out[k] = null
+      prev = j
+    })
+    return out
+  })
+  return { x, grid: g, fast: fcols }
+}
+
+// 커서 시각의 표본 — 가장 가까운 것, GAP_S 보다 멀면 없음
+export function fastValueAt(s: FastSeries | undefined, t: number): number | null {
+  if (!s || !s.t.length) return null
+  let lo = 0
+  let hi = s.t.length - 1
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (s.t[mid] < t) lo = mid
+    else hi = mid
+  }
+  const i = Math.abs(s.t[lo] - t) <= Math.abs(s.t[hi] - t) ? lo : hi
+  return Math.abs(s.t[i] - t) <= GAP_S ? s.v[i] : null
+}
 
 // 튐 표 — 최근 것이 위 (엔진은 앞 것부터 준다)
 export const spikeList = (s: LiveState['spikes']): LiveSpike[] => (s?.rows ?? []).slice().reverse()
@@ -324,7 +403,7 @@ const OFF_TILES: [string, string, string, number][] = [
   ['bms.temp_min_c', '셀 최저 온도', '°C', 0], ['bms.temp_spread_c', '셀 온도 차', '°C', 0], ['bms.dcl_kw', '방전 출력 한계 (DCL)', 'kW', 1], ['bms.temp_avg_c', '셀 평균 온도', '°C', 0],
   ['bms.temp_max_id', '최고 온도 써미스터 번호', '', 0], ['bms.temp_min_id', '최저 온도 써미스터 번호', '', 0],
   ['bms.bms_heatsink_c', 'BMS 방열판 온도', '°C', 0], ['bms.pack_resistance_ohm', '팩 저항', 'Ω', 3], ['bms.pack_ah', '팩 Ah', 'Ah', 1],
-  ['bms.dod_pct', '방전 깊이 (DoD)', '%', 1], ['motor.vdc_v', 'DC 버스 전압', 'V', 0], ['motor.rpm', '회전수 (로거 환산)', 'rpm', 0],
+  ['bms.dod_pct', '방전 깊이 (DoD)', '%', 1], ['motor.vdc_v', 'DC 버스 전압', 'V', 0], ['motor.rpm', '모터 회전수', 'rpm', 0],
   ['pedal.torque_cmd_pct', '토크 명령', '%', 0], ['pedal.apps1_pct', '가속페달 센서 1', '%', 1], ['pedal.apps2_pct', '가속페달 센서 2', '%', 1],
   ['pedal.apps1_v', '가속페달 센서 1 전압 (보드 ADC)', 'V', 2], ['pedal.apps2_v', '가속페달 센서 2 전압 (보드 ADC)', 'V', 2],
   ['motor.vdc_fast_v', 'DC 버스 전압 (필터 없음)', 'V', 0], ['motor.iq_a', '토크 전류 (Iq)', 'A', 0], ['motor.id_a', '자속 전류 (Id)', 'A', 0],

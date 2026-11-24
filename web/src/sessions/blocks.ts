@@ -20,6 +20,7 @@ export const FRAME: Column[] = [
   { key: 'battery', label: '팩' },
   { key: 'bms', label: 'BMS' },
   { key: 'thermistor', label: '셀 온도' },
+  { key: 'cells', label: '셀 전압' }, // 셀마다 전압 · 저항 (25Evo Orion 셀 방송)
   { key: 'motor', label: '모터' },
   { key: 'cooling', label: '냉각' },
   { key: 'suspension', label: '서스' },

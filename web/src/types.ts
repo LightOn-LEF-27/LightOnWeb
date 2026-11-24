@@ -292,6 +292,7 @@ export interface LiveState {
   events: LiveEvent[]
   chart: { t: number[]; series: Record<string, (number | null)[]>; step_s?: number } // step_s (v0.16, 11-18) = 격자 간격 — 보내기 주기를 따라 0.1 ~ 0.5 s
   spikes?: { over_v: number; rows: LiveSpike[]; open: { t: number; peak_v: number } | null } | null // v0.16 (11-18) — DC 링크 전압 튐, rows 는 앞 것부터 최근 20개
+  fast?: { keep_s: number; series: Record<string, { t: number[]; v: (number | null)[] }> } | null // v0.16 (11-18) — 솎지 않는 표본 (fast_since 뒤 것만, 없으면 최근 60 s)
 }
 
 // DC 링크 전압 튐 한 번 — 필터 없는 0x66 이 그때 팩 전압보다 over_v 넘게 높았던 구간 (계약 §12-4 spikes)

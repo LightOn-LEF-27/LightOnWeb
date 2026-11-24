@@ -8,7 +8,7 @@ import uPlot from 'uplot'
 
 import { formatValue } from '../overview/model'
 import type { LiveTile } from '../types'
-import { bridgeShort, type ChartBuf, clock, GAP_S, type LapPoints, type PanelSeries, valueAt, WINDOW_S } from './model'
+import { bridgeShort, type ChartBuf, clock, type FastBuf, fastValueAt, GAP_S, type LapPoints, type PanelSeries, valueAt, WINDOW_S, withFast } from './model'
 
 export interface Limit {
   v: number
@@ -25,6 +25,7 @@ interface Props {
   height: number
   pct?: boolean // 0 ~ 1 값을 0 ~ 100 % 고정 눈금으로 (수신률)
   onOff?: boolean // 0 · 1 값을 꺼짐 · 켜짐 고정 눈금으로 (ENA · RDY)
+  fast?: FastBuf // 솎지 않는 표본 — series[].fast 인 선이 이것으로 그려진다
   keys?: boolean // 머리줄에 계열 이름을 보일지 (기본 보임)
   extra?: ReactNode // 머리줄 오른쪽
   windowS?: number // 보이는 창 (기본 5분)
@@ -199,7 +200,7 @@ export default function LiveChart(p: Props) {
     if (!u) return
     u.setData(chartData(latest.current), false)
     u.setScale('x', { min: now - windowS, max: now })
-  }, [buf, now, windowS, p.laps, p.bands, p.limits])
+  }, [buf, p.fast, now, windowS, p.laps, p.bands, p.limits])
 
   const head = (
     <div className="live-chart-head">
@@ -209,7 +210,7 @@ export default function LiveChart(p: Props) {
         series.map((s) => {
           const t = tiles.get(s.id)
           return (
-            <span key={s.id} className="live-chart-key">
+            <span key={keyOf(s)} className="live-chart-key">
               <i className={s.right || s.dash ? 'dashed' : ''} style={{ borderColor: `var(--trace-${s.color})` }} aria-hidden="true" />
               {s.label ?? t?.label ?? s.id} <span className="muted">{s.unit ?? t?.unit}</span>
             </span>
@@ -240,9 +241,9 @@ export default function LiveChart(p: Props) {
         {series.map((s) => {
           const t = tiles.get(s.id)
           // 칸이 없는 그래프 전용 시리즈(예: 칸 최고)는 받은 그래프의 마지막 값
-          const v = p.cursor != null ? cursorValue(p, s.id, p.cursor) : t ? t.value : lastValue(buf, s.id)
+          const v = p.cursor != null ? (s.fast ? fastValueAt(p.fast?.[s.id], p.cursor) : cursorValue(p, s.id, p.cursor)) : t ? t.value : lastValue(buf, s.id)
           return (
-            <div key={s.id} className="live-chart-val">
+            <div key={keyOf(s)} className="live-chart-val">
               <i className={(s.right || s.dash) && !lapMode ? 'dashed' : ''} style={{ borderColor: `var(--trace-${s.color})` }} aria-hidden="true" />
               <span className="name">{s.label ?? t?.label ?? s.id}</span>
               <strong>{v == null ? '—' : onOff ? (v >= 0.5 ? '켜짐' : '꺼짐') : formatValue(v, t?.digits ?? 1)}</strong>
@@ -256,6 +257,8 @@ export default function LiveChart(p: Props) {
     </div>
   )
 }
+
+const keyOf = (s: PanelSeries) => (s.fast ? `${s.id}:fast` : s.id)
 
 // 받은 그래프에서 그 시리즈의 마지막 값 — 끝에서 GAP_S 안에 값이 없으면 null (낡은 값을 지금 값처럼 보이지 않게)
 function lastValue(buf: ChartBuf, id: string): number | null {
@@ -277,7 +280,16 @@ function cursorValue(p: Props, id: string, t: number): number | null {
 // uPlot 에 줄 값 — 시간축이면 받은 그래프 값 (GAP_S 보다 짧은 빈 칸은 잇는다). 랩 꼭짓점이면 x = 끝난 랩 시각들 + 지금
 function chartData(p: Props): uPlot.AlignedData {
   const { buf, series } = p
-  if (!p.laps) return [buf.t, ...series.map((s) => bridgeShort(buf.t, buf.series[s.id] ?? buf.t.map(() => null)))]
+  if (!p.laps) {
+    const grid = series.map((s) => bridgeShort(buf.t, buf.series[s.id] ?? buf.t.map(() => null)))
+    if (!series.some((s) => s.fast)) return [buf.t, ...grid]
+    // 솎지 않는 표본이 있는 칸 — 보이는 창 안만 한 x 로 합친다 (200 Hz 면 1분에 약 12,000점)
+    const fs = series.filter((s) => s.fast).map((s) => p.fast?.[s.id] ?? { t: [], v: [] })
+    const m = withFast(buf.t, grid.filter((_g, i) => !series[i].fast), fs, p.now - (p.windowS ?? WINDOW_S) - 1)
+    let gi = 0
+    let fi = 0
+    return [m.x, ...series.map((s) => (s.fast ? m.fast[fi++] : m.grid[gi++]))] as uPlot.AlignedData
+  }
   const laps = p.laps
   const ends = [...new Set(series.flatMap((s) => laps[s.id]?.done.map((d) => d.t) ?? []))].sort((a, b) => a - b)
   const xs = [...ends, p.now]

@@ -11,7 +11,7 @@ import { GaugeTile, LapMini, PedalTile, TimeMini } from './gauge'
 import LiveChart, { type Limit } from './LiveChart'
 import LiveMap from './LiveMap'
 import {
-  ageText, type ChartBuf, clock, deviceView, eventText, type EventRow, gapBands, GRAPH_GROUPS, GRAPH_PANELS, GRAPH_RANGES, type GraphGroup,
+  ageText, type ChartBuf, clock, type FastBuf, deviceView, eventText, type EventRow, gapBands, GRAPH_GROUPS, GRAPH_PANELS, GRAPH_RANGES, type GraphGroup,
   hasLapValues, lampOf, lapPoints, worstLamp, miniRange, pctText, RATE_PANELS, scaleOf, shownStatus, sourceWord, spikeList, TEST_PANELS,
   TEST_RANGES, tileValue,
 } from './model'
@@ -23,6 +23,7 @@ export interface ViewCtx {
   s: LiveState
   car: LiveCar
   buf: ChartBuf
+  fast: FastBuf // 솎지 않는 표본 (시험 뷰의 0x66)
   frozen: boolean
   off: boolean // 수신 꺼짐 — 틀만
   theme: string
@@ -622,6 +623,7 @@ export function TestView({ c }: { c: ViewCtx }) {
               windowS={range}
               sync="live-test"
               bands={bands}
+              fast={c.fast}
               onOff={p.key === 'ena'}
               xAxis={i === TEST_PANELS.length - 1}
               side

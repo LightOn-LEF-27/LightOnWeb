@@ -77,9 +77,9 @@ export const WORKBOOKS: Workbook[] = [
     { name: 'LV 전원', axes: [LV, VOLT] },
   ] },
   { key: 'battery', name: '배터리', group: '구동부', sheets: [
-    { name: '셀', axes: [SOC, CELL_V, CELL_T, DCL] },
+    { name: '셀', axes: [SOC, CELL_V, ['cells.cell_spread_mv'], CELL_T, DCL] },
     { name: '전력', axes: [SPEED, POWER, CURRENT, VOLT] },
-    { name: '온도', axes: [CELL_T, ['thermistor.lowest_c', 'thermistor.average_c', 'bms.temp_min_c'], COOL] },
+    { name: '온도', axes: [CELL_T, ['thermistor.lowest_c', 'thermistor.average_c', 'bms.temp_min_c'], ['thermistor.spread_c'], COOL] },
   ] },
   { key: 'reliability', name: '신뢰성 점검', group: 'DAQ', sheets: [
     { name: '전압 · 전원', axes: [VOLT, CELL_V, DCL, LV] },

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { ApiError, getJson } from '../api'
 import type { LiveState } from '../types'
-import { type ChartBuf, emptyBuf, FROZEN_S, KEEP_S, mergeChart, POLL_MS, sinceOf } from './model'
+import { type ChartBuf, emptyBuf, type FastBuf, fastSince, FROZEN_S, KEEP_S, mergeChart, mergeFast, POLL_MS, sinceOf } from './model'
 
 const TIMEOUT_MS = 5000 // 응답이 이보다 늦으면 끊고 다시 묻는다
 const STOP = new Set(['login_required', 'forbidden'])
@@ -14,6 +14,7 @@ const OFF_RETRY_MS = 10000 // 수신이 꺼져 있으면 드물게만 다시 묻
 export interface Live {
   state: LiveState | null
   buf: ChartBuf
+  fast: FastBuf // 솎지 않는 표본 (§12-4 fast) — 최근 120 s
   error: ApiError | null
   frozen: boolean // 서버 응답이 FROZEN_S 넘게 없음 — 화면의 값이 전부 그 전 값
   frozenFor: number | null
@@ -27,6 +28,8 @@ export function useLive(enabled = true): Live {
   const [frozenFor, setFrozenFor] = useState<number | null>(null)
   const okAt = useRef<number | null>(null) // 마지막으로 받은 때 (performance.now — 이 기기의 경과 시간만 쓴다, 시계는 안 본다)
   const bufRef = useRef(buf)
+  const [fast, setFast] = useState<FastBuf>({})
+  const fastRef = useRef(fast)
 
   useEffect(() => {
     if (!enabled) return
@@ -44,12 +47,17 @@ export function useLive(enabled = true): Live {
       ctl = new AbortController()
       const kill = window.setTimeout(() => ctl?.abort(), TIMEOUT_MS)
       const since = sinceOf(bufRef.current)
+      const fs = fastSince(fastRef.current) // 가진 표본이 없으면 엔진이 최근 60 s 를 준다
       try {
         // 처음엔 since=0 — 엔진이 가진 그래프 값(10분)을 다 받는다 (그래프 뷰의 10분). 그 뒤로는 새 줄만
-        const s = await getJson<LiveState>(`/api/live/state?since=${since ?? 0}`, ctl.signal)
+        const s = await getJson<LiveState>(`/api/live/state?since=${since ?? 0}${fs !== null ? `&fast_since=${fs}` : ''}`, ctl.signal)
         if (!alive) return
         bufRef.current = mergeChart(bufRef.current, s.chart, s.now, KEEP_S)
         setBuf(bufRef.current)
+        if (s.fast || Object.keys(fastRef.current).length) {
+          fastRef.current = mergeFast(fastRef.current, s.fast, s.now)
+          setFast(fastRef.current)
+        }
         setState(s)
         setError(null)
         okAt.current = performance.now()
@@ -83,5 +91,5 @@ export function useLive(enabled = true): Live {
     }
   }, [enabled])
 
-  return { state, buf, error, frozen: frozenFor !== null && frozenFor > FROZEN_S, frozenFor }
+  return { state, buf, fast, error, frozen: frozenFor !== null && frozenFor > FROZEN_S, frozenFor }
 }

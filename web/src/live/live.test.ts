@@ -5,7 +5,7 @@ import { alertView, carOf, CARS, VIEW_TILES } from './cars'
 import {
   ageText, bridgeShort, clock, deviceView, emptyBuf, eventText, foldEvents, gapBands, gaugePos, hasLapValues, lampOf, lapPoints, lapText, linkView, mapBounds,
   mergeChart, miniRange, niceAxis, offState, outageText, pathRuns, pctText, rateText, regNote, scaleOf, shownStatus, signedText, sinceOf, sourceWord,
-  spikeList, sparkPoints, TEST_PANELS, tileOr, tileSource, TRACK_MIN_MS, trackWait, trail, valueAt, worstLamp,
+  fastSince, fastValueAt, mergeFast, spikeList, sparkPoints, TEST_PANELS, withFast, tileOr, tileSource, TRACK_MIN_MS, trackWait, trail, valueAt, worstLamp,
 } from './model'
 
 const chart = (t: number[], speed: (number | null)[], extra: Record<string, (number | null)[]> = {}): LiveState['chart'] => ({
@@ -121,6 +121,27 @@ describe('차량 · 뷰', () => {
     expect(TEST_PANELS[0].series.map((s) => s.id)).toEqual(['motor.vdc_fast_max_v', 'motor.vdc_fast_v', 'motor.vdc_v', 'battery.voltage_v'])
     expect(TEST_PANELS.find((p) => p.key === 'ena')!.series.every((s) => s.step)).toBe(true)
     expect(TEST_PANELS.map((p) => p.key)).toEqual(['vdc', 'ena', 'amp', 'iq']) // 시각 눈금은 맨 아래 칸
+  })
+  it('솎지 않는 표본 — 새 것만 붙이고 120 s 넘은 것은 버림, 시계가 뒤로 가면 새로', () => {
+    const add = (t: number[]) => ({ keep_s: 120, series: { 'motor.vdc_fast_v': { t, v: t.map((x) => x * 10) } } })
+    let f = mergeFast({}, add([100, 100.005, 100.01]), 100.5)
+    expect(fastSince(f)).toBe(100.01)
+    f = mergeFast(f, add([100.01, 100.015]), 100.6) // 겹친 것은 한 번만
+    expect(f['motor.vdc_fast_v'].t).toEqual([100, 100.005, 100.01, 100.015])
+    f = mergeFast(f, add([221]), 221) // 120 s 지난 것은 버림
+    expect(f['motor.vdc_fast_v'].t).toEqual([221])
+    expect(fastSince(mergeFast(f, add([50]), 50))).toBe(50) // 서버 시계가 뒤로
+    expect(fastSince({})).toBeNull()
+    expect(mergeFast(f, null, 222)['motor.vdc_fast_v'].t).toEqual([221])
+  })
+  it('격자 값 + 표본을 한 x 로 — 서로의 자리는 건너 잇고(undefined), 표본이 2 s 넘게 비면 끊음(null)', () => {
+    const m = withFast([0, 1, 2, 3, 4], [[10, 11, 12, 13, 14]], [{ t: [0.5, 0.6, 3.5], v: [5, 6, 7] }], 0)
+    expect(m.x).toEqual([0, 0.5, 0.6, 1, 2, 3, 3.5, 4])
+    expect(m.grid[0]).toEqual([10, undefined, undefined, 11, 12, 13, undefined, 14])
+    expect(m.fast[0]).toEqual([undefined, 5, 6, null, null, null, 7, undefined])
+    expect(withFast([0, 1], [[1, 2]], [{ t: [0.5], v: [3] }], 0.8).x).toEqual([1]) // 창 밖은 뺌
+    expect(fastValueAt({ t: [1, 2, 3], v: [10, 20, 30] }, 2.2)).toBe(20)
+    expect(fastValueAt({ t: [1], v: [10] }, 9)).toBeNull()
   })
 })
 

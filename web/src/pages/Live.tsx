@@ -84,7 +84,7 @@ export default function Live() {
   }
 
   const ctx: ViewCtx = {
-    s: state, car, buf, frozen, off, theme, narrow, tiles, events, path,
+    s: state, car, buf, fast: live.fast, frozen, off, theme, narrow, tiles, events, path,
     tile: (id) => tileOr(tiles, id),
     spark: (id) => (SPARK.has(id) ? sparkPoints(buf, id, state.now) : null),
     track: track.data ?? null,

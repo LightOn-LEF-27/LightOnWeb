@@ -58,7 +58,7 @@ describe('블록 칸', () => {
     expect(c.columns.map((x) => x.key)).toEqual(['gps', 'bms', 'video'])
     expect(c.computed.map((x) => x.key)).toEqual(['drive'])
     expect(c.hidden.map((x) => x.key)).not.toContain('gps')
-    expect(c.hidden).toHaveLength(15 - 4) // 틀 14 + 계산 1
+    expect(c.hidden).toHaveLength(16 - 4) // 틀 15 + 계산 1
   })
   it('모르는 블록은 엔진의 이름으로 끝에 붙는다', () => {
     const c = blockColumns([row({}, { gps: 'have', aero: 'have' })])
