@@ -35,6 +35,7 @@ lefdata laps --event <이벤트>          # GPS 로 주행 구간 · 랩 → der
 lefdata venue --name <경기장> --from-event <이벤트>   # 경기장 정하기 — 그 이벤트의 계측선 · 원점 · 최속 랩 주행선
 lefdata events --event <이벤트>        # 가속(75 m) · 스키드패드
 lefdata motor-runs                    # GPS 없는 로거: 모터 속도로 주행 구간
+lefdata dyno --event <이벤트>          # 섀시다이나모 기록 → normalized/ + 절대 시각이 없는 로거 레코딩을 다이나모 직류 전압에 맞춤 → derived/dyno_alignment.csv (로거 변환 뒤에)
 lefdata evo-can --event <이벤트>       # 25Evo: Monolith 가 받은 차량 CAN → 가속페달(APPS) · Orion · 모터 컨트롤러(BAMOCAR) 표 (em-laps 전에). 레지스터별 수 · 오류가 찍힌다
 lefdata em-laps --event <이벤트>       # 에너지미터를 GPS 랩에 붙이기 (CAN 팩 전류 · 전력 ↔ 위치 · 전원 주기 순으로 시계를 맞춘다)
 lefdata lef26-clock | lef26-laps      # LEF-26: 로거 시계 검증 · 랩마다 로거 값
@@ -276,7 +277,7 @@ api.resolve_session(old_sid)                          # 없어진 sid → 이유
     ```toml
     [event]
     clock = "orion"                        # start · end 를 적은 시계 (세션 시작 시각도 이 시계)
-    [clocks.energymeter]                   # 시계 이름: energymeter · orion · lef26_logger · monolith · gopro
+    [clocks.energymeter]                   # 시계 이름: energymeter · orion · lef26_logger · monolith · gopro · dyno
     offset_s = -60.0                       # 그 장비 시계 + offset_s = 기준 시계
     recordings = { "<레코딩>" = -61.5 }    # 레코딩마다 따로 (그 레코딩에 시계를 맞춰 둔 25Evo STM32 도 따른다)
     [clocks.lef26_logger.recordings]       # 켠 순간부터 세는 LEF-26 새 로그는 더할 초 대신 그 전원 주기의 전원 켬 시각 (기준 시계)
@@ -295,6 +296,20 @@ api.resolve_session(old_sid)                          # 없어진 sid → 이유
     메모를 잘못 적으면(시계 차가 없는 장비가 근처에 있다 · 구간이 겹친다 · 기록이 하나도 없다 — 정말 없으면 `allow_empty = true`) 말없이 넘어가지 않고 멈춘다.
     **구간을 GPS 기록(GoPro · Monolith)이 거의 다 덮으면 GPS 세션과 같은 랩 · 코스 · 블록이 나온다** — 구간을 GPS 시간으로 옮겨 GPS 세션처럼 만들고(구간은 GPS 가 있는 동안으로),
     그 주행은 자동 GPS 세션에서 뺀다. 그래서 Run Sheet 시각 하나로 영상이 있는 세션 · 없는 세션을 같이 적을 수 있다 (`has_track` 으로 코스가 있는지 가른다)
+  - **섀시다이나모** (`lefdata dyno`, 2026-11-24) — 다이나모 운영 프로그램이 내보낸 기록(확장자 `.xls` 지만 CP949 탭 텍스트, 0.1 s)이 장비 하나(`dyno` 시계 —
+    시작 시각은 파일 이름뿐이라 다이나모 PC 시계)다. `[[timed_session]] recording = "<…_dyno>"` 로 세션을 만들면 블록 `dyno` (롤러 속도 · 힘 · 출력 · 가속도) 와
+    `battery` (다이나모 쪽 전력 분석기가 잰 차의 직류 버스 — 정속 · 가속 중 직류 전력이 롤러 출력보다 작은 기록은 `warn`) 가 붙는다.
+    **절대 시각이 없는 로거 레코딩**(25Evo STM32 · LEF-26 로거)은 `lefdata dyno` 가 DC 버스 전압을 다이나모 직류 전압에 맞춰 둔다 — 긴 레코딩은 40 s 창들로 직선을 맞춘 뒤
+    다이나모 파일마다 ±3 s 다시 대 보고, 짧은 레코딩은 HV 켜고 끄는 모양이 여러 곳에 맞아 엔진이 고르지 않는다 (사람이 적은 짝만 확인):
+
+    ```toml
+    [clocks.dyno]
+    offset_s = -600.0                      # 다이나모 PC 시계 + offset_s = 기준 시계
+    [[dyno_pair]]                          # 짧은 로거 레코딩 ↔ 다이나모 기록 (±3 s 안에서 다듬고 상관이 높을 때만 쓴다)
+    recording = "<로거 레코딩>"
+    dyno = "<YYYY-MM-DD_HHMMSS>_dyno"
+    t_rel_s = 45.0                         # 그 다이나모 기록의 시작이 로거 경과 몇 초쯤인가
+    ```
 - **파일 올리기 (`detect` · `ingest` · `get_job`, `lefdata.ingest`)** — 변환기마다 `detect(path)` 가 있어 바이트 머리 · 첫 줄로 형식을 가리고
   시작 시각 · 길이 · 레코딩 이름을 미리 낸다 (Monolith · 에너지미터 · GoPro · LEF-26 로거 통합본 · 25Evo STM32 · Orion CSV — Orion 은 판별만).
   `ingest` 는 받은 파일을 `_uploads/<작업>/` 에 복사(ASCII 이름)하고 이벤트의 `raw_*/` 에 하드 링크한 뒤, 그 차의 명령 순서를 이번에 들어온 종류에 맞춰 돌고

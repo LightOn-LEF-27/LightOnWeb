@@ -39,7 +39,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import energymeter, evo_stm32, lef26, monolith, orion, video
+from . import dyno, energymeter, evo_stm32, lef26, monolith, orion, video
 
 UPLOADS = "_uploads"
 INDEX = "index.json"
@@ -54,9 +54,9 @@ CARS = ("LEF-25evo", "LEF-26")
 HINT_KEYS = ("car", "event_id", "place_id", "date", "title", "kind", "place", "venue")
 
 # 판별 순서 — 바이트 머리로 가리는 것부터 (둘 다 .log 인 에너지미터 · Monolith 는 머리 바이트가 다르다)
-DETECTORS = (energymeter.detect, monolith.detect, video.detect, lef26.detect, evo_stm32.detect, orion.detect)
+DETECTORS = (energymeter.detect, monolith.detect, video.detect, lef26.detect, evo_stm32.detect, orion.detect, dyno.detect)
 RAW_DIR = {"monolith_log": "raw_logger", "fsk_energymeter_log": "raw_energymeter", "gopro_mp4": "raw_video",
-           "lef26_logger_csv": "raw_merged", "evo_stm32_csv": "raw_stm32"}       # orion_csv 는 판별만 (lefdata orion 으로 넣는다)
+           "lef26_logger_csv": "raw_merged", "evo_stm32_csv": "raw_stm32"}       # orion_csv · chassis_dyno_txt 는 판별만 (lefdata orion · dyno 로 넣는다)
 
 
 class UnsupportedFormat(ValueError):
@@ -85,7 +85,7 @@ def detect(path) -> dict:
             raise CorruptFile(str(e)) from e
         if found is not None:
             return found
-    raise UnsupportedFormat(f"{path.name}: 엔진이 모르는 형식 — Monolith · 에너지미터 · GoPro · LEF-26 로거 · 25Evo STM32 · Orion CSV 가 아니다")
+    raise UnsupportedFormat(f"{path.name}: 엔진이 모르는 형식 — Monolith · 에너지미터 · GoPro · LEF-26 로거 · 25Evo STM32 · Orion CSV · 섀시다이나모 기록이 아니다")
 
 
 # ---------------------------------------------------------------- 작업 기록

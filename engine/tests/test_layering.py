@@ -36,7 +36,7 @@ PUBLIC = ("laps", "course_gates", "events", "gopro", "quality", "sync", "series"
 # 우리 로거·폴더 구조·차량에 묶인 모듈.
 TEAM = ("lef26", "review", "monolith", "motor_runs", "video", "paths", "cli", "writer", "energymeter", "evo_stm32", "evo_can", "orion", "clocks",
         "lef26_clock", "lef26_laps", "lef26_report", "report", "report_charts", "em_laps", "catalog", "catalog_charts",
-        "catalog_build", "session_store", "session_ids", "ingest", "runsheet", "api", "venue", "live", "carconfig")
+        "catalog_build", "session_store", "session_ids", "ingest", "runsheet", "api", "venue", "live", "carconfig", "dyno")
 
 
 def imported_modules(path: Path) -> set[str]:

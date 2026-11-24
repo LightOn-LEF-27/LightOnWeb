@@ -26,7 +26,9 @@ GPS 가 없으니 랩 · 코스가 없고, 그 시각에 기록이 있는 장비
     [clocks.<시계>] offset_s = <초>             그 장비 시계 + offset_s = 기준 시계. recordings = {레코딩 = 초} 로 레코딩마다 따로
     [[timed_session]] start = "…" end = "…"     또는 recording = "<레코딩>" (그 레코딩이 켜져 있던 동안)
 
-시계 이름은 energymeter · orion · lef26_logger · monolith · gopro (25Evo STM32 는 변환기가 맞춰 둔 장비의 시계를 따른다).
+시계 이름은 energymeter · orion · lef26_logger · monolith · gopro · dyno (25Evo STM32 는 변환기가 맞춰 둔 장비의 시계를 따른다).
+섀시다이나모 기록(`lefdata dyno`)은 그 자체로 장비 하나다 (dyno — 롤러 값 · 전력 분석기의 직류 버스). 절대 시각이 없는 로거 레코딩
+(25Evo STM32 · LEF-26 로거)을 `lefdata dyno` 가 다이나모 직류 전압 파형에 맞춰 두었으면(derived/dyno_alignment.csv) 그 레코딩도 dyno 시계로 붙는다.
 두 장비가 같은 물리량을 잰 곳은 서로 대 봐서 시계가 맞는지 확인하고, 어긋나 보이면 품질 경고(clock_mismatch)를 단다.
 그 구간을 GPS 레코딩(GoPro · Monolith, 시계 차를 아는 것)이 거의 다 덮으면 GPS 세션과 같은 블록 · 랩 · 코스를 낸다 —
 구간을 GPS 시간으로 옮겨 GPS 세션처럼 만들고, 시각으로만 붙일 수 있는 장비는 빈 자리에 더한다. 그 주행은 자동 GPS 세션에서 뺀다.
@@ -52,7 +54,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from . import carconfig, course_gates, em_laps, events as evmod, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
+from . import carconfig, course_gates, dyno, em_laps, events as evmod, evo_can, laps as lapmod, lef26, lef26_clock, lef26_laps, paths, runsheet, sectors
 from .catalog import (CHECK_DISCIPLINE, HAVE, NONE, SEEK, WARN, Channel, CodeRef, DataBlock, Export, FileRef, LapColumn, Missing, Session,
                       code_html, size_text, to_markdown, write_session)
 
@@ -862,7 +864,7 @@ def _logger_imu_block(r, logs: list, how: str) -> DataBlock | None:
                       derivation="로거 X 축(우회전 +)의 부호를 뒤집음", cautions=[tilt, VIBRATION], source=src, digits=4)]
     if len(got["yaw_dps"][0]):
         series.append(Channel("yaw_dps", "요레이트", "°/s", *got["yaw_dps"][:2], sign="좌회전 +", source=src, digits=2))
-    series += avg_accel_channels(grid + STEP_S / 2, long_g, lat_g, [tilt], src)      # 칸 평균이라 칸 가운데 시각
+    series += avg_accel_channels(np.minimum(grid + STEP_S / 2, r.t1 - r.t0), long_g, lat_g, [tilt], src)   # 칸 평균이라 칸 가운데 시각 (마지막 칸은 세션 끝을 넘지 않게)
     gg = pd.DataFrame({"long_g": long_g, "lat_g": lat_g}).iloc[::round(GG_STEP_S / STEP_S)].dropna()
     gg.attrs["step_s"] = GG_STEP_S
     hz = (len(t) - 1) / max(float(t[-1] - t[0]), 1e-9)
@@ -901,12 +903,18 @@ class _Stm32:
         return t[on_gps | on_em]
 
 
-def _stm32_frame(r, rec: str, name: str, offset_s: float = 0.0) -> pd.DataFrame | None:
-    """STM32 레코딩의 표 하나를 세션 구간만 — offset_s = 로거 시각(t_abs)에 더하면 기준 시계가 되는 초."""
+def _stm32_frame(r, rec: str, name: str, offset_s: float = 0.0, to_abs=None) -> pd.DataFrame | None:
+    """STM32 레코딩의 표 하나를 세션 구간만 — offset_s = 로거 시각(t_abs)에 더하면 기준 시계가 되는 초.
+
+    to_abs = 로거 경과시간(초) → 장비 시계(UTC 초) 지도 (t_abs 가 없는 레코딩을 다이나모에 맞춘 것 — dyno.Placement.to_dyno). 주면 t_abs 대신 쓴다.
+    """
     path = r.event_dir / "normalized" / rec / f"{name}.parquet"
     if not path.exists():
         return None
     df = pq.read_table(path).to_pandas()
+    if to_abs is not None:
+        df = df.assign(t_s=to_abs(df["t_rel_ms"].to_numpy() / 1000.0) + offset_s - r.t0_abs)
+        return df[(df["t_s"] >= 0) & (df["t_s"] <= r.t1 - r.t0)]
     df = df[df["t_abs"].notna()]
     if df.empty:
         return None
@@ -960,7 +968,7 @@ def _stm32_blocks(r: _Run, stm: _Stm32, em_ref: dict | None = None, al: em_laps.
 
 
 def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, skip: tuple = (), ref: dict | None = None,
-                ref_name: str = "에너지미터") -> list[DataBlock]:
+                ref_name: str = "에너지미터", maps: dict | None = None) -> list[DataBlock]:
     """25Evo STM32 백업 로거 → battery (팩 전압 · 전류 · 전력) · bms (셀 · 온도 · SOC) · motor (온도 · 회전수).
 
     recs = {레코딩: 로거 시각에 더하면 기준 시계가 되는 초}. clock = 시계를 어떻게 맞췄나 (블록 '확인' 글).
@@ -968,7 +976,8 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
     ref = 같은 구간의 에너지미터 전력 {t, kw}. refine 이면 회전수 ↔ GPS 속도 대신 BMS 전력 ↔ 에너지미터 전력(같은 물리량,
     에너지미터는 GPS 위치에 맞춰 둔 것)으로 다시 맞추고, 아니면 대 본 결과만 첫 블록의 '확인' 에 적는다 (어긋나 보이면 clock_mismatch).
     """
-    parts = {name: [d for d in (_stm32_frame(r, rec, name, off) for rec, off in recs.items()) if d is not None and len(d)]
+    maps = maps or {}
+    parts = {name: [d for d in (_stm32_frame(r, rec, name, off, maps.get(rec)) for rec, off in recs.items()) if d is not None and len(d)]
              for name in ("bms", "motor")}
     bms = pd.concat(parts["bms"]).sort_values("t_s") if parts["bms"] else None
     mot = pd.concat(parts["motor"]).sort_values("t_s") if parts["motor"] else None
@@ -1080,7 +1089,7 @@ def _stm32_make(r, recs: dict[str, float], clock: str, refine: bool = False, ski
     if findings and "battery" in skip and blocks:                   # 경고는 배터리 블록에 달았다 — 그것을 만들지 않았으면 처음 블록에
         blocks[0].findings = blocks[0].findings + findings
     if ref is not None and bms is not None and blocks and not refine:      # GPS 세션은 위에서 에너지미터에 맞췄다
-        _add_check(blocks[0], _agree(bms["t_s"], bms["power_kw"], ref["t"], ref["kw"], "stm32", "STM32 백업 로거의 BMS 전력을 에너지미터 전력과 대 봄"))
+        _add_check(blocks[0], _agree(bms["t_s"], bms["power_kw"], ref["t"], ref["kw"], "stm32", f"STM32 백업 로거의 BMS 전력을 {ref_name} 전력과 대 봄"))
     return blocks
 
 
@@ -1598,11 +1607,12 @@ def _segment_notes(info: dict, derived: Path, r: _Run) -> list[str]:
 # ---------------------------------------------------------------- 시각 구간 세션 (GPS 없이 — Run Sheet 시각 · 장비가 켜져 있던 동안)
 
 DEVICES = (("FSK 에너지미터", "energymeter"), ("Orion BMS Connect", "orion"), ("자작 STM32", "stm32"),
-           ("LEF-26 STM32F446RE", "lef26_logger"), ("Monolith", "monolith"), ("GoPro", "gopro"))     # 변환기가 meta 에 적는 장비 이름 → 장비
+           ("LEF-26 STM32F446RE", "lef26_logger"), ("Monolith", "monolith"), ("GoPro", "gopro"),
+           (dyno.LOGGER.split(" ")[0], "dyno"))                                                   # 변환기가 meta 에 적는 장비 이름 → 장비
 STM32_CLOCK = {"에너지미터": "energymeter", "Monolith": "monolith"}     # 25Evo STM32 시각을 어느 장비에 맞췄나 (meta time.alignment.clock_of)
 CLOCK_LABEL = {"energymeter": "에너지미터", "orion": "Orion BMS Connect", "lef26_logger": "LEF-26 차량 로거", "monolith": "Monolith",
-               "gopro": "GoPro GPS"}
-TIMED_DEVICES = ("energymeter", "stm32", "orion", "lef26_logger")     # 시각 구간 세션에 붙이는 장비
+               "gopro": "GoPro GPS", "dyno": "섀시다이나모 PC"}
+TIMED_DEVICES = ("energymeter", "stm32", "orion", "lef26_logger", "dyno")     # 시각 구간 세션에 붙이는 장비
 GPS_DEVICES = ("monolith", "gopro")                                   # GPS 는 구간을 덮을 때만 붙인다 (랩 · 코스). 덜 덮으면 메모로 알린다
 CAN_DEVICES = ("monolith",)                                           # 차량 CAN 을 받은 장비 — 그 CAN(모터 · 가속페달)은 시각 구간에도 붙인다 (lefdata evo-can)
 ORION_CHANNELS = (("soc_pct", "SOC", "%", 1), ("cell_min_v", "셀 최저 전압", "V", 3), ("cell_max_v", "셀 최고 전압", "V", 3),
@@ -1628,17 +1638,27 @@ class _Rec:
     t1: float
     anchor: str = ""
     boot: str = ""
+    place: "dyno.Placement | None" = None     # 절대 시각이 없는 로거 레코딩을 다이나모에 맞춘 지도 (clock = dyno, t0 · t1 = 그 지도로 본 처음 · 끝)
 
 
 def _recordings(event_dir: Path) -> list[_Rec]:
-    """이벤트의 변환된 레코딩 중 절대 시각이 있는 것 (25Evo STM32 는 다른 장비에 시계를 맞춘 것만)."""
+    """이벤트의 변환된 레코딩 중 절대 시각이 있는 것 (25Evo STM32 는 다른 장비에 시계를 맞춘 것만).
+
+    절대 시각이 없어도 `lefdata dyno` 가 다이나모 직류 전압에 맞춰 둔 로거 레코딩은 dyno 시계로 넣는다 (derived/dyno_alignment.csv).
+    """
     out = []
+    placed = dyno.load_alignment(event_dir)
     for path in sorted((event_dir / "normalized").glob("*/meta.json")):
         meta = json.loads(path.read_text(encoding="utf-8"))
         logger = meta.get("source", {}).get("logger", "")
         device = next((d for key, d in DEVICES if logger.startswith(key)), None)
         tm = meta.get("time", {})
         if device is None:
+            continue
+        if not tm.get("t_abs_start") and path.parent.name in placed and device in ("stm32", "lef26_logger"):
+            p = placed[path.parent.name]
+            t0, t1 = p.span
+            out.append(_Rec(path.parent.name, path.parent, meta, device, "dyno", t0, t1, place=p))
             continue
         if not tm.get("t_abs_start"):
             since, dur = tm.get("since_boot_s"), tm.get("duration_s")
@@ -1798,6 +1818,107 @@ def _em_window_block(w: _Window, parts: list[tuple[_Rec, float]], clock: str) ->
     return block, {"net_wh": round(dis - reg), "i_max_a": round(float(np.max(amp)))}, {"t": ts, "amp": amp, "volt": volt, "kw": kw}
 
 
+def _placed_text(part: list[tuple[_Rec, float]]) -> str:
+    """다이나모에 맞춘 레코딩들 → 확인 글 한 토막 (짝 수 · 상관 · 시계 기울기)."""
+    out = []
+    for x, _ in part:
+        p = x.place
+        if p is not None:
+            out.append(f"{x.rec} 다이나모 기록 {p.pairs}개와 짝 · 상관 {p.corr_min:.2f} 넘게 · 시계 기울기 {p.g:.5f}")
+    return " · ".join(out)
+
+
+def _logger_map(x: _Rec, off: float) -> "lef26_clock.ClockMap":
+    """LEF-26 로거 레코딩 → 로거 경과시간 ↔ 기준 시계 지도. 다이나모에 맞춘 레코딩은 그 짝들을 잇는 꺾은선 (끝 밖은 그 기울기)."""
+    p = x.place
+    if p is None:
+        return lef26_clock.ClockMap(np.array([0.0, x.t1 - x.t0]), np.array([x.t0 + off, x.t1 + off]), 1.0, 1.0)
+    t_rel = np.unique(np.concatenate([[0.0], p.t_rel, [max(p.duration_s, float(p.t_rel[-1]))]]))
+    return lef26_clock.ClockMap(t_rel, p.to_dyno(t_rel) + off, 1.0 / p.g, 1.0 / p.g)
+
+
+def _dyno_window_blocks(w: _Window, parts: list[tuple[_Rec, float]], clock: str):
+    """섀시다이나모 기록 (시각 구간) → (롤러 블록 dyno, 직류 버스 블록 battery, 세션 요약 값, 다른 장비와 대 볼 파형). 없으면 None.
+
+    battery 는 다이나모 쪽 전력 분석기가 잰 차의 직류 버스다 — 에너지미터처럼 차 밖에서 잰 값이라 차 로거와 시계를 대 보는 기준이 된다.
+    """
+    dur = w.t1 - w.t0
+    got = []
+    for x, off in parts:
+        d = pq.read_table(x.dir / "dyno.parquet").to_pandas()
+        d = d[d["t_abs"].notna()]
+        d = d.assign(t_s=_epoch_s(d["t_abs"]) + off - w.t0_abs)
+        d = d[(d["t_s"] >= 0) & (d["t_s"] <= dur)]
+        if len(d) >= 2:
+            got.append((x, d))
+    if not got:
+        return None, None, {}, None
+    d = pd.concat([g[1] for g in got]).sort_values("t_s", kind="stable")
+    t = d["t_s"].to_numpy(float)
+    src = ", ".join(x.rec for x, _ in got)
+    step = float(np.median(np.diff(t))) if len(t) > 1 else 0.1
+    hz = 1.0 / step if step > 0 else 0.0
+    speed, force, accel = (d[k].to_numpy(float) for k in ("speed_kmh", "force_n", "accel_ms2"))
+    roller_kw = d["roller_power_w"].to_numpy(float) / 1000
+    moving = speed > dyno.MOVING_KMH
+    km = float(np.trapezoid(np.nan_to_num(np.clip(speed, 0, None)), t) / 3600) if len(t) > 1 else 0.0
+    raws = []
+    for x, _ in got:
+        path = w.event_dir / x.meta["source"]["file"]
+        raws.append(FileRef("섀시다이나모 기록 (탭 구분 텍스트, 레코딩 전체)", path.name, path, path.stat().st_size if path.exists() else 0,
+                            f"{x.meta['counts']['rows']:,} 표본"))
+    code = [CodeRef("dyno", CODE_PAGES["dyno"]["title"], "다이나모 기록을 표로"),
+            CodeRef("catalog", CODE_PAGES["catalog"]["title"], "다이나모 시각 → 세션 시간, 세션 구간만")]
+    out = [FileRef("변환된 표 (레코딩 전체)", "dyno.parquet", note="롤러 속도 · 힘 · 출력 · 가속도 · 직류 전압 · 전류 · 전력 · 장비가 계산한 값 전부",
+                   where=w.where("normalized/<다이나모 레코딩>/"))]
+    series = [Channel("speed_kmh", "롤러 속도", "km/h", t, speed, source=src, digits=2),
+              Channel("force_n", "롤러 힘", "N", t, force, sign="바퀴가 롤러를 앞으로 미는 쪽 +", source=src, digits=1,
+                      cautions=["롤러 쪽에서 잰 힘 — 가속 중에는 다이나모의 관성 흉내 · 타이어 미끄러짐이 섞여 바퀴 힘과 같지 않음"]),
+              Channel("power_kw", "롤러 출력", "kW", t, roller_kw, sign="바퀴 → 롤러 +", source=src, digits=3,
+                      cautions=["다이나모가 낸 동력흡수량 (힘 × 속도)"]),
+              Channel("accel_ms2", "롤러 가속도", "m/s²", t, accel, sign="가속 +", source=src, digits=3)]
+    facts = [f"표본 {len(t):,}개" + (f" · 레코딩 {len(got)}개" if len(got) > 1 else ""),
+             f"롤러 최고 속도 {np.nanmax(speed):.1f} km/h · 롤러가 돈 시간 {moving.sum() * step:.0f} s · 롤러 거리 {km:.2f} km",
+             f"롤러 힘 최대 {np.nanmax(force):.0f} N · 롤러 출력 최대 {np.nanmax(roller_kw):.1f} kW"]
+    table = pd.DataFrame({"t_s": t.round(3), "speed_kmh": speed.round(2), "force_n": force.round(1), "power_kw": roller_kw.round(3),
+                          "accel_ms2": accel.round(3)})
+    roll = DataBlock("dyno", "섀시다이나모 (롤러)", HAVE, f"{dyno.LOGGER} · {hz:.0f} Hz", facts, raw=raws, code=code, outputs=out,
+                     exports=[Export("dyno.csv", "이 세션의 롤러 값 (시간 t_s 는 기준 시계로 옮긴 세션 시간)", table, f"{len(table):,} 행")],
+                     channels=series[:3], time_keys=["speed_kmh", "force_n", "power_kw"], checks=[clock],
+                     cautions=["롤러 위 주행 — 위치 · 랩 없음. 속도는 롤러 표면 속도"] + list(w.extra("dyno").get("cautions", [])), series=series)
+    stats = {"vmax_kmh": round(float(np.nanmax(speed)), 1) if np.isfinite(speed).any() else None}
+    amp, volt = d["dc_current_a"].to_numpy(float), d["dc_voltage_v"].to_numpy(float)
+    kw = d["dc_power_w"].to_numpy(float) / 1000
+    if not np.isfinite(amp).any():
+        return roll, None, stats, None
+    seg = np.nan_to_num((kw[1:] + kw[:-1]) / 2 * np.diff(t) / 3.6)          # Wh
+    dis, back = float(seg[seg > 0].sum()), float(-seg[seg < 0].sum())
+    live = bool(np.nanmax(np.abs(amp)) > dyno.DC_LIVE_A)
+    share, _, bad = dyno.dc_check(d["roller_power_w"].to_numpy(float), accel, kw * 1000)
+    hv = volt[volt > lef26_laps.HV_ON_V]
+    cautions = ["다이나모 쪽 전력 분석기가 차의 직류 버스에서 잰 값 — 팩 전류와는 보조 전원 몫만큼 다를 수 있음"]
+    if bad:
+        cautions.insert(0, f"정속 · 가속 중 직류 전력이 롤러 출력보다 작은 표본이 {100 * share:.0f} % — 전력 분석기를 덜 물렸거나 방향이 거꾸로로 보임. "
+                           "이 세션의 직류 전류 · 전력 · 에너지를 쓰지 말 것 (전압은 다른 장비와 맞음을 확인에서 볼 것)")
+    elif moving.any() and not live:
+        cautions.insert(0, f"롤러가 돌았는데 직류 전류가 {dyno.DC_LIVE_A:.0f} A 를 넘은 적이 없음 — 전력 분석기를 덜 물린 것으로 보임 (전류 · 전력을 쓰지 말 것)")
+    ch = [Channel("current_a", "배터리 전류", "A", t, amp, sign="방전 +, 배터리로 돌아오면 −", source=src, digits=2),
+          Channel("voltage_v", "팩 전압", "V", t, volt, source=src, digits=2),
+          Channel("power_kw", "전력", "kW", t, kw, sign="방전 +", source=src, digits=3)]
+    bt = pd.DataFrame({"t_s": t.round(3), "voltage_v": volt.round(1), "current_a": amp.round(1), "power_kw": kw.round(3)})
+    bat = DataBlock(
+        "battery", "배터리 전압 · 전류", WARN if bad else HAVE, f"섀시다이나모 전력 분석기 (차 직류 버스) · {hz:.0f} Hz",
+        [f"표본 {len(t):,}개", f"방전 {dis:,.0f} Wh · 배터리로 돌아온 양 {back:,.1f} Wh · 순 {dis - back:,.0f} Wh",
+         f"전류 최대 {np.nanmax(amp):.0f} A · 최소 {np.nanmin(amp):.0f} A · 전력 최대 {np.nanmax(kw):.1f} kW",
+         f"직류 전압 {hv.min():.0f} ~ {hv.max():.0f} V (고전압이 켜진 동안)" if len(hv) else "고전압이 켜진 적 없음"],
+        raw=raws, code=code, outputs=out,
+        exports=[Export("battery.csv", "이 세션의 직류 전압 · 전류 · 전력 (시간 t_s 는 기준 시계로 옮긴 세션 시간)", bt, f"{len(bt):,} 행")],
+        channels=ch, time_keys=["current_a", "voltage_v", "power_kw"], checks=[clock],
+        cautions=cautions + list(w.extra("battery").get("cautions", [])), series=ch)
+    if not bad:                                                         # 믿지 않는 직류 값은 세션 요약에 올리지 않는다
+        stats.update(net_wh=round(dis - back), i_max_a=round(float(np.nanmax(amp))))
+    return roll, bat, stats, {"t": t, "amp": amp, "volt": volt, "kw": kw}
+
 def _orion_block(w: _Window, parts: list[tuple[_Rec, float]], clock: str) -> tuple[DataBlock | None, dict | None]:
     """Orion BMS Connect 로그 (시각 구간) → bms 블록 · 다른 장비와 대 볼 팩 전류."""
     dur = w.t1 - w.t0
@@ -1936,6 +2057,17 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
         if em is not None:
             blocks.append(em)
             stats.update(st)
+    dy_roll = dy_bat = dy_ref = None
+    if of("dyno"):                                                     # 섀시다이나모 — 롤러 값 · 전력 분석기의 직류 버스 (에너지미터가 없으면 배터리 블록)
+        dy_roll, dy_bat, st, dy_ref = _dyno_window_blocks(w, of("dyno"), f"다이나모 PC 시각을 기준 시계로 옮김 — {said(of('dyno'))}")
+        if dy_roll is not None:
+            blocks.append(dy_roll)
+            stats.update({k: v for k, v in st.items() if k == "vmax_kmh" or em is None})
+        if dy_bat is not None and em is None:
+            blocks.append(dy_bat)
+        else:
+            dy_bat = None
+    ref, ref_name = (em_ref, "에너지미터") if em_ref is not None else (dy_ref, "다이나모 전력 분석기")
     orion, orion_ref = _orion_block(w, of("orion"), f"Connect 시각을 기준 시계로 옮김 — {said(of('orion'))}") if of("orion") else (None, None)
     can_motor = can_pedal = can_brake = can_bat = can_bms = can_th = can_cells = None
     mono = [(x, clocks.offset(x)) for x in recs if x.device in CAN_DEVICES and clocks.known(x)
@@ -1947,7 +2079,7 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
         can_motor = _can_motor_block(wm, bam, oc) if bam is not None else None
         can_pedal = _pedal_block(wm, apps, em_ref) if apps is not None and len(apps) else None
         can_brake = _brake_block(wm, _window_can(w, mono, "analog"), _evo_choice(w.event_dir, mono[0][0].rec, mono[0][0].meta))
-        if em is None and ost is not None:                             # 에너지미터가 없으면 Orion CAN 의 팩 전압 · 전류 (GPS 세션과 같게, 2026-11-17)
+        if em is None and dy_bat is None and ost is not None:          # 에너지미터가 없으면 Orion CAN 의 팩 전압 · 전류 (GPS 세션과 같게, 2026-11-17)
             can_bat, can_st, _ = _can_battery_block(wm, ost, oc)
             if can_bat is not None:
                 stats.update(can_st)
@@ -1961,24 +2093,27 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
                 b.checks.insert(0, f"Monolith 가 받은 차량 CAN — Monolith 시각을 기준 시계로 옮김 ({said(mono)})")
     part = of("stm32")
     if part:
-        skip = tuple(k for k, b in (("battery", em or can_bat), ("bms", orion or can_bms), ("motor", can_motor)) if b is not None)
-        made = _stm32_make(w, {x.rec: off for x, off in part},
-                           f"백업 로거 시각(lefdata evo-stm32 가 다른 장비에 맞춰 둔 것)을 기준 시계로 옮김 — {said(part)}", skip=skip, ref=em_ref)
+        skip = tuple(k for k, b in (("battery", em or dy_bat or can_bat), ("bms", orion or can_bms), ("motor", can_motor)) if b is not None)
+        ways = [w_ for w_, b in (("백업 로거 시각(lefdata evo-stm32 가 다른 장비에 맞춰 둔 것)을 기준 시계로 옮김", False),
+                                 ("로거 경과시간을 다이나모 직류 전압 파형에 맞춘 지도로 다이나모 시각에 놓고 기준 시계로 옮김 (lefdata dyno, "
+                                  + _placed_text(part) + ")", True)) if any((x.place is not None) == b for x, _ in part)]
+        made = _stm32_make(w, {x.rec: off for x, off in part}, f"{' · '.join(ways)} — {said(part)}", skip=skip, ref=ref, ref_name=ref_name,
+                           maps={x.rec: x.place.to_dyno for x, _ in part if x.place is not None})
         bat = next((b for b in made if b.key == "battery"), None)
-        if bat is not None and em is None:
+        if bat is not None and em is None and dy_bat is None:
             p, i = (next(c for c in bat.series if c.key == k) for k in ("power_kw", "current_a"))
             ok = np.isfinite(p.v)
             stats.update(net_wh=round(float(np.trapezoid(p.v[ok], p.t_s[ok]) / 3.6)), i_max_a=round(float(np.nanmax(i.v))))
         blocks += made
     if can_motor is not None:
-        if em_ref is not None and any(c.key == "vdc_v" for c in can_motor.series):
+        if ref is not None and any(c.key == "vdc_v" for c in can_motor.series):
             vdc = next(c for c in can_motor.series if c.key == "vdc_v")
-            _add_check(can_motor, _agree(vdc.t_s, vdc.v, em_ref["t"], em_ref["volt"], "stm32", "모터 컨트롤러의 DC 버스 전압을 에너지미터 전압과 대 봄"))
+            _add_check(can_motor, _agree(vdc.t_s, vdc.v, ref["t"], ref["volt"], "stm32", f"모터 컨트롤러의 DC 버스 전압을 {ref_name} 전압과 대 봄"))
         blocks.append(can_motor)
     if orion is not None:
-        if em_ref is not None and orion_ref is not None:
-            _add_check(orion, _agree(orion_ref["t"], orion_ref["amp"], em_ref["t"], em_ref["amp"], "orion",
-                                     "Orion 팩 전류를 에너지미터 전류와 대 봄"))
+        if ref is not None and orion_ref is not None:
+            _add_check(orion, _agree(orion_ref["t"], orion_ref["amp"], ref["t"], ref["amp"], "orion",
+                                     f"Orion 팩 전류를 {ref_name} 전류와 대 봄"))
         blocks.append(orion)
     if can_bat is not None:
         blocks.append(can_bat)
@@ -1994,11 +2129,13 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
         blocks.append(can_brake)
     part = of("lef26_logger")
     if part:
-        logs = [lef26_laps.read_logger(x.dir, lef26_clock.ClockMap(np.array([0.0, x.t1 - x.t0]), np.array([x.t0 + off, x.t1 + off]), 1.0, 1.0),
-                                       np.zeros(0)) for x, off in part]
-        ways = [w_ for w_, b in (("로거 시각(변환기가 바로잡은 RTC 시각 t_abs)을 기준 시계로 옮김", False),
-                                 ("로거가 켜진 뒤의 시각(새 로그 — RTC 가 켤 때 00:00)에 전원 켬 시각을 더해 기준 시계로 옮김", True))
-                if any(bool(x.boot) == b for x, _ in part)]
+        logs = [lef26_laps.read_logger(x.dir, _logger_map(x, off), np.zeros(0)) for x, off in part]
+        kind = lambda x: "dyno" if x.place is not None else "boot" if x.boot else "rtc"     # noqa: E731
+        ways = [w_ for w_, k in (("로거 시각(변환기가 바로잡은 RTC 시각 t_abs)을 기준 시계로 옮김", "rtc"),
+                                 ("로거가 켜진 뒤의 시각(새 로그 — RTC 가 켤 때 00:00)에 전원 켬 시각을 더해 기준 시계로 옮김", "boot"),
+                                 ("로거 경과시간을 다이나모 직류 전압 파형에 맞춘 지도로 다이나모 시각에 놓고 기준 시계로 옮김 (lefdata dyno, "
+                                  + _placed_text(part) + ")", "dyno"))
+                if any(kind(x) == k for x, _ in part)]
         how = f"{' · '.join(ways)} — {said(part)}."
         made = _logger_blocks(w, logs, how)
         imu = _logger_imu_block(w, logs, how)
@@ -2008,9 +2145,9 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
             b.cautions.insert(0, f"시계 속도를 바로잡지 못한 로거 레코딩이 섞여 있음 ({', '.join(mixed)}) — 그 부분의 시각은 몇 초씩 밀려 있을 수 있음")
         mot = next((b for b in made if b.key == "motor"), None)
         vdc = next((c for c in mot.series if c.key == "vdc_v"), None) if mot is not None else None
-        if em_ref is not None and vdc is not None:
-            _add_check(mot, _agree(vdc.t_s, vdc.v, em_ref["t"], em_ref["volt"], "lef26_logger",
-                                   "로거의 DC 버스 전압을 에너지미터 전압과 대 봄"))
+        if ref is not None and vdc is not None:
+            _add_check(mot, _agree(vdc.t_s, vdc.v, ref["t"], ref["volt"], "lef26_logger",
+                                   f"로거의 DC 버스 전압을 {ref_name} 전압과 대 봄"))
         made = _logger_battery_or_not(made, blocks, stats)
         blocks += made
     return blocks, stats
@@ -2166,7 +2303,7 @@ def _timed_one(e: dict, event_dir: Path, notes: dict, made: dict, ctx, ev: dict,
         discipline=e.get("discipline", ""), place=ev.get("place", ""), driver=e.get("driver", ""),
         event_id=f"{event_dir.parent.name}/{event_dir.name}", stats=stats, laps=w.laps, blocks=blocks,
         missing=[Missing(m["data"], m["status"], m["reason"], m.get("ask", ""), m.get("block", "")) for m in notes.get("missing", [])
-                 if not m.get("sessions") or e.get("name") in m["sessions"]],
+                 if (not m.get("sessions") or e.get("name") in m["sessions"]) and m.get("block") not in {b.key for b in blocks}],     # 그 블록이 있으면 '없음' 을 뺀다 (GPS 세션과 같게)
         notes=list(e.get("notes", [])) + lines + list(day_notes.get(f"{start:%Y-%m-%d}", [])), made=made, split_by="time")
 
 
@@ -2591,6 +2728,21 @@ CODE_PAGES = {
                    "가진 로그 전부를 이 정의로 읽어 체크섬 실패 0 확인"],
         "cautions": ["미터의 절대 시각은 사람이 맞춘 시계. 다른 장비보다 수 분 앞서 있을 수 있음"],
         "tests": ["tests/test_fsk_evo_golden.py", "tests/test_em_laps.py"]},
+    "dyno": {
+        "title": "섀시다이나모 기록 → 롤러 · 직류 버스 표 (dyno)", "files": ["src/lefdata/dyno.py"],
+        "command": "lefdata dyno --event <이벤트 폴더>",
+        "what": ["다이나모 운영 프로그램이 내보낸 기록(확장자 .xls 지만 CP949 탭 구분 텍스트 — 1줄 이름 · 2줄 단위 · 0.1 s 마다 한 줄)을 표로 바꿈",
+                 "열 이름을 ASCII 로 바꿔 전부 남김 (모르는 열은 col_<번호>). 시작 시각은 파일 이름에만 있어 그것을 씀 (다이나모 PC 시계)",
+                 "절대 시각이 없는 차 로거 레코딩(25Evo STM32 · LEF-26 로거)을 다이나모 직류 전압 파형에 맞춤 — 긴 레코딩은 40 s 창들로 직선을 맞추고 "
+                 "그 자리에서 다이나모 파일마다 다시 대 봄. 짧은 레코딩은 사람이 catalog_notes.toml 에 적은 짝만 확인해서 씀"],
+        "inputs": "raw_dyno/*_dyno.xls (기록을 켜고 끌 때마다 파일 하나) · 로거 변환이 끝난 normalized/",
+        "outputs": "normalized/<레코딩>_dyno/dyno.parquet — t_rel_ms · t_abs · speed_kmh · force_n · roller_power_w · dc_voltage_v · dc_current_a · dc_power_w … · "
+                   "derived/dyno_alignment.csv — 로거 레코딩 ↔ 다이나모 파일 짝 (상관 · 방법 · 못 맞춘 이유)",
+        "checks": ["로거 짝은 파일 전체 파형의 상관이 문턱을 넘을 때만 씀 — 같은 다이나모 파일이 한 로거의 두 레코딩에 맞으면 둘 다 안 씀",
+                   "세션에서 로거 DC 버스 전압을 다이나모 직류 전압과 다시 대 봐서 어긋나면 clock_mismatch"],
+        "cautions": ["다이나모 PC 시계는 다른 장비와 수 분 어긋날 수 있음 — catalog_notes.toml 의 [clocks.dyno] 로 옮김",
+                     "롤러 힘 · 출력은 롤러 쪽 값. 가속 중에는 바퀴 힘과 같지 않음. 장비가 계산한 효율 열은 세션 채널로 내지 않음"],
+        "tests": ["tests/test_dyno.py"]},
     "gopro": {
         "title": "온보드 영상 → GPS · 가속도 표 (gopro · video)", "files": ["src/lefdata/gopro.py", "src/lefdata/video.py"],
         "command": "lefdata gopro --event <이벤트 폴더> --laps",

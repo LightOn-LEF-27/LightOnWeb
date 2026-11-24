@@ -8,6 +8,7 @@
     lefdata gopro               온보드 영상 → normalized/ (GPS·IMU)
     lefdata check               데이터 품질 검사 (시간축·물리범위·공백·중복)
     lefdata energymeter         FSK 에너지미터(FSK-EEM) .log → normalized/
+    lefdata dyno                섀시다이나모 기록(raw_dyno/*.xls) → normalized/ + 시각 없는 로거 레코딩을 다이나모 직류 전압에 맞춤 → derived/dyno_alignment.csv
     lefdata evo-stm32           25Evo STM32 백업 로거 CSV → normalized/ + 시계 속도·시작 시각 맞추기 (--clock em|gps)
     lefdata evo-can             25Evo Monolith 가 받은 CAN → 가속페달 · Orion · 모터 컨트롤러 · 써미스터 · 셀 방송 표 (normalized/<레코딩>/apps · orion_can · orion_stream · bamocar · thermistor · orion_cells)
     lefdata orion               Orion BMS Connect CSV(Utility 변환본) → normalized/
@@ -30,7 +31,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import (clocks, em_laps, energymeter, events, evo_can, evo_stm32, laps, lef26, lef26_clock, lef26_laps, monolith, motor_runs, orion,
+from . import (clocks, dyno, em_laps, energymeter, events, evo_can, evo_stm32, laps, lef26, lef26_clock, lef26_laps, monolith, motor_runs, orion,
                paths, quality, video)
 
 
@@ -69,6 +70,10 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("energymeter", help="FSK 에너지미터(FSK-EEM) .log → normalized/")
     p.add_argument("--event", type=Path, default=paths.LEF25EVO_FSK)
+
+    p = sub.add_parser("dyno", help="섀시다이나모 기록 → normalized/ + 시각 없는 로거 레코딩 맞추기 → derived/dyno_alignment.csv")
+    p.add_argument("--event", type=Path, required=True, help="raw_dyno/ 가 있는 이벤트 폴더 (로거 변환이 끝난 뒤에 돌린다)")
+    p.add_argument("--no-align", action="store_true", help="변환만 하고 로거 맞추기는 건너뛴다")
 
     p = sub.add_parser("evo-stm32", help="25Evo STM32 백업 로거 CSV → normalized/ + 에너지미터 시간 정렬")
     p.add_argument("--event", type=Path, default=paths.LEF25EVO_FSK)
@@ -254,6 +259,30 @@ def main(argv: list[str] | None = None) -> None:
         hv = [r for r in rows if r["hv_on"]]
         print(f"[energymeter] 레코딩 {len(rows)}개 (HV 켜짐 {len(hv)}), "
               f"방전 합계 {sum(r['discharge_wh'] for r in hv)/1000:.2f} kWh, {time.perf_counter()-t0:.1f}s")
+
+    elif args.cmd == "dyno":
+        print(f"[dyno] {args.event}")
+        rows, skipped = dyno.convert_event(args.event)
+        for r in rows:
+            print(f"  {r['recording_id']}  {r['duration_s']:>6.1f} s  롤러 최고 {r['speed_max_kmh'] or 0:5.1f} km/h  "
+                  f"직류 {'값 의심 (롤러 출력보다 작음)' if r['dc_suspect'] else '물림' if r['dc_connected'] else '안 물림/작음'} (최대 {r['dc_current_max_a'] or 0:.0f} A · {r['dc_power_max_kw'] or 0:.1f} kW)"
+                  + (f"  모르는 열 {r['unmapped_columns']}개" if r["unmapped_columns"] else ""))
+        print(f"[dyno] 레코딩 {len(rows)}개 · 건너뜀 {len(skipped)}개, {time.perf_counter()-t0:.1f}s")
+        if not args.no_align and rows:
+            al = dyno.align_event(args.event)
+            for rec, g in al.groupby("recording_id", sort=True):
+                ok = g[g["accepted"].astype(bool)]
+                if len(ok):
+                    print(f"  {rec}  짝 {len(ok)}개 ({', '.join(sorted(set(ok['method'])))}) · 상관 {ok['corr'].min():.2f} ~ {ok['corr'].max():.2f}"
+                          + (f" · 시계 기울기 {ok['g'].iloc[0]:.5f}" if ok['g'].notna().any() else ""))
+                    for _, x in g[~g["accepted"].astype(bool)].iterrows():
+                        print(f"      안 씀 {x['dyno_recording']} — {x['note']}")
+                elif g["dyno_recording"].fillna("").astype(bool).any() or g["method"].fillna("").eq("notes").any():
+                    print(f"  {rec}  짝 없음 — " + " / ".join(f"{x['dyno_recording']}: {x['note']}" for _, x in g.iterrows()))
+            quiet = al.groupby("recording_id").filter(lambda g: not g["dyno_recording"].fillna("").astype(bool).any())
+            if len(quiet):
+                print(f"  그 밖에 시각 없는 레코딩 {quiet['recording_id'].nunique()}개는 다이나모와 맞는 곳 없음 (derived/dyno_alignment.csv 의 note)")
+            print(f"[dyno] derived/dyno_alignment.csv, {time.perf_counter()-t0:.1f}s")
 
     elif args.cmd == "evo-stm32":
         print(f"[evo-stm32] {args.event}")
