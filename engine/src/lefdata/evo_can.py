@@ -6,6 +6,7 @@
                               orion_stream.parquet  Orion Connect 스트림 (0x6D0, 평균 80 Hz 대 — 팩 V/I + 슬롯 하나씩)
                               bamocar.parquet       모터 컨트롤러 응답 (0x181, 레지스터마다 10 Hz) — 시각 · 레지스터 · 원시값, 한 줄에 하나
                               thermistor.parquet    Orion 써미스터 확장 모듈 (0x1838F380 써미스터 하나씩 10 Hz · 0x1839F380 모듈 요약) — LEF-26 의 같은 표와 같은 열
+                              orion_cells.parquet   Orion 셀 방송 (0x036, 셀 하나씩 돌아가며) — 셀마다 순간 전압 · 개방 전압 · 내부 저항 · 균형 중
 
 정의의 출처 (팀 문서):
     0x7A0 ~ 0x7A2   25Evo APPS 보드 저장소의 진단 DBC (리틀 엔디언, 세 프레임이 같은 순번)
@@ -16,11 +17,17 @@
     0x181           BAMOCAR 주기 응답 (Unitek CAN 매뉴얼). [0] 레지스터 번호 · 리틀 엔디언 값 — DLC 4 = 부호 있는 16비트, DLC 6 = 부호 없는 32비트.
                     0x66 (필터 없는 DC 버스) · 0x27 · 0x28 (Iq · Id) 는 요청할 때만 온다 — 0x66 은 0xEB 와 같은 배율. 상태 · 오류 비트는 Unitek N-Drive 매뉴얼. 환산은 LEF-26 과 같은 제조사 표 (lef26) · 모터 온도는 evo_stm32 의 KTY81 표
     0x1838F380 · 0x1839F380   Orion 써미스터 확장 모듈의 CAN 문서 (lef26 과 같은 출처) — 써미스터 하나씩 내는 방송 · 모듈 → BMS 요약. 확장 ID
+    0x036           Orion BMS 2 Utility 도움말의 셀 방송 (Cell Broadcast Message). [0] 셀 번호 (0 부터 — 표에는 + 1 해 Orion 이 0x6D0 에 내는
+                    최고 · 최저 저항 셀 번호와 같은 번호로) · [1..2] 순간 전압 0.1 mV · [3..4] 내부 저항 0.01 mΩ (15비트, 최상위 비트 = 균형 중) ·
+                    [5..6] 개방 전압 0.1 mV. 빅 엔디언
 
 Orion 이 켜진 직후 약 1 초 (0x446 열 프레임) 는 써미스터를 아직 읽지 않아 최고 · 최저 온도가 25 / 25 ℃ 로 나온다 (0x6D0 의 온도 슬롯도 25, 최고 · 최저 번호는 0).
 첫 프레임의 최저 셀이 다른 값으로 튀기도 한다. 그 구간은 orion_boot 로 표시하고 그 온도 · 튄 셀 전압은 빈 값으로 둔다 (팩 전압 · 전류는 그대로).
 
-체크섬: 0x446 · 0x447 = 바이트 0 ~ 6 의 합, 0x6D0 = (ID + 8 + 바이트 0 ~ 6 의 합) 의 하위 8비트, 0x1839F380 = 바이트 0 ~ 6 의 합 + 0x39 + 8
+셀 저항은 Orion 이 부하 때 재서 바꾸는 추정값이다. 아직 재지 않았을 때는 모든 셀이 같은 값(프로파일의 저항표 값으로 보인다)을 낸다 —
+한 바퀴의 셀이 모두 같은 저항이면 기본값으로 보고, 셀마다 그 값이 바뀌기 전까지 빈 값으로 둔다 (resistance_default).
+
+체크섬: 0x446 · 0x447 = 바이트 0 ~ 6 의 합, 0x6D0 · 0x036 = (ID + 8 + 바이트 0 ~ 6 의 합) 의 하위 8비트, 0x1839F380 = 바이트 0 ~ 6 의 합 + 0x39 + 8
 (0x1838F380 은 체크섬이 없다). 틀린 프레임은 버리지 않고 checksum_ok 에 표시한다.
 시각은 Monolith 시계 그대로 (같은 레코딩의 GPS 와 같은 축) — 다른 장비에 맞추는 것은 세션을 만드는 쪽이 한다.
 """
@@ -46,6 +53,10 @@ ORION_BOOT_GAP_MS = 1500      # 0x446 (96 ms) 이 이만큼 끊겼다 다시 오
 ORION_BOOT_CELL_V = 0.05      # 켠 직후 구간에서 최저 셀이 그 구간의 중앙값과 이만큼 넘게 다르면 튄 값으로 본다
 THERM_SINGLE, THERM_MODULE = 0x1838F380, 0x1839F380   # 써미스터 확장 모듈 (모듈 0) — 하나씩 방송 · 모듈 → BMS 요약
 THERM_MODULE_CHECK = 0x39 + 8                          # 모듈 → BMS 체크섬 = 바이트 합 + 0x39 + 길이 (lef26.THERMISTOR_CHECK 와 같다)
+ORION_CELLS = 0x036           # Orion 셀 방송 — 셀 하나씩 차례로 (번호가 다시 작아지면 새 바퀴)
+CELL_SWEEP_GAP_MS = 1000      # 셀 방송이 이만큼 끊겼다 다시 오면 새 바퀴로 본다
+CELL_DEFAULT_MIN_CELLS = 10   # 기록 첫머리에서 잇단 이만큼의 프레임이 모두 같은 저항이면 아직 재지 않은 기본값 (잰 값은 셀마다 0.01 mΩ 단위로 다르다)
+CELL_SWEEP_MIN_SHARE = 0.9    # 한 바퀴에 셀이 이 비율 넘게 와야 그 바퀴의 최고 · 최저를 낸다 (덜 온 바퀴는 최저 셀을 놓칠 수 있다)
 TORQUE_FULL = 32767          # BAMOCAR 토크 명령의 100 %
 TORQUE_SIGN = -1             # 25Evo 는 전진 토크 명령이 음수다 (APPS 보드 설정) — 가속 + 로 바꿀 때 곱한다
 JOIN_MS = 40                 # 같은 순번의 0x7A1 · 0x7A2 를 0x7A0 에 붙일 때 이 안에서 찾는다 (20 Hz = 50 ms 간격)
@@ -61,7 +72,6 @@ BAMOCAR = 0x181
 REG_SPEED, REG_STATUS, REG_ERROR, REG_VDC, REG_T_IGBT, REG_T_MOTOR = 0x30, 0x40, 0x8F, 0xEB, 0x4A, 0x49
 REG_IQ, REG_ID = 0x27, 0x28  # 토크 · 자속 전류 (Iq · Id actual) — LEF-26 과 같은 배율. 기록은 구동할 때 − (세션이 뒤집는다). 요청할 때만 온다
 REG_VDC_FAST = 0x66          # DC 버스 전압 — 필터 없는 값 (0xEB 는 저역 필터를 거친 값). 배율은 0xEB 와 같다. 누가 요청할 때만 온다
-LOGGER_N100_RPM = N100_RPM    # 옛 이름 (실시간 live.py 가 씀) — 지금은 컨트롤러 설정 N-100 % 그대로 (evo_stm32.N100_RPM)
 STATUS_ENABLED, STATUS_READY = 0, 14                    # 0x40 비트: Ena (구동 허용) · Rdy (BTB 닫힘 — 오류가 나면 꺼진다)
 ERROR_VOLTAGE_MIN, ERROR_VOLTAGE_MAX = 5, 8             # 0x8F 비트. 5 = 전원 전압 없음 — HV 를 꺼 두면 늘 켜져 있어 고장으로 세지 않는다
 BAMOCAR_ERRORS = {0: "Eprom Read Error", 1: "HW Fault detected", 2: "RFE input not present", 3: "CAN TimeOut Error", 4: "Feedback Signal Error",
@@ -72,7 +82,7 @@ BAMOCAR_WARNINGS = {16: "Parameter conflict detected", 17: "Special CPU Fault", 
                     20: "Feedback Signal problem", 22: "Motor-Temperature (>87%)", 23: "IGBT Temperature (>87%)", 24: "Vout Saturation Max. Limit",
                     26: "SpeedActual resolution Limit", 27: "Check ECode ID: 0x94", 28: "Tripzone Glitch detected", 29: "ADC Sequencer problem",
                     30: "ADC Measurement problem", 31: "Bleeder resistor load (>87%)"}
-TABLES = ("apps", "orion_can", "orion_stream", "bamocar", "thermistor")
+TABLES = ("apps", "orion_can", "orion_stream", "bamocar", "thermistor", "orion_cells")
 
 
 # ---------------------------------------------------------------- 프레임 → 값 (데이터 8 바이트 배열 [n × 8])
@@ -189,6 +199,83 @@ def decode_thermistor_module(d: np.ndarray) -> pd.DataFrame:
                          "checksum_ok": ((d[:, :7].astype(np.int64).sum(axis=1) + THERM_MODULE_CHECK) & 0xFF) == d[:, 7]})
 
 
+def decode_orion_cells(d: np.ndarray) -> pd.DataFrame:
+    """0x036 — 셀 하나: 셀 번호 (1 부터) · 순간 전압 (V) · 개방 전압 (V) · 내부 저항 (mΩ) · 균형 중 (저항의 최상위 비트)."""
+    return pd.DataFrame({"cell": d[:, 0].astype(np.int64) + 1, "cell_v": _u16be(d, 1) * 1e-4, "ocv_v": _u16be(d, 5) * 1e-4,
+                         "resistance_mohm": (_u16be(d, 3) & 0x7FFF) * 0.01, "balancing": (d[:, 3] & 0x80) > 0,
+                         "checksum_ok": checksum_ok(d, ORION_CELLS)})
+
+
+def cell_sweeps(t_ms: np.ndarray, cell: np.ndarray) -> np.ndarray:
+    """셀 방송 (시각순) → 바퀴 번호 (0 부터). 셀 번호가 줄거나 같으면 · CELL_SWEEP_GAP_MS 넘게 끊기면 새 바퀴."""
+    t, c = np.asarray(t_ms, float), np.asarray(cell, np.int64)
+    if not len(t):
+        return np.zeros(0, np.int64)
+    return np.cumsum(np.r_[True, (np.diff(c) <= 0) | (np.diff(t) > CELL_SWEEP_GAP_MS)]) - 1
+
+
+def resistance_default(cell: np.ndarray, r: np.ndarray) -> np.ndarray:
+    """셀 방송 (시각순) → 그 저항이 Orion 이 아직 재지 않은 기본값인가.
+
+    잇단 프레임 셀 수만큼(= 한 바퀴 — 서버에 2 Hz 로 줄여 남은 기록도 같은 수면 셀이 거의 다 나온다)이 모두 같은 저항이면 기본값이다.
+    기록 첫머리는 그때까지 온 프레임으로 (CELL_DEFAULT_MIN_CELLS 개부터) 본다. Orion 이 다시 켜지면 기본값 한 바퀴가 다시 오므로 따로 끊지 않는다.
+    Orion 은 새로 잰 값을 셀마다 따로 바꿔 내므로, 셀마다 그 같은 값이 이어지는 동안도 기본값으로 본다.
+    잰 값이 우연히 기본값과 같으면 바뀔 때까지 빈 값이 된다 (빈 쪽으로 틀린다).
+    """
+    c, v = np.asarray(cell, np.int64), np.asarray(r, float)
+    if not len(c):
+        return np.zeros(0, bool)
+    k = max(len(np.unique(c)), CELL_DEFAULT_MIN_CELLS)
+    roll = pd.Series(v).rolling(k, min_periods=CELL_DEFAULT_MIN_CELLS)
+    end = (roll.max() == roll.min()).to_numpy().astype(float)      # 그 프레임까지 한 바퀴 (첫머리는 온 만큼) 가 한 값
+    flat = pd.Series(end[::-1]).rolling(k, min_periods=1).max().to_numpy()[::-1] > 0   # 그런 창에 든 프레임 전부
+    order = np.lexsort((np.arange(len(c)), c))                     # 셀마다, 시각순
+    co, ro = c[order], v[order]
+    run = np.cumsum(np.r_[True, (np.diff(co) != 0) | (np.diff(ro) != 0)])      # 한 셀의 같은 값이 이어지는 덩어리
+    out = np.empty(len(c), bool)
+    out[order] = pd.Series(flat[order]).groupby(run).transform("any").to_numpy()
+    return out
+
+
+def _sweep_need(cells: pd.DataFrame) -> int:
+    return int(np.ceil(CELL_SWEEP_MIN_SHARE * cells["cell"].nunique()))
+
+
+def cell_sweep_frames(cells: pd.DataFrame, t_col: str = "t_s") -> pd.DataFrame:
+    """셀 방송 표 → 체크섬이 맞는 프레임 (시각순) + sweep (바퀴 번호) · full (셀이 CELL_SWEEP_MIN_SHARE 넘게 온 바퀴인가).
+    t_col 이 _ms 로 끝나면 밀리초, 아니면 초."""
+    ok = cells[cells["checksum_ok"]].sort_values(t_col, kind="stable").reset_index(drop=True)
+    t = ok[t_col].to_numpy(float)
+    sw = cell_sweeps(t if t_col.endswith("_ms") else t * 1000, ok["cell"].to_numpy())
+    full = pd.Series(ok["cell"].to_numpy()).groupby(sw).transform("nunique").to_numpy() >= _sweep_need(ok) if len(ok) else np.zeros(0, bool)
+    return ok.assign(sweep=sw, full=full)
+
+
+def cell_sweep_stats(cells: pd.DataFrame, t_col: str = "t_s") -> pd.DataFrame:
+    """셀 방송 표 (decode_orion_cells + 시각) → 한 바퀴마다 한 줄.
+
+    열: sweep (cell_sweep_frames 의 바퀴 번호) · t (바퀴의 가운데 시각) · n (온 셀 수) · v_max · v_min · spread_mv · v_min_cell (가장 낮은 셀 번호) · r_max · r_median (잰 저항만,
+    잰 셀이 CELL_SWEEP_MIN_SHARE 넘게 있을 때) · r_max_cell · balancing_n. 체크섬이 맞는 프레임만, 셀이 덜 온 바퀴는 뺀다.
+    """
+    cols = ["sweep", "t", "n", "v_max", "v_min", "spread_mv", "v_min_cell", "r_max", "r_median", "r_max_cell", "balancing_n"]
+    f = cell_sweep_frames(cells, t_col)
+    need = _sweep_need(f) if len(f) else 0
+    f = f[f["full"]].reset_index(drop=True)
+    if not len(f):
+        return pd.DataFrame(columns=cols)
+    f = f.assign(_r=f["resistance_mohm"].fillna(-np.inf))
+    g = f.groupby("sweep")
+    s = g.agg(t0=(t_col, "first"), t1=(t_col, "last"), n=("cell", "nunique"), v_max=("cell_v", "max"), v_min=("cell_v", "min"),
+              r_n=("resistance_mohm", "count"), r_max=("resistance_mohm", "max"), r_median=("resistance_mohm", "median"), balancing_n=("balancing", "sum"))
+    s["v_min_cell"] = f.loc[g["cell_v"].idxmin(), "cell"].to_numpy()
+    s["r_max_cell"] = pd.array(f.loc[g["_r"].idxmax(), "cell"].to_numpy(), dtype="Int64")
+    few = s["r_n"] < need
+    s.loc[few, ["r_max", "r_median"]] = np.nan
+    s.loc[few, "r_max_cell"] = pd.NA
+    return s.assign(sweep=s.index.to_numpy(), t=(s["t0"] + s["t1"]) / 2, spread_mv=((s["v_max"] - s["v_min"]) * 1000).round(1),
+                    balancing_n=s["balancing_n"].astype(np.int64))[cols].reset_index(drop=True)
+
+
 def stream_signals(stream: pd.DataFrame, t_col: str = "t_s") -> dict[str, tuple[np.ndarray, np.ndarray]]:
     """0x6D0 표 → 슬롯 값마다 (시각, 값). 체크섬이 맞는 프레임만, Orion 이 켜진 직후(orion_boot) 는 뺀다."""
     ok = stream[stream["checksum_ok"] & ~(stream["orion_boot"] if "orion_boot" in stream else False)]
@@ -260,7 +347,7 @@ def _data(f: pd.DataFrame, can_id: int) -> tuple[pd.DataFrame, np.ndarray]:
 
 
 def decode_recording(rec_dir: Path) -> dict[str, pd.DataFrame]:
-    """frames.parquet → {apps, orion_can, orion_stream, bamocar, thermistor} (있는 것만)."""
+    """frames.parquet → {apps, orion_can, orion_stream, bamocar, thermistor, orion_cells} (있는 것만)."""
     f = _frames(rec_dir)
     out = {}
     t, d = _data(f, APPS_RAW)
@@ -302,6 +389,11 @@ def decode_recording(rec_dir: Path) -> dict[str, pd.DataFrame]:
             th[c] = th[c].astype("Int64") if c in th else pd.array([pd.NA] * len(th), dtype="Int64")
         th["checksum_ok"] = th["checksum_ok"].astype("boolean") if "checksum_ok" in th else pd.array([pd.NA] * len(th), dtype="boolean")
         out["thermistor"] = th
+    t, d = _data(f, ORION_CELLS)
+    if len(d):
+        cl = pd.concat([t, decode_orion_cells(d)], axis=1).sort_values("t_rel_ms", kind="stable").reset_index(drop=True)
+        dflt = resistance_default(cl["cell"].to_numpy(), cl["resistance_mohm"].to_numpy())
+        out["orion_cells"] = cl.assign(resistance_mohm=cl["resistance_mohm"].mask(dflt), resistance_default=dflt)
     s = f[f["can_id"] == BAMOCAR]
     if len(s):
         p = np.frombuffer(b"".join(s["payload"]), dtype=np.uint8).reshape(-1, 16)      # 이 ID 는 길이가 섞여 있다 — 오프셋 6 = 길이, 8 ~ = 데이터
@@ -328,6 +420,13 @@ def summarize(tables: dict[str, pd.DataFrame]) -> dict:
         one = th[th["source"] == "single"]
         s["thermistor"] = {"rows": int(len(th)), "single_rows": int(len(one)), "thermistors": int(one["thermistor_id"].nunique()),
                            "module_checksum_fail": int((th["checksum_ok"] == False).sum()), "fault_rows": int(th["fault"].sum())}  # noqa: E712
+    if "orion_cells" in tables:
+        c = tables["orion_cells"]
+        ok = c[c["checksum_ok"]]
+        sw = cell_sweep_stats(c, "t_rel_ms")
+        s["orion_cells"] = {"rows": int(len(c)), "checksum_fail": int((~c["checksum_ok"]).sum()), "cells": int(ok["cell"].nunique()),
+                            "sweeps": int(len(sw)), "resistance_measured_rows": int(ok["resistance_mohm"].notna().sum()),
+                            "resistance_default_rows": int(ok["resistance_default"].sum()), "balancing_rows": int(ok["balancing"].sum())}
     if "bamocar" in tables:
         b = tables["bamocar"]
         sig = bamocar_signals(b, "t_rel_ms")
@@ -341,15 +440,23 @@ def summarize(tables: dict[str, pd.DataFrame]) -> dict:
     return s
 
 
-def convert_event(event_dir: Path) -> list[dict]:
-    """이벤트의 Monolith 레코딩마다 CAN 을 풀어 표를 쓴다 → 레코딩마다 요약 한 줄. CAN 이 없는 레코딩은 건너뛴다."""
+def convert_event(event_dir: Path, skipped: list | None = None) -> list[dict]:
+    """이벤트의 Monolith 레코딩마다 CAN 을 풀어 표를 쓴다 → 레코딩마다 요약 한 줄. CAN 이 없는 레코딩은 건너뛴다.
+    skipped 를 주면 건너뛴 레코딩을 (레코딩, 이유) 로 담는다."""
     rows = []
+    skip = skipped if skipped is not None else []
     for meta_path in sorted((Path(event_dir) / "normalized").glob("*/meta.json")):
         rec_dir = meta_path.parent
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        if not meta.get("source", {}).get("logger", "").startswith("Monolith") or not (rec_dir / "frames.parquet").exists():
+        if not meta.get("source", {}).get("logger", "").startswith("Monolith"):
+            skip.append((rec_dir.name, "Monolith 아님"))
+            continue
+        if not (rec_dir / "frames.parquet").exists():
+            skip.append((rec_dir.name, "frames.parquet 없음"))
             continue
         tables = decode_recording(rec_dir)
+        if not tables:
+            skip.append((rec_dir.name, "CAN 프레임 없음"))
         for name in TABLES:                                     # 다시 돌리면 옛 표가 남지 않게
             (rec_dir / f"{name}.parquet").unlink(missing_ok=True)
         for name, t in tables.items():

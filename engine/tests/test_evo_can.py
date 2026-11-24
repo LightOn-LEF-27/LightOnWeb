@@ -373,3 +373,140 @@ def test_thermistor_block_gives_the_spread_and_each_thermistor_rise():
     assert per["thermistor_id"].tolist() == [0, 1, 2] and per["rise_c"].tolist() == [1, 1, 1] and per["below_hot_c"].tolist() == [2, 1, 0]
     assert any("써미스터 3개" in f and "0.3 s" in f for f in b.facts)
     assert cb._can_thermistor_block(r, th.assign(fault=True)) is None                    # 고장 표시만 있으면 블록 없음
+
+
+# ---------------------------------------------------------------- Orion 셀 방송 (0x036)
+
+def _cell(n0: int, v: float, r_mohm: float, ocv: float | None = None, bal: bool = False) -> bytes:
+    """0x036 한 프레임 — [셀 번호 (0 부터), 순간 전압 0.1 mV, 저항 0.01 mΩ (최상위 비트 = 균형 중), 개방 전압 0.1 mV, 체크섬 (ID + 8 + 합)]."""
+    r = round(r_mohm * 100) | (0x8000 if bal else 0)
+    return bytes(_frame(bytes([n0]) + _be(round(v * 1e4)) + _be(r) + _be(round((v if ocv is None else ocv) * 1e4)), ec.ORION_CELLS + 8))
+
+
+def test_orion_cell_broadcast_decodes_number_voltage_resistance_and_balancing(tmp_path):
+    """셀 번호는 0 부터 오고 표에는 + 1. 저항의 최상위 비트는 균형 중 표시라 값에서 뺀다. 체크섬에 ID + 8."""
+    rows = [_can_row(0, ec.ORION_CELLS, _cell(0, 3.9123, 1.87, 3.9201)), _can_row(4, ec.ORION_CELLS, _cell(69, 3.8, 2.45, bal=True))]
+    bad = bytearray(_cell(1, 3.9, 1.9))
+    bad[7] ^= 1
+    rows.append(_can_row(8, ec.ORION_CELLS, bytes(bad)))
+    pd.DataFrame(rows).to_parquet(tmp_path / "frames.parquet", index=False)
+    tables = ec.decode_recording(tmp_path)
+    c = tables["orion_cells"]
+    assert c["cell"].tolist() == [1, 70, 2] and c["cell_v"].tolist() == pytest.approx([3.9123, 3.8, 3.9]) and c["ocv_v"].iloc[0] == pytest.approx(3.9201)
+    assert c["resistance_mohm"].tolist() == pytest.approx([1.87, 2.45, 1.9]) and c["balancing"].tolist() == [False, True, False]
+    assert c["checksum_ok"].tolist() == [True, True, False] and not c["resistance_default"].any()      # 세 프레임으로는 기본값인지 모른다
+    s = ec.summarize(tables)["orion_cells"]
+    assert s["rows"] == 3 and s["checksum_fail"] == 1 and s["cells"] == 2 and s["balancing_rows"] == 1
+
+
+def test_cell_resistance_default_is_blanked_until_each_cell_changes():
+    """한 바퀴의 셀이 모두 같은 저항 = 아직 재지 않은 기본값. 새로 잰 값은 셀마다 따로 바뀌므로 셀마다 바뀔 때까지 기본값으로 본다.
+    잰 뒤에 우연히 기본값과 같은 값이 나온 셀은 남긴다. 셀 수보다 적은 첫머리 (드문드문 남은 기록) 도 10 프레임이 같으면 기본값."""
+    cells = list(range(1, 13))
+    dflt, meas = 3.0, {c: 1.8 + 0.01 * c for c in cells}
+    sweeps = [{c: dflt for c in cells}] * 3                                                  # 0 ~ 2: 기본값
+    sweeps.append({c: meas[c] if c <= 6 else dflt for c in cells})                           # 3: 앞 절반만 새로 잼
+    sweeps.append({c: meas[c] if c <= 11 else dflt for c in cells})                          # 4: 12 번만 아직
+    sweeps.append({c: meas[c] + 0.05 for c in cells})                                        # 5: 모두 잰 값
+    sweeps.append({**{c: meas[c] + 0.05 for c in cells}, 3: dflt})                            # 6: 3 번이 잰 값으로 기본값과 같음
+    cell = np.array([c for _ in sweeps for c in cells])
+    r = np.array([sw[c] for sw in sweeps for c in cells])
+    got = ec.resistance_default(cell, r).reshape(len(sweeps), len(cells))
+    assert got[:3].all() and got[3].tolist() == [False] * 6 + [True] * 6 and got[4].tolist() == [False] * 11 + [True]
+    assert not got[5:].any()
+    head = np.array([7, 3, 11, 2, 9, 5, 12, 1, 8, 4] + cells)                                # 서버에 2 Hz 로 남은 것처럼 셀이 건너뛰며 옴
+    hr = np.r_[np.full(10, 4.0), [meas[c] for c in cells]]
+    assert ec.resistance_default(head, hr).tolist() == [True] * 10 + [False] * 12
+    assert not ec.resistance_default(np.arange(1, 10), np.full(9, 4.0)).any()               # 10 프레임 아래는 모른다 → 남긴다
+
+
+def _cells_table(n_sweep: int = 200, n: int = 12, dt: float = 0.01, weak: int = 7, sag_v: float = 0.05, r_weak: float = 2.5) -> pd.DataFrame:
+    """셀 n 개가 dt 마다 하나씩 도는 셀 방송 — 짝수 바퀴는 부하 (모든 셀 −0.1 V, 약한 셀은 sag_v 더). 저항은 약한 셀만 r_weak, 나머지 2.0."""
+    rows = []
+    for k in range(n_sweep):
+        load = k % 2 == 0
+        for c in range(1, n + 1):
+            v = 3.9 - (0.1 if load else 0) - (sag_v if load and c == weak else 0) + 0.001 * c
+            rows.append({"t_s": (k * n + c - 1) * dt, "cell": c, "cell_v": v, "ocv_v": 3.9 + 0.001 * c, "resistance_mohm": r_weak if c == weak else 2.0,
+                         "balancing": c == n, "checksum_ok": True, "resistance_default": False})
+    return pd.DataFrame(rows)
+
+
+def test_cell_sweeps_give_high_low_and_drop_partial_ones():
+    """셀 번호가 다시 작아지면 새 바퀴. 셀이 90 % 아래로 온 바퀴는 뺀다. 저항 최고 · 중앙은 잰 셀이 충분할 때만."""
+    c = _cells_table(n_sweep=4)
+    c = c[~((c["t_s"] >= 0.12) & (c["t_s"] < 0.24) & (c["cell"] > 8))]                     # 둘째 바퀴는 셀 8개만
+    late = c["t_s"] >= 0.36
+    c.loc[late, "resistance_mohm"] = np.where(c.loc[late, "cell"] <= 5, 2.0, np.nan)        # 넷째 바퀴는 5개만 잰 값
+    sw = ec.cell_sweep_stats(c)
+    assert len(sw) == 3 and sw["n"].tolist() == [12, 12, 12]
+    first = sw.iloc[0]
+    assert first["v_min_cell"] == 7 and first["spread_mv"] == pytest.approx((0.012 - 0.007 + 0.05) * 1000)
+    assert first["r_max"] == 2.5 and first["r_max_cell"] == 7 and first["r_median"] == 2.0 and first["balancing_n"] == 1
+    assert pd.isna(sw["r_max"].iloc[2]) and pd.isna(sw["r_max_cell"].iloc[2])
+    assert ec.cell_sweeps(np.array([0, 4, 8, 3000, 3004]), np.array([1, 2, 3, 4, 5])).tolist() == [0, 0, 0, 1, 1]    # 오래 끊기면 새 바퀴
+
+
+def test_cells_block_gives_the_spread_the_resistance_and_each_cell():
+    """셀 방송 → 셀 최고 · 최저 · 차 · 가장 낮은 셀 · 저항 채널, 랩마다 차 최대, 셀마다 표 (저항이 셀 중앙보다 높은 양).
+    Orion 요약(0x446) 의 최저 셀과 대 본 줄이 확인에 붙는다. 저항이 모두 기본값이면 저항 채널 없이."""
+    c = _cells_table()
+    sw = ec.cell_sweep_stats(c)
+    oc = pd.DataFrame({"t_s": sw["t"], "cell_min_v": sw["v_min"], "summary_ok": True})
+    r = _motor_run()
+    b = cb._can_cells_block(r, c, oc)
+    ch = {x.key: x for x in b.channels}
+    assert b.key == "cells" and set(ch) == {"cell_max_v", "cell_min_v", "cell_spread_mv", "cell_min_id", "r_max_mohm", "r_median_mohm", "r_max_id", "balancing_n"}
+    assert ch["cell_spread_mv"].derived and r.laps["cell_v_spread_mv"].iloc[0] == pytest.approx(sw["spread_mv"].max())
+    per = b.exports[0].table.set_index("cell")
+    assert per.loc[7, "r_over_mohm"] == pytest.approx(0.5) and per.loc[1, "r_over_mohm"] == 0 and per.loc[12, "balancing_share"] == 1
+    assert per.loc[7, "dv_min_mv"] < per.loc[6, "dv_min_mv"] - 40                           # 부하 때 약한 셀이 같은 바퀴 중앙보다 크게 처진다
+    assert any("#7 2.50 (+0.50)" in f for f in b.facts) and any("위 10 %) 에서는 #7" in f for f in b.facts)
+    assert any("100% 가 10 mV 안" in x for x in b.checks)
+    none = cb._can_cells_block(r, c.assign(resistance_mohm=np.nan, resistance_default=True), None)
+    assert not {"r_max_mohm", "r_median_mohm", "r_max_id"} & {x.key for x in none.channels} and any("기본값" in f for f in none.facts)
+    assert cb._can_cells_block(r, c.iloc[:12], None) is None                                  # 한 바퀴로는 블록 없음
+
+
+def test_cells_compare_only_sweeps_with_steady_pack_current():
+    """셀마다 다른 순간의 값이라 한 바퀴 동안 전류가 바뀌면 셀끼리의 차가 커 보인다 → 셀 전압 차 · 가장 낮은 셀은 전류가 고른 바퀴만.
+    최고 · 최저 전압 자체는 모든 바퀴. 전류는 Connect 스트림(0x6D0) 이 있으면 그것."""
+    c = _cells_table()
+    k, pos = np.arange(len(c)) // 12, np.arange(len(c)) % 12
+    load = k % 2 == 0
+    ost = pd.DataFrame({"t_s": c["t_s"], "current_a": np.where(load, 100.0, 0.0), "checksum_ok": True})     # 바퀴 안에서는 고름
+    b = cb._can_cells_block(_motor_run(), c, None, ost)
+    assert np.isfinite(b.channel("cell_spread_mv").v).all() and any("전류가 고른 바퀴 100%" in f for f in b.facts)
+    ramp = ost.assign(current_a=np.where(load, pos / 11 * 100, 0.0))                          # 부하 바퀴 안에서 0 → 100 A 로 오름
+    r = _motor_run()
+    b = cb._can_cells_block(r, c, None, ramp)
+    v = b.channel("cell_spread_mv").v
+    assert np.isnan(v[::2]).all() and np.isfinite(v[1::2]).all() and r.laps["cell_v_spread_mv"].iloc[0] == pytest.approx(11)
+    assert np.isnan(b.channel("cell_min_id").v[::2]).all() and np.isfinite(b.channel("cell_min_v").v).all()
+    assert any("전류가 고른 바퀴 50%" in f for f in b.facts) and any("#1" in f and "가장 낮은" in f for f in b.facts)
+    per = b.exports[0].table.set_index("cell")
+    assert abs(per.loc[7, "dv_min_mv"]) < 1                                                  # 고른 바퀴 (쉴 때) 로만 낸 차 — 부하 바퀴의 처짐은 빠진다
+
+
+need_cells = pytest.mark.skipif(not (REC / "orion_cells.parquet").exists(), reason="25Evo 대회 lefdata evo-can 결과 없음 (orion_cells)")
+
+
+@need_cells
+@E.need
+def test_race_cell_broadcast_agrees_with_the_orion_summary_and_stream():
+    """셀 방송의 저항 · 셀 번호 · 전압이 Orion 의 다른 프레임과 같다 — 0x6D0 의 최고 저항 (슬롯 57) · 그 셀 번호 (슬롯 65), 0x446 의 최저 셀.
+    해독 · 셀 번호 (+ 1) · 기본값 거르기의 근거."""
+    cl = pd.read_parquet(REC / "orion_cells.parquet")
+    meta = json.loads((REC / "meta.json").read_text(encoding="utf-8"))["can_decoded"]["orion_cells"]
+    assert cl["checksum_ok"].all() and cl["cell"].nunique() == E["race.cells"]
+    assert meta["resistance_measured_rows"] == E["race.cell_resistance_measured_rows"]
+    sw = ec.cell_sweep_stats(cl, "t_rel_ms").rename(columns={"t": "t_rel_ms"})
+    st = pd.read_parquet(REC / "orion_stream.parquet")
+    st = st[st["checksum_ok"] & ~st["orion_boot"]].sort_values("t_rel_ms").astype({"t_rel_ms": float})
+    for slot, col, scale in ((57, "r_max", 0.01), (65, "r_max_cell", 1)):
+        s = pd.merge_asof(st.loc[st["slot"] == slot, ["t_rel_ms", "slot_raw"]], sw[["t_rel_ms", col]].dropna(), on="t_rel_ms",
+                          direction="backward", tolerance=1000).dropna()
+        assert len(s) > 100 and (np.round(s["slot_raw"] * scale, 2) == np.round(s[col].astype(float), 2)).mean() > 0.95, slot
+    oc = pd.read_parquet(REC / "orion_can.parquet").dropna(subset=["cell_min_v"]).sort_values("t_rel_ms").astype({"t_rel_ms": float})
+    near = pd.merge_asof(oc[["t_rel_ms", "cell_min_v"]], sw[["t_rel_ms", "v_min"]], on="t_rel_ms", direction="nearest", tolerance=300).dropna()
+    assert abs(np.median(near["cell_min_v"] - near["v_min"])) < 0.001

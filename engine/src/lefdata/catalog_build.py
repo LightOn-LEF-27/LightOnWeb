@@ -14,8 +14,9 @@
                 LEF-26 차량 로거        영상과 시계를 맞춘 로거 레코딩 (`lef26-clock` 의 시계 지도로 로거 시각 → 세션 시간)
     battery · bms · motor
                 25Evo STM32 백업 로거   Monolith GPS 와 시계를 맞춘 레코딩 (`evo-stm32 --clock gps` 가 t_abs 를 채운 것)
-    pedal · bms · battery
-                25Evo 차량 CAN          Monolith 가 받은 CAN 을 `lefdata evo-can` 이 푼 것 (가속페달 · Orion). 같은 Monolith 시계라 GPS 와 같은 축
+    pedal · bms · battery · motor · thermistor · cells
+                25Evo 차량 CAN          Monolith 가 받은 CAN 을 `lefdata evo-can` 이 푼 것 (가속페달 · Orion · 모터 컨트롤러 · 써미스터 모듈 · 셀 방송).
+                                        같은 Monolith 시계라 GPS 와 같은 축
 
 GPS 가 없는 주행은 **시각 구간 세션**으로 넣는다 (`[[timed_session]]` — Run Sheet 의 시각이나 장비가 켜져 있던 동안).
 GPS 가 없으니 랩 · 코스가 없고, 그 시각에 기록이 있는 장비(에너지미터 · 25Evo STM32 백업 로거 · Orion BMS · LEF-26 로거)를
@@ -1261,6 +1262,117 @@ def _can_thermistor_block(r: _Run, th: pd.DataFrame) -> DataBlock | None:
                      cautions=["1 °C 단위"] + list(r.extra("thermistor").get("cautions", [])), series=series)
 
 
+CELL_CHECK_MV = 10      # Orion 요약(0x446)의 최저 셀과 셀 방송 한 바퀴 최저를 대 볼 때 '같다' 고 보는 차
+CELL_STEADY_A = 5       # 한 바퀴 동안 팩 전류가 이 안에서만 바뀐 바퀴로만 셀끼리 비교한다 (셀마다 다른 순간의 값이라 전류가 바뀐 만큼 모든 셀이 같이 움직여 차에 섞인다)
+
+
+def _pack_current(oc: pd.DataFrame | None, ost: pd.DataFrame | None) -> tuple[np.ndarray, np.ndarray] | None:
+    """세션 구간의 팩 전류 (시각 s, A) — Connect 스트림 0x6D0 (촘촘) 이 있으면 그것, 없으면 0x447. 둘 다 없으면 None."""
+    for d in (ost, oc):
+        if d is None or "current_a" not in d:
+            continue
+        ok = d[d["checksum_ok"].fillna(False).astype(bool)] if "checksum_ok" in d else d
+        ok = ok.dropna(subset=["current_a"]).sort_values("t_s", kind="stable")
+        if len(ok) >= 2:
+            return ok["t_s"].to_numpy(float), ok["current_a"].to_numpy(float)
+    return None
+
+
+def _can_cells_block(r: _Run, cells: pd.DataFrame, oc: pd.DataFrame | None, ost: pd.DataFrame | None = None) -> DataBlock | None:
+    """Orion 셀 방송 (0x036, 셀 하나씩 차례로) → cells 블록 — 한 바퀴마다 셀 최고 · 최저 전압 · 차 · 저항, 셀마다 표.
+    oc · ost = 같은 구간의 orion_can · orion_stream 표 (팩 전류 — 셀끼리 비교할 바퀴를 고르는 데, 0x446 최저 셀과 대 보는 데 씀. 없으면 None).
+
+    셀마다 다른 순간에 보낸 값이라 한 바퀴 동안 전류가 바뀌면 그만큼 모든 셀이 같이 움직여 셀끼리의 차에 섞인다 →
+    셀 전압 차 · 가장 낮은 셀 · 셀마다 「같은 바퀴 중앙과의 차」 는 전류가 CELL_STEADY_A 안에서만 바뀐 바퀴로만 낸다 (최고 · 최저 전압 자체는 모든 바퀴).
+    """
+    sw = evo_can.cell_sweep_stats(cells)
+    if len(sw) < 2:
+        return None
+    f = evo_can.cell_sweep_frames(cells)
+    full = f[f["full"]]
+    src, t = r.rec, sw["t"].to_numpy(float)
+    period = float(np.median(np.diff(t)))
+    cur = _pack_current(oc, ost)
+    if cur is not None:                                         # 바퀴마다 그동안 팩 전류가 바뀐 폭 (전류 기록 밖이면 모름 → 뺌)
+        i = pd.Series(np.interp(full["t_s"], *cur), index=full.index)
+        known = (full["t_s"] >= cur[0][0]) & (full["t_s"] <= cur[0][-1])
+        g = pd.DataFrame({"sweep": full["sweep"], "i": i, "known": known}).groupby("sweep")
+        ok_sweep = ((g["i"].max() - g["i"].min() <= CELL_STEADY_A) & g["known"].all())
+        steady = ok_sweep.reindex(sw["sweep"]).fillna(False).to_numpy(bool)
+        how = f"그 바퀴 동안 팩 전류가 {CELL_STEADY_A} A 안에서만 바뀐 때만 (나머지는 빈 값)"
+    else:
+        steady = np.ones(len(sw), bool)
+        how = "팩 전류가 없어 전류가 바뀐 바퀴를 가리지 못함"
+    every = (f"셀마다 차례로 보낸 값 (한 바퀴 약 {period:.2f} s) — 최고 · 최저는 한 바퀴 안에서 고른 것")
+    cmp_ = f"셀마다 다른 순간의 값이라 한 바퀴 동안 전류가 바뀌면 모든 셀이 같이 움직여 셀끼리의 차에 섞인다 — {how}"
+    rmeas = "Orion 이 잰 셀 저항만 (아직 재지 않아 모든 셀이 같은 기본값을 낸 동안은 빈 값)"
+    num = lambda k: sw[k].astype(float).to_numpy()                                       # noqa: E731
+    spread, low = np.where(steady, num("spread_mv"), np.nan), np.where(steady, num("v_min_cell"), np.nan)
+    series = [Channel("cell_max_v", "셀 최고 전압", "V", t, num("v_max"), source=src, digits=4, cautions=[every]),
+              Channel("cell_min_v", "셀 최저 전압", "V", t, num("v_min"), source=src, digits=4, cautions=[every]),
+              Channel("cell_spread_mv", "셀 전압 차", "mV", t, spread, derived=True, derivation=f"한 바퀴 안 셀 최고 − 최저 — {how}",
+                      source=src, digits=1, cautions=[every, cmp_]),
+              Channel("cell_min_id", "가장 낮은 셀", "번호", t, low, source=src, digits=0, cautions=[every, cmp_])]
+    has_r = bool(sw["r_max"].notna().any())
+    if has_r:
+        series += [Channel("r_max_mohm", "셀 저항 최고", "mΩ", t, num("r_max"), source=src, digits=2, cautions=[rmeas]),
+                   Channel("r_median_mohm", "셀 저항 중앙", "mΩ", t, num("r_median"), source=src, digits=2, cautions=[rmeas]),
+                   Channel("r_max_id", "저항이 가장 높은 셀", "번호", t, num("r_max_cell"), source=src, digits=0, cautions=[rmeas])]
+    series.append(Channel("balancing_n", "균형 중인 셀 수", "개", t, num("balancing_n"), source=src, digits=0,
+                          cautions=["Orion 이 그 셀을 방전시켜 맞추는 중이라고 표시한 수"]))
+    _lap_stat(r, "cell_v_spread_mv", t, spread, lambda v: np.nanmax(v) if np.isfinite(v).any() else np.nan)
+    calm = full[full["sweep"].isin(sw.loc[steady, "sweep"])]
+    dv = (calm["cell_v"] - calm.groupby("sweep")["cell_v"].transform("median")) * 1000
+    per = f.assign(dv_mv=dv.reindex(f.index)).groupby("cell").agg(
+        n=("cell_v", "size"), v_first=("cell_v", "first"), v_last=("cell_v", "last"), v_min=("cell_v", "min"), v_median=("cell_v", "median"),
+        dv_median_mv=("dv_mv", "median"), dv_min_mv=("dv_mv", "min"), ocv_median_v=("ocv_v", "median"),
+        r_n=("resistance_mohm", "count"), r_median_mohm=("resistance_mohm", "median"), balancing_share=("balancing", "mean")).reset_index()
+    per["r_over_mohm"] = per["r_median_mohm"] - per["r_median_mohm"].median()
+    n, cid = f["cell"].nunique(), f["cell"].astype(int)
+    facts = [f"셀 {n}개 (번호 {cid.min()} ~ {cid.max()}) — 한 바퀴 약 {period:.2f} s",
+             f"셀 전압 {_span(sw['v_min'].min(), sw['v_max'].max(), '.3f')} V"]
+    st = sw[steady]
+    if len(st):
+        big = st["spread_mv"] >= st["spread_mv"].quantile(0.9)
+        facts[-1] += (f" · 한 바퀴 안 셀 전압 차 {_span(st['spread_mv'].min(), st['spread_mv'].max())} mV (중앙 {st['spread_mv'].median():.0f} mV"
+                      + (f", 전류가 고른 바퀴 {steady.mean():.0%}" if cur is not None else "") + ")")
+        facts.append(f"가장 자주 가장 낮은 셀 #{int(st['v_min_cell'].mode().iloc[0])} · 셀 전압 차가 큰 바퀴 (위 10 %) 에서는 "
+                     f"#{int(st.loc[big, 'v_min_cell'].mode().iloc[0])}")
+    m = per.dropna(subset=["r_median_mohm"])
+    if len(m) >= evo_can.CELL_SWEEP_MIN_SHARE * n:
+        top = m.nlargest(3, "r_over_mohm")
+        facts.append(f"셀 저항 (Orion 이 잰 값, 셀마다 중앙) 셀 중앙 {m['r_median_mohm'].median():.2f} mΩ · 높은 셀 "
+                     + " · ".join(f"#{int(x.cell)} {x.r_median_mohm:.2f} ({x.r_over_mohm:+.2f})" for x in top.itertuples()) + " mΩ"
+                     + f" — 잰 값이 있는 프레임 {f['resistance_mohm'].notna().mean():.0%}")
+    else:
+        facts.append("셀 저항: Orion 이 아직 재지 않아 모든 셀이 같은 기본값 — 빈 값으로 둠")
+    if sw["balancing_n"].max() > 0:
+        facts.append(f"균형 중 표시 셀 한 바퀴 평균 {sw['balancing_n'].mean():.1f}개 · 많을 때 {sw['balancing_n'].max()}개")
+    checks = [f"체크섬이 맞는 프레임만 (ID + 8 + 바이트 합) — {cells['checksum_ok'].mean():.1%}"]
+    s = oc.dropna(subset=["cell_min_v"]) if oc is not None and "cell_min_v" in oc else None
+    if s is not None and len(s):
+        s = s[s["summary_ok"].fillna(False).astype(bool)] if "summary_ok" in s else s
+        near = pd.merge_asof(s[["t_s", "cell_min_v"]].sort_values("t_s"), sw[["t", "v_min"]].rename(columns={"t": "t_s"}),
+                             on="t_s", direction="nearest", tolerance=period).dropna()
+        if len(near):
+            d = (near["cell_min_v"] - near["v_min"]) * 1000
+            checks.append(f"Orion 요약(0x446) 의 최저 셀 ↔ 가까운 한 바퀴의 최저: 차 중앙 {d.median():+.1f} mV · "
+                          f"{(d.abs() <= CELL_CHECK_MV).mean():.0%} 가 {CELL_CHECK_MV} mV 안 ({len(d):,}번 대 봄)")
+    return DataBlock("cells", "배터리 셀 전압 · 저항", HAVE, "Orion BMS 2 셀 방송 — 차량 CAN 0x036 (셀 하나씩 차례로, Monolith 가 받은 것)", facts,
+                     code=[CodeRef("catalog", CODE_PAGES["catalog"]["title"], "CAN 프레임 → 셀 전압 · 저항, 세션 구간만")],
+                     outputs=[FileRef("변환된 표 (레코딩 전체)", "orion_cells.parquet",
+                                      note="cell · cell_v · ocv_v · resistance_mohm (기본값이면 빈 값) · resistance_default · balancing",
+                                      where=r.where(f"normalized/{r.rec}/"))],
+                     exports=[Export("cells.csv", "셀마다 세션 구간의 전압 (처음 · 끝 · 최저 · 중앙 · 같은 바퀴 중앙과의 차 — 전류가 고른 바퀴만) · 개방 전압 · 저항 (중앙 · 셀 중앙과의 차) · 균형 비율",
+                                     per.round(4), f"셀 {n}개")],
+                     channels=series, time_keys=["cell_min_v", "cell_spread_mv"] + (["r_max_mohm"] if has_r else []),
+                     lap_columns=[LapColumn("cell_v_spread_mv", "셀 전압 차 최대", "mV", 0, chart=True)],
+                     checks=checks,
+                     cautions=["셀 번호 = Orion 셀 번호 (1 부터)",
+                               "셀 저항 = Orion 이 부하 때마다 고쳐 가는 추정값. 처음 잰 뒤 한동안 함께 움직이니 셀끼리는 같은 때끼리 비교"]
+                     + list(r.extra("cells").get("cautions", [])), series=series)
+
+
 REQUESTED = {"vdc_fast_v", "iq_a", "id_a", "i_phase_a"}     # 누가 요청할 때만 오는 BAMOCAR 레지스터에서 온 채널 — 주기가 '레지스터마다 10 Hz' 가 아님
 
 
@@ -1825,7 +1937,7 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
             blocks.append(em)
             stats.update(st)
     orion, orion_ref = _orion_block(w, of("orion"), f"Connect 시각을 기준 시계로 옮김 — {said(of('orion'))}") if of("orion") else (None, None)
-    can_motor = can_pedal = can_brake = can_bat = can_bms = can_th = None
+    can_motor = can_pedal = can_brake = can_bat = can_bms = can_th = can_cells = None
     mono = [(x, clocks.offset(x)) for x in recs if x.device in CAN_DEVICES and clocks.known(x)
             and x.t0 + clocks.offset(x) < w.t1_abs and x.t1 + clocks.offset(x) > w.t0_abs]
     if mono:                                                           # Monolith 가 받은 차량 CAN (모터 컨트롤러 · 가속페달 · Orion BMS)
@@ -1842,7 +1954,9 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
         can_bms = _orion_can_block(wm, oc, ost) if oc is not None and orion is None else None
         th = _window_can(w, mono, "thermistor")
         can_th = _can_thermistor_block(wm, th) if th is not None else None
-        for b in (can_motor, can_pedal, can_brake, can_bat, can_bms, can_th):
+        cl = _window_can(w, mono, "orion_cells")
+        can_cells = _can_cells_block(wm, cl, oc, ost) if cl is not None else None
+        for b in (can_motor, can_pedal, can_brake, can_bat, can_bms, can_th, can_cells):
             if b is not None:
                 b.checks.insert(0, f"Monolith 가 받은 차량 CAN — Monolith 시각을 기준 시계로 옮김 ({said(mono)})")
     part = of("stm32")
@@ -1872,6 +1986,8 @@ def _window_blocks(w: _Window, recs: list[_Rec], clocks: _Clocks, strict: bool =
         blocks.append(can_bms)
     if can_th is not None:
         blocks.append(can_th)
+    if can_cells is not None:
+        blocks.append(can_cells)
     if can_pedal is not None:
         blocks.append(can_pedal)
     if can_brake is not None:
@@ -2375,6 +2491,7 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
     can_bms = _orion_can_block(r, can["orion_can"], can["orion_stream"]) if can["orion_can"] is not None else None
     can_motor = _can_motor_block(r, can["bamocar"], can["orion_can"]) if can["bamocar"] is not None else None
     can_th = _can_thermistor_block(r, can["thermistor"]) if can["thermistor"] is not None else None
+    can_cells = _can_cells_block(r, can["orion_cells"], can["orion_can"], can["orion_stream"]) if can["orion_cells"] is not None else None
     ref = _em_ref(r, al, e) if al else can_ref
     blocks = [_gps_block(r), _imu_block(r)] + _logger_blocks(r, ctx.loggers.for_video(r.rec)) + _stm32_blocks(
         r, ctx.stm, ref, al, skip=tuple(k for k, b in (("bms", can_bms), ("motor", can_motor)) if b is not None), ref_name="에너지미터" if al else "Orion CAN")
@@ -2403,6 +2520,8 @@ def _gps_session(ctx: _GpsCtx, rec: str, run: pd.Series, mine: pd.DataFrame, inf
         blocks.append(can_bms)
     if can_th is not None:
         blocks.append(can_th)
+    if can_cells is not None:
+        blocks.append(can_cells)
     if can["apps"] is not None:
         blocks.append(_pedal_block(r, can["apps"], ref))
     if (r.rec_dir / "analog.parquet").exists():                 # 25Evo 브레이크 압력 (판이 AIN1 을 그렇게 말할 때만)
