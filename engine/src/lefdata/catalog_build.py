@@ -1589,6 +1589,11 @@ def _segment_notes(info: dict, derived: Path, r: _Run) -> list[str]:
         rows = a[(a["recording_id"] == r.rec) & (a["t_start_s"] >= r.t0 - ACCEL_LEAD_S) & (a["t_start_s"] <= r.t1)] if a is not None else pd.DataFrame()
         rows = rows[rows["direction"] == "forward"] if "direction" in rows else rows
         for _, x in rows.iterrows():
+            if pd.isna(x["t75_s"]):                                    # 출발 ~ 75 m 사이 GPS 가 비었다 (events.ACCEL_GAP_S)
+                at = x.get("gps_gap_from_s")
+                out.append(f"가속 75 m — 출발 ~ 75 m 사이 GPS 표본이 {x.get('gps_gap_s', float('nan')):.1f} s 비어 시간을 내지 않음"
+                           + (" (출발이 그 빈 곳 안)" if pd.notna(at) and at < 0.5 else f" (출발 뒤 {at:.1f} s 부터)" if pd.notna(at) else ""))
+                continue
             out.append(f"가속 75 m {x['t75_s']:.3f} s (75 m 지점 {x['v_at_75_kmh']:.0f} km/h)")
     if info.get("discipline") == "스키드패드":
         s = _read(derived / "skidpad_laps.csv")

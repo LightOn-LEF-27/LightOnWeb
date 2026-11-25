@@ -214,6 +214,8 @@ def main(argv: list[str] | None = None) -> None:
         if not fw.empty:
             print(f"  가속 {len(accel)}회 (정방향 {len(fw)}) · 75 m 최속 {fw['t75_s'].min():.3f} s "
                   f"(범위 {fw['t75_s'].min():.3f}~{fw['t75_s'].max():.3f})")
+        for _, x in accel[accel["t75_s"].isna()].iterrows() if not accel.empty else ():
+            print(f"  건너뜀 가속 {x['recording_id']} @{x['t_start_s']:.1f} s — 출발 ~ 75 m 사이 GPS 가 {x['gps_gap_s']:.1f} s 비어 75 m 시간을 내지 않음")
         if not skid.empty:
             print(f"  스키드패드 {len(skid)}랩 · 최속 {skid['lap_time_s'].min():.3f} s · "
                   f"횡가속 최대 {skid['lat_acc_g'].max():.2f} g · 평균 반지름 {skid['circle_r_m'].mean():.2f} m")

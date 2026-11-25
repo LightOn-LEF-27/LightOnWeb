@@ -204,7 +204,7 @@ def accel_runs(event_dir: Path, out: Path) -> Path:
 
     _, _, gi = _load(event_dir)
     runs = _event_tables(event_dir, "accel_runs")
-    fw = runs[runs["direction"] == "forward"].sort_values("t75_s").reset_index(drop=True)
+    fw = runs[(runs["direction"] == "forward") & runs["t75_s"].notna()].sort_values("t75_s").reset_index(drop=True)   # GPS 가 빈 런은 시간이 없다
     FULL_KMH = 85.0          # 이 아래는 저출력 시험 주행 (기록 비교 대상이 아니다)
     XMAX = 6.0
 

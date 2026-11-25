@@ -11,6 +11,8 @@
     - 거리는 두 가지로 재서 둘 다 남긴다 — GPS 위치 적분, GPS 속도 적분
     - 직진성으로 가속 주행만 걸러낸다 (스키드패드는 곡선이라 제외됨)
     - 역방향 시험은 평균 진행 방위로 갈라낸다
+    - **출발 ~ 75 m 사이에 GPS 표본이 ACCEL_GAP_S 넘게 비면 시간을 내지 않는다** (t75_s · t75_speed_int_s · v_at_75_kmh 를 비우고 gps_gap_s 에 빈 길이).
+      빈 동안 출발했으면 출발점이 끊기기 전 마지막 정지 표본이 되어 서 있던 시간까지 75 m 시간에 들어가고, 빈 곳 안의 위치는 직선으로 이어져 있을 뿐이다
 
 스키드패드 (FSAE: 두 원을 번갈아 도는 8자, 각 원 2바퀴)
     - 8자 전체를 원 하나로 맞추면 안 된다 (해 보면 반지름 · 잔차가 엉망이다)
@@ -68,6 +70,7 @@ GYM_MIN_S = 15.0
 GYM_MIN_TOP_KMH = 20.0
 GYM_SMOOTH_S = 1.0       # 정지를 가릴 속도는 이 길이의 가운데값으로 고른다
 GPS_GAP_S = 1.0          # GPS 표본 사이가 이보다 벌어지면 정지를 이어 보지 않는다
+ACCEL_GAP_S = 0.5        # 가속: 출발 ~ 75 m 사이 GPS 표본 간격이 이보다 길면 75 m 시간을 내지 않는다 (10 Hz 면 표본 다섯 개가 빈 것)
 G = 9.80665
 
 
@@ -131,6 +134,9 @@ def accel_runs(gps: pd.DataFrame, lat0: float, lon0: float) -> pd.DataFrame:
         t75_spd = _interp_at(d_spd, t[sl], ACCEL_DIST_M)
         if t75 is None:
             continue
+        steps = np.diff(t[sl][:int(np.searchsorted(t[sl], t75)) + 1])     # 출발 ~ 75 m 를 지난 첫 표본까지의 간격
+        gap = float(steps.max()) if len(steps) else 0.0
+        hole = gap > ACCEL_GAP_S
         # 75 m 구간이 직선인가 — 스키드패드 같은 곡선 주행을 걸러낸다
         k75 = int(np.searchsorted(d_pos, ACCEL_DIST_M))
         straight = float(np.hypot(x[s + k75] - x[s], y[s + k75] - y[s]) / d_pos[k75])
@@ -141,9 +147,11 @@ def accel_runs(gps: pd.DataFrame, lat0: float, lon0: float) -> pd.DataFrame:
             "t_abs_start": g["t_abs"].iloc[s],
             "t_start_s": round(float(t[s]), 2),
             "v_start_kmh": round(float(v[s]), 2),
-            "t75_s": round(t75 - float(t[s]), 3),
-            "t75_speed_int_s": None if t75_spd is None else round(t75_spd - float(t[s]), 3),
-            "v_at_75_kmh": round(float(np.interp(t75, t[sl], v[sl])), 2),
+            "t75_s": None if hole else round(t75 - float(t[s]), 3),
+            "t75_speed_int_s": None if (hole or t75_spd is None) else round(t75_spd - float(t[s]), 3),
+            "v_at_75_kmh": None if hole else round(float(np.interp(t75, t[sl], v[sl])), 2),
+            "gps_gap_s": round(gap, 3),                                 # 출발 ~ 75 m 사이 가장 긴 GPS 표본 간격
+            "gps_gap_from_s": round(float(t[sl][int(np.argmax(steps))] - t[s]), 2) if hole else None,   # 빈 곳이 출발 뒤 몇 초부터 (0 = 출발이 빈 곳 안)
             "v_max_kmh": round(float(v[a:b + 1].max()), 2),
             "straightness": round(straight, 3),
             "heading_deg": round(_mean_heading(c[sl][moving]), 1),

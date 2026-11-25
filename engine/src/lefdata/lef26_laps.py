@@ -400,6 +400,9 @@ def run_event(event_dir: Path, kinds=tuple(SEGMENTS)) -> dict[str, pd.DataFrame]
             v = s["recording_id"]
             if v not in videos:
                 videos[v] = read_video(norm / v)
+            if not (np.isfinite(t0s[i]) and np.isfinite(t1s[i])):       # 구간 끝이 없는 줄 (GPS 가 빈 가속 런 — 75 m 시간 없음)
+                rows.append({c: s[c] for c in keep})
+                continue
             rows.append({**{c: s[c] for c in keep},
                          **summarize_segment(loggers_of(v), videos[v], float(t0s[i]), float(t1s[i]))})
         df = pd.DataFrame(rows).reindex(columns=keep + JOIN_COLS + VALUE_COLS)
